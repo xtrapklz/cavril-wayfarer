@@ -688,50 +688,72 @@ const Party = (() => {
     }
     const size = () => Math.max(1, members().length);
 
-    function countItems(actor, re) {
-        let n = 0;
-        for (const it of (actor?.items ?? [])) if (re.test(it.name || "")) n += (it.system?.quantity ?? 1);
-        return n;
+    // dnd5e tracks a supply either as quantity (Rations) or limited USES (a
+    // Waterskin with N uses) — read/spend whichever this item uses. dnd5e 4.x/5.x
+    // store consumed uses as system.uses.spent; older builds use system.uses.value.
+    function unitsInfo(item) {
+        const u = item.system?.uses;
+        if (u && Number.isFinite(u.max) && u.max > 0) {
+            const hasSpent = ("spent" in u);
+            const remaining = hasSpent ? Math.max(0, u.max - (u.spent || 0))
+                : (Number.isFinite(u.value) ? u.value : u.max);
+            return { uses: true, hasSpent, remaining, max: u.max };
+        }
+        return { uses: false, remaining: item.system?.quantity ?? 1 };
     }
-    // Live totals summed across every member sheet + the group's shared inventory.
-    function supplies() {
-        let rations = 0, water = 0;
-        for (const a of members()) { rations += countItems(a, RATION_RE); water += countItems(a, WATER_RE); }
-        const g = groupActor();
-        if (g) { rations += countItems(g, RATION_RE); water += countItems(g, WATER_RE); }
-        return { rations, water };
-    }
+    const unitsOf = (item) => unitsInfo(item).remaining;
 
-    // Reduce up to `n` matching units from one actor's items; returns amount taken.
+    async function takeFromItem(item, k) {
+        const info = unitsInfo(item);
+        const use = Math.min(info.remaining, k);
+        if (use <= 0) return 0;
+        try {
+            if (info.uses) {
+                if (info.hasSpent) await item.update({ "system.uses.spent": (item.system.uses.spent || 0) + use });
+                else await item.update({ "system.uses.value": Math.max(0, (item.system.uses.value ?? info.max) - use) });
+            } else {
+                await item.update({ "system.quantity": Math.max(0, (item.system.quantity ?? 1) - use) });
+            }
+            return use;
+        } catch (e) { warn("supply take failed", e); return 0; }
+    }
+    // Take up to `n` units (uses or quantity) of matching items from one actor.
     async function take(actor, re, n) {
-        let need = n, taken = 0;
+        let need = n, took = 0;
         for (const it of (actor?.items ?? [])) {
             if (need <= 0) break;
             if (!re.test(it.name || "")) continue;
-            const q = it.system?.quantity ?? 1;
-            const use = Math.min(q, need);
-            if (use > 0) {
-                try { await it.update({ "system.quantity": q - use }); taken += use; need -= use; }
-                catch (e) { warn("supply consume failed", e); }
-            }
+            const t = await takeFromItem(it, need); took += t; need -= t;
         }
-        return taken;
+        return took;
     }
-    // Consume perR rations + perW water for each member: from their own sheet first,
-    // then the group's shared stash. Returns { rations, water, short }.
-    async function consume(perR, perW) {
-        if (!game.user.isGM) return { rations: 0, water: 0, short: false };
+    function countItems(actor, re) {
+        let n = 0;
+        for (const it of (actor?.items ?? [])) if (re.test(it.name || "")) n += unitsOf(it);
+        return n;
+    }
+    // Live totals summed across the group's shared inventory + every member sheet.
+    function supplies() {
+        let rations = 0, water = 0;
         const g = groupActor();
-        let totR = 0, totW = 0, short = false;
-        for (const m of members()) {
-            for (const [re, per, isR] of [[RATION_RE, perR, true], [WATER_RE, perW, false]]) {
-                let got = await take(m, re, per);
-                if (got < per && g) got += await take(g, re, per - got);
-                if (isR) totR += got; else totW += got;
-                if (got < per) short = true;
-            }
+        if (g) { rations += countItems(g, RATION_RE); water += countItems(g, WATER_RE); }
+        for (const a of members()) { rations += countItems(a, RATION_RE); water += countItems(a, WATER_RE); }
+        return { rations, water };
+    }
+
+    // Consume 1 ration + 1 waterskin-use per member. Order: the shared GROUP stash
+    // first, then ONE unit from each individual (spread — never all from one person).
+    async function consume() {
+        if (!game.user.isGM) return { rations: 0, water: 0, rationsShort: 0, waterShort: 0 };
+        const mem = members(), size = mem.length, g = groupActor();
+        const out = {};
+        for (const [re, key] of [[RATION_RE, "rations"], [WATER_RE, "water"]]) {
+            let need = size, took = 0;
+            if (g) { const t = await take(g, re, need); took += t; need -= t; }                 // group stash first
+            for (const m of mem) { if (need <= 0) break; const t = await take(m, re, 1); took += t; need -= t; }  // one per individual
+            out[key] = took; out[key + "Short"] = need;
         }
-        return { rations: totR, water: totW, short };
+        return out;
     }
     async function addItem(actor, re, defaultName, qty) {
         if (!actor || !qty || qty <= 0) return;
@@ -772,8 +794,22 @@ const MiniCal = (() => {
             if (f) { _key = mapForecast(f.forecastName); _label = f.forecastName || null; WayfarerPanel.renderExternal(); BiomeBadge.update(); }
         } catch (e) { warn("mini-calendar forecast read failed", e); }
     }
-    return { active, refresh, key: () => (active() ? (_key || "clear") : null), label: () => _label };
+    return { active, api, refresh, key: () => (active() ? (_key || "clear") : null), label: () => _label };
 })();
+
+// Advance the clock from camp to the next dawn (becomes the Camp Turn workflow).
+async function advanceToDawn() {
+    if (!game.user.isGM) return;
+    const st = Store.sceneState();
+    const nextDay = (st.day || 1) + 1;
+    await Store.setSceneState({ day: nextDay, foraged: false, shortRest: false });
+    try {
+        const mc = MiniCal.api?.();
+        if (mc?.setTime) await mc.setTime(1, "dawn");   // tomorrow's dawn
+        else await Store.advanceWorldTime(8);
+    } catch (e) { warn("advance to dawn failed", e); await Store.advanceWorldTime(8); }
+    ChatMessage.create({ content: cwfCardShell("fa-sun", `Dawn — Day ${nextDay}`, cwfRow("Morning", "The watch ends and a new day begins.")) });
+}
 
 // Effective travel weather: Mini Calendar's live weather if present, else scene state.
 const effectiveWeather = () => (MiniCal.key() ?? Store.sceneState().weather) || "clear";
@@ -1263,6 +1299,16 @@ const Tables = (() => {
  * ========================================================================= */
 const ROLE_LABEL = { navigate: "Navigator", scout: "Scout", forage: "Forager" };
 const ROLE_ICON = { navigate: "fa-compass", scout: "fa-binoculars", forage: "fa-seedling" };
+
+// DDB-Roll-Cards-styled chat card shell (dark card, gradient header, coral labels).
+function cwfCardShell(icon, title, bodyHTML, { sub = "", footerHTML = "" } = {}) {
+    return `<div class="cwf-card">
+        <div class="cwf-card-hd"><i class="fa-solid ${icon}"></i> <span>${title}</span>${sub ? `<span class="cwf-card-sub">${sub}</span>` : ""}</div>
+        <div class="cwf-card-bd">${bodyHTML}</div>
+        ${footerHTML ? `<div class="cwf-card-foot">${footerHTML}</div>` : ""}
+    </div>`;
+}
+const cwfRow = (label, value) => `<div class="cwf-card-row"><span class="cwf-card-l">${label}</span><span class="cwf-card-v">${value}</span></div>`;
 const TIER_LABEL = { crit: "Critical Success", success: "Success", fail: "Failure", critfail: "Critical Failure" };
 // Per-role skill options the GM can switch between for the situation. First = default.
 const ROLE_SKILLS = {
@@ -1338,15 +1384,12 @@ const Turn = (() => {
 
     async function resolve() {
         const dc = governing?.dc ?? 10;
-        const lines = [];
         let navEffect = "arrive";
         for (const [k, v] of claimedRoles()) {
             const tier = outcomeFor(v) || "fail";
             v.outcome = tier;
             const drawn = await Tables.draw(k, tier);
             v.result = drawn.text;
-            const skLabel = CONFIG.DND5E?.skills?.[v.skillId]?.label || v.skillId;
-            lines.push(`<b>${ROLE_LABEL[k]}</b> — ${v.actorName} (${skLabel}) rolled ${v.total} vs DC ${dc}: <i>${TIER_LABEL[tier]}</i><br>${drawn.text}`);
             if (k === "navigate") navEffect = drawn.effect || (tier === "fail" || tier === "critfail" ? "dead" : "arrive");
             if (k === "forage") {
                 if (tier === "success" || tier === "crit") await Store.setSceneState({ foraged: true });
@@ -1357,14 +1400,28 @@ const Turn = (() => {
                     try { haul = (await (new Roll("1d4")).evaluate()).total + wis; } catch { /* keep fallback */ }
                     haul = Math.max(1, haul);
                     await Party.addToStash(haul, haul);
-                    lines.push(`<i>Forager haul: +${haul}🍖 / +${haul}💧 added to the party stash.</i>`);
+                    v.result += ` <em>(+${haul}🍖 / +${haul}💧 to the stash)</em>`;
                 }
             }
         }
         await applyMovement(navEffect);
         const hrs = route.length * Domain.hoursPerHex(pace, boat);
         await Store.advanceWorldTime(hrs);
-        ChatMessage.create({ content: `<div class="cwf-chat"><b>🧭 Travel Turn — DC ${dc}${governing?.label ? ` (${governing.label})` : ""}</b><br>${lines.join("<br>") || "No roles were claimed."}<br><span style="opacity:.7">⏱ ${hrs} hours pass${navEffect === "dead" ? " (lost — 0 hexes)" : ""}.</span></div>` });
+
+        // Styled per-role card — each role's roller / skill / total / outcome / result distinct.
+        let body = "";
+        for (const [k, v] of claimedRoles()) {
+            const sk = CONFIG.DND5E?.skills?.[v.skillId]?.label || v.skillId;
+            body += `<div class="cwf-rr">
+                <div class="cwf-rr-h"><i class="fa-solid ${ROLE_ICON[k]}"></i> <b>${ROLE_LABEL[k]}</b> <span class="cwf-rr-who">${v.actorName || "—"}</span> <span class="cwf-rr-sk">${sk}</span> <span class="cwf-tier-badge cwf-tier-${v.outcome}">${v.total} · ${TIER_LABEL[v.outcome]}</span></div>
+                <div class="cwf-rr-b">${v.result}</div>
+            </div>`;
+        }
+        if (!body) body = `<div class="cwf-card-row"><span class="cwf-card-v">No roles were claimed.</span></div>`;
+        const sub = `DC ${dc}${governing?.label ? ` · ${governing.label}` : ""}`;
+        const foot = `<span class="cwf-card-clock"><i class="fa-solid fa-clock"></i> ${hrs} ${hrs === 1 ? "hour" : "hours"} pass${navEffect === "dead" ? " — lost, 0 hexes" : ""}.</span>`;
+        ChatMessage.create({ content: cwfCardShell("fa-compass", "Travel Turn", body, { sub, footerHTML: foot }) });
+
         step = "resolved";
         WayfarerPanel.render(); BiomeBadge.update();
     }
@@ -1554,26 +1611,23 @@ const WayfarerPanel = (() => {
     }
 
     async function makeCamp() {
-        const scene = canvas.scene;
-        const st = Store.sceneState(scene);
-        const size = Party.size();
+        const st = Store.sceneState();
+        // Consume 1 ration + 1 waterskin-use per member: GROUP stash first, then one
+        // unit from each individual (waterskins lose a use, not the whole item).
+        const consumed = st.foraged ? null : await Party.consume();
         const sup = Party.supplies();
-        const lines = [];
-
-        // Consume 1 ration + 1 waterskin per member: from each member's own sheet
-        // first, then the group's shared stash.
+        let body = "";
         if (st.foraged) {
-            lines.push(`The Forager fed the party — no rations or waterskins consumed.`);
+            body += cwfRow("Supplies", "The Forager fed the party — nothing consumed.");
         } else {
-            const c = await Party.consume(1, 1);
-            lines.push(`Consumed ${c.rations}🍖 / ${c.water}💧 for ${size} member${size === 1 ? "" : "s"} (sheets first, then the group stash).`);
-            if (c.short) lines.push(`⚠ Supplies ran short — some members go without (apply exhaustion/etc. as you rule it).`);
+            body += cwfRow("Consumed", `${consumed.rations} 🍖 ration${consumed.rations === 1 ? "" : "s"} · ${consumed.water} 💧 waterskin use${consumed.water === 1 ? "" : "s"}`);
+            if (consumed.rationsShort || consumed.waterShort) body += cwfRow("Short", `⚠ ${consumed.rationsShort}🍖 / ${consumed.waterShort}💧 unmet — those members go hungry/thirsty`);
+            body += cwfRow("Remaining", `${sup.rations} 🍖 · ${sup.water} 💧`);
         }
-
-        const nextDay = (st.day || 1) + 1;
-        lines.push(`Camp struck — Day ${nextDay} dawns.`);
-        await Store.setSceneState({ day: nextDay, foraged: false, shortRest: false }, scene);
-        ChatMessage.create({ content: `<div class="cwf-chat"><b>🏕️ Make Camp — Long Rest</b><br>${lines.join("<br>")}</div>` });
+        body += cwfRow("Night", `<em>Set the watch, resolve any night events, then advance to morning.</em>`);
+        await Store.setSceneState({ foraged: false, shortRest: false });   // the day advances at dawn
+        const footer = `<button class="cwf-card-btn" data-cwf="dawn"><i class="fa-solid fa-sun"></i> Advance to morning</button>`;
+        ChatMessage.create({ content: cwfCardShell("fa-campground", "Make Camp — Long Rest", body, { footerHTML: footer }) });
     }
 
     async function enterSite() {
@@ -1877,6 +1931,14 @@ Hooks.on("canvasReady", () => { Music.reset(); BiomeBadge.update(); WayfarerPane
 Hooks.on("updateWorldTime", () => MiniCal.refresh());
 // D&D Beyond rolls (via ddb-roll-cards v4.78+) auto-fill the claimed role slot.
 Hooks.on("ddb-roll-cards.roll", (payload) => { try { Turn.ingestRoll(payload); } catch (e) { warn("ddb roll ingest failed", e); } });
+
+// Wire the "Advance to morning" button on Make Camp chat cards (V13/14 + V12 shapes).
+function wireDawnButton(root) {
+    const el = root?.querySelector?.("[data-cwf='dawn']");
+    if (el && !el.dataset.cwfWired) { el.dataset.cwfWired = "1"; el.addEventListener("click", () => advanceToDawn()); }
+}
+Hooks.on("renderChatMessageHTML", (_m, html) => wireDawnButton(html));
+Hooks.on("renderChatMessage", (_m, html) => wireDawnButton(html?.[0] ?? html));
 Hooks.on("controlToken", () => { BiomeBadge.update(); WayfarerPanel.renderExternal(); });
 // Only the followed token's refresh matters — skip the churn from every other token.
 Hooks.on("refreshToken", (token) => { if (token === Canvasry.activeToken()) BiomeBadge.update(); });

@@ -180,6 +180,34 @@
 .cwf-site-btn { width: 100%; background: color-mix(in srgb, var(--cwf-accent) 18%, var(--cwf-bg2)); border-color: var(--cwf-accent); }
 .cwf-readonly { text-align: center; color: var(--cwf-muted); font-size: 10px; font-style: italic; margin-top: 2px; }
 
+/* chat cards (DDB Roll Cards style) */
+.cwf-card { border: 1px solid rgba(0,0,0,.45); border-radius: 8px; overflow: hidden; background: #17181c; color: #f4f4f4; font-family: "Signika", sans-serif; }
+.cwf-card-hd { display: flex; align-items: center; gap: 7px; padding: 7px 10px; background: linear-gradient(90deg, #222226, #34343a); font-weight: 700; letter-spacing: .04em; font-size: 13px; }
+.cwf-card-hd > i { color: var(--cwf-accent); }
+.cwf-card-sub { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--cwf-coral); letter-spacing: .04em; }
+.cwf-card-bd { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.cwf-card-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.35; }
+.cwf-card-l { flex: 0 0 70px; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--cwf-coral); font-weight: 700; }
+.cwf-card-v { color: #f4f4f4; }
+.cwf-card-v em { font-style: normal; color: #9a9a9a; }
+.cwf-card-foot { padding: 8px 10px; border-top: 1px solid rgba(255,255,255,.10); }
+.cwf-card-clock { font-size: 11px; color: #9a9a9a; display: inline-flex; align-items: center; gap: 5px; }
+.cwf-card-btn { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid rgba(189,169,232,.5); background: rgba(189,169,232,.16); color: #f4f4f4; font-weight: 700; letter-spacing: .04em; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.cwf-card-btn:hover { background: rgba(189,169,232,.3); }
+/* per-role result block */
+.cwf-rr { border: 1px solid rgba(255,255,255,.10); border-radius: 6px; padding: 6px 8px; background: rgba(255,255,255,.03); }
+.cwf-rr + .cwf-rr { margin-top: 2px; }
+.cwf-rr-h { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.cwf-rr-h > i { color: var(--cwf-accent); }
+.cwf-rr-who { color: #fff; font-weight: 600; }
+.cwf-rr-sk { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--cwf-accent); }
+.cwf-rr-b { font-size: 12px; color: #cfcfcf; margin-top: 4px; line-height: 1.4; }
+.cwf-tier-badge { margin-left: auto; font-weight: 800; font-size: 10px; padding: 2px 8px; border-radius: 9px; letter-spacing: .03em; white-space: nowrap; }
+.cwf-tier-crit { background: var(--cwf-easy); color: #063; }
+.cwf-tier-success { background: color-mix(in srgb, var(--cwf-easy) 50%, transparent); color: #dffbe6; }
+.cwf-tier-fail { background: color-mix(in srgb, var(--cwf-hard) 75%, transparent); color: #fff; }
+.cwf-tier-critfail { background: var(--cwf-severe); color: #fff; }
+
 /* chat */
 .cwf-chat { line-height: 1.4; }
 .cwf-dialog label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0; }
