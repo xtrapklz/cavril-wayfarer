@@ -98,6 +98,11 @@
 .cwf-pill.cwf-warn { color: var(--cwf-hard); }
 .cwf-pill.cwf-muted, .cwf-muted { color: var(--cwf-muted); font-weight: 400; }
 
+/* travel / course planner */
+.cwf-plan { width: 100%; }
+.cwf-travel { border: 1px solid var(--cwf-accent); border-radius: 10px; padding: 8px; background: rgba(123,220,255,.05); }
+.cwf-route { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 2px; }
+
 /* weather */
 .cwf-wx-row { display: flex; gap: 5px; align-items: center; }
 .cwf-wx-note { text-transform: none; letter-spacing: 0; color: var(--cwf-muted); font-weight: 400; margin-left: 4px; }

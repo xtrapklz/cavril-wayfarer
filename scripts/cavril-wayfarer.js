@@ -526,8 +526,12 @@ const Canvasry = (() => {
     }
 
     function biomeForToken(token) {
-        if (!token) return null;
-        const c = token.center;
+        return token ? biomeForPoint(token.center) : null;
+    }
+
+    // Classify the hex containing an arbitrary world point (used by the course
+    // planner to evaluate hexes the party isn't standing on).
+    function biomeForPoint(c) {
         if (!c) return null;
         const hits = biomeTilesUnder(c);
         if (!hits.length) return null;
@@ -631,7 +635,7 @@ const Canvasry = (() => {
         return best;
     }
 
-    return { screen, biomeTilesUnder, biomeForToken, activeToken, setPartyToken, augurSiteUnder };
+    return { screen, biomeTilesUnder, biomeForToken, biomeForPoint, activeToken, setPartyToken, augurSiteUnder };
 })();
 
 /* =========================================================================
@@ -760,6 +764,214 @@ const BiomeBadge = (() => {
 })();
 
 /* =========================================================================
+ * HEX — offset/center geometry, reachability, routing (uses Foundry grid API,
+ * the same calls Hexlands' painter uses: getOffset / getCenterPoint /
+ * getAdjacentOffsets). All wrapped defensively for cross-version safety.
+ * ========================================================================= */
+const Hex = (() => {
+    const key = (o) => `${o.i},${o.j}`;
+    const offsetOf = (pt) => { try { return canvas.grid.getOffset(pt); } catch { return null; } };
+    const centerOf = (o) => { try { return canvas.grid.getCenterPoint(o); } catch { return null; } };
+    function neighbors(o) {
+        try { const a = canvas.grid.getAdjacentOffsets?.(o); if (Array.isArray(a)) return a; } catch { /* noop */ }
+        return [];
+    }
+    const classifyAt = (o) => { const c = centerOf(o); return c ? Canvasry.biomeForPoint(c) : null; };
+
+    // Can the party enter this hex? Unpainted/off-map and impassable are out;
+    // open water needs a boat.
+    function passable(cls, { boat = false } = {}) {
+        if (!cls || !cls.known) return false;
+        if (cls.restriction === "block") return false;
+        if (cls.terrainKey === "water" || cls.restriction === "water") return !!boat;
+        return true;
+    }
+
+    // BFS reachable hexes within `budget` steps. Map(key -> {off, dist, cls}); excludes start.
+    function reachable(start, budget, opts = {}) {
+        const out = new Map();
+        if (!start || budget < 1) return out;
+        const seen = new Set([key(start)]);
+        let frontier = [start];
+        for (let d = 1; d <= budget && frontier.length; d++) {
+            const next = [];
+            for (const cur of frontier) {
+                for (const nb of neighbors(cur)) {
+                    const k = key(nb);
+                    if (seen.has(k)) continue;
+                    seen.add(k);
+                    const cls = classifyAt(nb);
+                    if (!passable(cls, opts)) continue;
+                    out.set(k, { off: nb, dist: d, cls });
+                    next.push(nb);
+                }
+            }
+            frontier = next;
+        }
+        return out;
+    }
+
+    // Shortest passable route start→dest (offsets, excluding start, including dest), or [].
+    function route(start, dest, budget, opts = {}) {
+        if (!start || !dest) return [];
+        const sK = key(start), dK = key(dest);
+        if (sK === dK) return [];
+        const prev = new Map([[sK, null]]);
+        let frontier = [start];
+        for (let d = 1; d <= budget && frontier.length; d++) {
+            const next = [];
+            for (const cur of frontier) {
+                for (const nb of neighbors(cur)) {
+                    const k = key(nb);
+                    if (prev.has(k)) continue;
+                    if (!passable(classifyAt(nb), opts)) continue;
+                    prev.set(k, cur);
+                    if (k === dK) {
+                        const path = []; let p = nb;
+                        while (p && key(p) !== sK) { path.unshift(p); p = prev.get(key(p)); }
+                        return path;
+                    }
+                    next.push(nb);
+                }
+            }
+            frontier = next;
+        }
+        return [];
+    }
+
+    return { key, offsetOf, centerOf, neighbors, classifyAt, passable, reachable, route };
+})();
+
+/* =========================================================================
+ * COURSEOVERLAY — highlight reachable hexes + route on the canvas, click to pick.
+ * Prefers Foundry's built-in grid highlight (hex-shaped); falls back to drawn
+ * markers. Click handler mirrors Hexlands' canvas.stage pointer wiring.
+ * ========================================================================= */
+const CourseOverlay = (() => {
+    const LAYER = "cwf-course";
+    let onPick = null, handler = null, gfx = null, on = false;
+
+    function grid() { return canvas?.interface?.grid || canvas?.grid; }
+
+    function clear() {
+        try { grid()?.clearHighlightLayer?.(LAYER); } catch { /* noop */ }
+        if (gfx) { try { gfx.clear(); gfx.parent?.removeChild(gfx); gfx.destroy(); } catch { /* noop */ } gfx = null; }
+    }
+
+    function mark(off, color, alpha) {
+        const g = grid();
+        try {
+            if (g?.highlightPosition) {
+                if (g.addHighlightLayer && !g.highlightLayers?.[LAYER]) g.addHighlightLayer(LAYER);
+                const tl = canvas.grid.getTopLeftPoint ? canvas.grid.getTopLeftPoint(off) : canvas.grid.getCenterPoint(off);
+                g.highlightPosition(LAYER, { x: tl.x, y: tl.y, color, alpha });
+                return;
+            }
+        } catch { /* fall through to drawn marker */ }
+        try {
+            if (!gfx) { gfx = new PIXI.Graphics(); (canvas.interface || canvas.stage).addChild(gfx); }
+            const c = canvas.grid.getCenterPoint(off);
+            gfx.beginFill(color, alpha).drawCircle(c.x, c.y, (canvas.grid.size || 100) * 0.34).endFill();
+        } catch { /* noop */ }
+    }
+
+    function draw(reachMap, routeArr) {
+        clear();
+        const routeKeys = new Set((routeArr || []).map(Hex.key));
+        for (const { off } of (reachMap?.values?.() ?? [])) {
+            if (!routeKeys.has(Hex.key(off))) mark(off, 0x7bdcff, 0.10);
+        }
+        for (const off of (routeArr || [])) mark(off, 0x5fd08a, 0.28);
+    }
+
+    function start(pickCb) {
+        on = true; onPick = pickCb;
+        handler = (event) => {
+            if (!on) return;
+            const pos = event?.data?.getLocalPosition?.(canvas.stage) ?? event?.getLocalPosition?.(canvas.stage);
+            if (!pos) return;
+            try { onPick?.(canvas.grid.getOffset(pos)); } catch { /* noop */ }
+        };
+        try { canvas.stage.on("pointerdown", handler); } catch { /* noop */ }
+    }
+    function stop() {
+        on = false;
+        if (handler) { try { canvas.stage.off("pointerdown", handler); } catch { /* noop */ } handler = null; }
+        clear();
+    }
+    return { start, stop, draw, clear };
+})();
+
+/* =========================================================================
+ * TRAVEL — guided course planning + party-token movement (Phase 1).
+ * ========================================================================= */
+const Travel = (() => {
+    let plotting = false, dest = null, routeArr = [], reachMap = null, boat = false, pace = "normal";
+
+    const budget = () => (({ slow: 1, normal: 2, fast: 3 }[pace] ?? 2)) * (boat ? 2 : 1);
+
+    function startToken() { return Canvasry.activeToken(); }
+
+    function recompute() {
+        const tok = startToken();
+        if (!tok) { reachMap = null; routeArr = []; return; }
+        const start = Hex.offsetOf(tok.center);
+        reachMap = Hex.reachable(start, budget(), { boat });
+        routeArr = dest ? Hex.route(start, dest, budget(), { boat }) : [];
+        CourseOverlay.draw(reachMap, routeArr);
+    }
+
+    function startPlot() {
+        const tok = startToken();
+        if (!tok) { ui.notifications?.warn(`${TITLE}: set a party token first (⌖ in Current hex).`); return; }
+        pace = Store.sceneState().pace || "normal";
+        plotting = true; dest = null; routeArr = [];
+        CourseOverlay.start(onPick);
+        recompute();
+        WayfarerPanel.render();
+    }
+    function onPick(off) {
+        if (!plotting || !reachMap || !off) return;
+        if (!reachMap.has(Hex.key(off))) return;   // ignore clicks outside reach
+        dest = off; recompute(); WayfarerPanel.render();
+    }
+    async function setPace(p) { pace = p; await Store.setSceneState({ pace: p }); recompute(); WayfarerPanel.render(); }
+    function setBoat(b) { boat = !!b; recompute(); WayfarerPanel.render(); }
+
+    // Worst (highest-DC) biome along the route governs the day's DC + restriction.
+    function governing() {
+        let worst = null;
+        for (const off of routeArr) {
+            const cls = Hex.classifyAt(off);
+            if (cls && (worst == null || (cls.dc ?? -1) > (worst.dc ?? -1))) worst = cls;
+        }
+        return worst;
+    }
+
+    async function confirmMove() {
+        const tok = startToken();
+        if (!tok || !routeArr.length) return;
+        const steps = routeArr.slice();
+        plotting = false; CourseOverlay.stop();
+        for (const off of steps) {
+            const c = canvas.grid.getCenterPoint(off);
+            try { await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true }); }
+            catch (e) { warn("token move failed", e); break; }
+            await new Promise(r => setTimeout(r, 160));
+        }
+        dest = null; routeArr = []; reachMap = null;
+        WayfarerPanel.render(); BiomeBadge.update();
+    }
+    function cancel() { plotting = false; dest = null; routeArr = []; reachMap = null; CourseOverlay.stop(); WayfarerPanel.render(); }
+
+    return {
+        startPlot, onPick, setPace, setBoat, confirmMove, cancel, governing,
+        get plotting() { return plotting; }, get pace() { return pace; }, get boat() { return boat; },
+        get route() { return routeArr; }, get reach() { return reachMap; }, get hasDest() { return !!dest; }
+    };
+})();
+
+/* =========================================================================
  * UI — WayfarerPanel (day / weather / pace / supplies / actions)
  * ========================================================================= */
 const WayfarerPanel = (() => {
@@ -787,7 +999,7 @@ const WayfarerPanel = (() => {
             close();
         }
     }
-    function close() { root?.remove(); root = null; }
+    function close() { try { if (Travel.plotting) Travel.cancel(); } catch { /* noop */ } root?.remove(); root = null; }
     function toggle() { isOpen() ? close() : open(); }
 
     // ---- event wiring (delegated) -----------------------------------------
@@ -830,6 +1042,11 @@ const WayfarerPanel = (() => {
                 case "haul": await foragerHaul(); break;
                 case "camp": await makeCamp(); break;
                 case "set-party": await Canvasry.setPartyToken(); break;
+                case "plan-route": Travel.startPlot(); break;
+                case "travel-pace": await Travel.setPace(btn.dataset.pace); break;
+                case "travel-boat": Travel.setBoat(!Travel.boat); break;
+                case "travel-move": await Travel.confirmMove(); break;
+                case "travel-cancel": Travel.cancel(); break;
                 case "enter-site": await enterSite(); break;
             }
         } catch (e) { warn("panel action failed", action, e); }
@@ -965,6 +1182,36 @@ const WayfarerPanel = (() => {
                ${cls.river && cls.terrainKey !== "water" ? `<span class="cwf-pill"><i class="fa-solid fa-water"></i> River</span>` : ""}`
             : `<span class="cwf-pill cwf-muted">No hex tile under the active token</span>`;
 
+        // Guided course planner (GM). Idle → "Plan a route"; plotting → pace/boat
+        // + reachable-hex overlay + route summary + Move party.
+        let travelSection = "";
+        if (isGM) {
+            if (!Travel.plotting) {
+                travelSection = `<div class="cwf-section"><button class="cwf-btn cwf-primary cwf-plan" data-action="plan-route"><i class="fa-solid fa-route"></i> Plan a route</button></div>`;
+            } else {
+                const gov = Travel.governing();
+                const n = Travel.route.length;
+                const tpace = Domain.PACE_ORDER.map(k => {
+                    const off = (k === "fast" && gov && Domain.fastProhibited(gov));
+                    return `<button class="cwf-seg ${Travel.pace === k ? "on" : ""}" data-action="travel-pace" data-pace="${k}" ${off ? "disabled" : ""} title="${Domain.PACE[k].note}">${Domain.PACE[k].label}</button>`;
+                }).join("");
+                const summary = n
+                    ? `<div class="cwf-route">${gov ? `<span class="cwf-pill" data-tier="${Domain.tier(gov)}"><i class="fa-solid ${gov.icon}"></i> ${gov.label} · DC ${gov.dc ?? "?"}</span>` : ""}<span class="cwf-pill cwf-muted">${n} hex${n === 1 ? "" : "es"}${gov && Domain.fastProhibited(gov) ? " · No Fast" : ""}</span></div>`
+                    : `<div class="cwf-muted2">Click a glowing hex to set your destination.</div>`;
+                travelSection = `
+                <div class="cwf-section cwf-travel">
+                    <div class="cwf-label">Plot course <span class="cwf-muted2">reachable hexes are glowing</span></div>
+                    <div class="cwf-seg-row">${tpace}</div>
+                    <div class="cwf-toggles"><button class="cwf-toggle ${Travel.boat ? "on" : ""}" data-action="travel-boat" title="Boat on a river / cart on a road doubles your reach"><i class="fa-solid fa-sailboat"></i> Boat / Cart ×2</button></div>
+                    ${summary}
+                    <div class="cwf-actions">
+                        <button class="cwf-btn" data-action="travel-cancel"><i class="fa-solid fa-xmark"></i> Cancel</button>
+                        <button class="cwf-btn cwf-primary" data-action="travel-move" ${n ? "" : "disabled"}><i class="fa-solid fa-shoe-prints"></i> Move party</button>
+                    </div>
+                </div>`;
+            }
+        }
+
         const paceBtns = Domain.PACE_ORDER.map(k => {
             const p = Domain.PACE[k];
             const off = (k === "fast" && Domain.fastProhibited(cls));
@@ -1015,6 +1262,7 @@ const WayfarerPanel = (() => {
                     <div class="cwf-label">Current hex ${isGM ? `<button class="cwf-mini cwf-inline" data-action="set-party" title="Set the selected token as the party marker (the HUD then follows it)"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}</div>
                     <div class="cwf-here">${here}</div>
                 </div>
+                ${travelSection}
 
                 <div class="cwf-section">
                     <div class="cwf-label">Weather <span class="cwf-wx-note">${w.note}</span></div>
@@ -1117,7 +1365,8 @@ Hooks.once("ready", () => {
         toggle: () => WayfarerPanel.toggle(),
         setPartyToken: (t) => Canvasry.setPartyToken(t),
         debugBadge: () => BiomeBadge.diagnose(),
-        Domain, Store, Canvasry, Augur, HexData, _installed: true
+        planRoute: () => Travel.startPlot(),
+        Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, _installed: true
     };
     HexData.load().then(() => BiomeBadge.update());  // baumgart fallback index (hexlands)
     registerWayfarerToolbar();                        // Augur Tools group (preferred)
@@ -1138,8 +1387,8 @@ Hooks.on("updateToken", (doc, change = {}) => {
         WayfarerPanel.render();
     }
 });
-Hooks.on("canvasPan", () => BiomeBadge.reposition());
-Hooks.on("canvasTearDown", () => BiomeBadge.destroy());
+Hooks.on("canvasPan", () => { BiomeBadge.reposition(); if (Travel.plotting) CourseOverlay.draw(Travel.reach, Travel.route); });
+Hooks.on("canvasTearDown", () => { try { Travel.cancel(); } catch { /* noop */ } BiomeBadge.destroy(); });
 
 // Re-render open UI when scene travel-state changes (weather/day/pace/etc).
 Hooks.on("updateScene", (scene, changes) => {
