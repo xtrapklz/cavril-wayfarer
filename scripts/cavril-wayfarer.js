@@ -195,11 +195,46 @@ const Domain = (() => {
         return veg === "high" ? (d ? `${d} · forest` : "forest") : d;
     }
 
-    // rec = { biome, elevation, vegetation } — any field may be missing.
+    // Infer biome/elevation/vegetation from a hexlands-style filename — fills gaps
+    // for tiles missing from baumgart.json (hexOcean, hexScrublands, hexTainted_01-04)
+    // or painted with elevation/vegetation = "manual". First match wins.
+    const NAME_ELEV = [
+        [/(ocean|lake|\bsea\b|lagoon|\bwater\b)/i, "water"],
+        [/(swamp|marsh|bog|wetland|mire|\bfen\b)/i, "swamp"],
+        [/(mountain|volcano|mesa|peak)/i, "high"],
+        [/(hill|highland)/i, "medium"]
+    ];
+    const NAME_BIOME = [
+        [/void/i, "void"], [/(lava|volcano|fumarole)/i, "volcanic"], [/tainted/i, "tainted"],
+        [/(snow|frozen|\bice\b|berg|glacier)/i, "frozen"], [/tundra/i, "tundra"],
+        [/(jungle|tropical|\bbog\b|wetland)/i, "jungle"], [/(desert|dune|\bsand\b|mesa)/i, "desert"],
+        [/(ash|burned|wasteland)/i, "wasteland"], [/(scrub|savanna|grassy)/i, "savanna"],
+        [/(pine|boreal|cold)/i, "boreal"], [/(forest|broadleaf|wood|plain|marsh|lake|ocean)/i, "temperate"]
+    ];
+    function inferFromName(name) {
+        const s = String(name || ""); const out = {};
+        for (const [re, v] of NAME_ELEV) if (re.test(s)) { out.elevation = v; break; }
+        for (const [re, v] of NAME_BIOME) if (re.test(s)) { out.biome = v; break; }
+        if (/(forest|broadleaf|jungle|pine)/i.test(s)) out.vegetation = "high";
+        return out;
+    }
+
+    // rec = { biome, elevation, vegetation, name } — any field may be missing/"manual".
     function classifyHexlands(rec = {}) {
-        const biome = String(rec.biome || "unknown").toLowerCase();
-        const elev = String(rec.elevation || "flat").toLowerCase();
-        const veg = String(rec.vegetation || "none").toLowerCase();
+        let biome = String(rec.biome || "").toLowerCase();
+        let elev = String(rec.elevation || "").toLowerCase();
+        let veg = String(rec.vegetation || "").toLowerCase();
+        const needElev = !ELEV[elev] || elev === "manual";
+        const needBiome = !biome || biome === "unknown" || biome === "manual";
+        if (needElev || needBiome || !veg || veg === "manual") {
+            const inf = inferFromName(rec.name);
+            if (needElev && inf.elevation) elev = inf.elevation;
+            if (needBiome && inf.biome) biome = inf.biome;
+            if ((!veg || veg === "manual") && inf.vegetation) veg = inf.vegetation;
+        }
+        biome = (biome && biome !== "manual") ? biome : "unknown";
+        elev = ELEV[elev] ? elev : "flat";
+        veg = (veg && veg !== "manual") ? veg : "none";
         const B = BIOME[biome] || BIOME.unknown;
         const E = ELEV[elev] || ELEV.flat;
         const wrap = (out) => ({
@@ -474,15 +509,20 @@ const Canvasry = (() => {
         return out.sort((a, b) => b.sort - a.sort); // top tile first
     }
 
-    // Most authoritative {biome,elevation,vegetation} for a tile: flags → baumgart index.
+    // Most authoritative {biome,elevation,vegetation,name} for a tile: flags →
+    // baumgart index → (hexlands tile w/o tags) filename inference. Returns null
+    // for non-hexlands tiles so they fall through to the Primus keyword parser.
     function recordFor(hit) {
+        const src = hit?.src || "";
+        const name = String(src).split(/[\\/]/).pop();
         const hx = hit?.hx;
         if (hx && (hx.biome || hx.elevation)) {
-            return { biome: hx.biome, elevation: hx.elevation, vegetation: hx.vegetation };
+            return { biome: hx.biome, elevation: hx.elevation, vegetation: hx.vegetation, name };
         }
-        const rec = HexData.get(hit?.src);
-        if (rec) return { biome: rec.biomes?.[0], elevation: rec.elevations?.[0], vegetation: rec.vegetation?.[0] };
-        return null;
+        const rec = HexData.get(src);
+        if (rec) return { biome: rec.biomes?.[0], elevation: rec.elevations?.[0], vegetation: rec.vegetation?.[0], name };
+        if (hx || /modules\/hexlands\//i.test(src)) return { name }; // hexlands tile, no tags → infer from name
+        return null;                                                  // non-hexlands → keyword classifier
     }
 
     function biomeForToken(token) {
