@@ -6,10 +6,10 @@ Travel & Exploration Guide* without taking the dice out of your hands.
 
 ## What it does
 
-- **Knows the biome under the party.** Each hex on your map is a Foundry **Tile** whose
-  texture filename encodes its biome (`Hex_Forest 2.png`, `Hex_Hills_Snowy 3.png`,
-  `Hex_Damp_Forest 1.png`, `Hex_Road (N-S).png`, …). Wayfarer reads every biome tile
-  under the active token's centre and classifies the hex.
+- **Knows the biome under the party.** For **Augur: Hexlands** maps it reads each hex
+  Tile's `flags.hexlands` (biome / elevation / vegetation) directly; for other packs it
+  falls back to `baumgart.json` tags, then to filename keywords (Primus `Hex_*`). It
+  classifies whichever hex the active token's centre sits on.
 - **Floating badge** above the active token: biome · travel DC · movement restriction ·
   current weather. It follows the token and re-classifies as it crosses into a new hex.
 - **Travel panel** (toolbar button under Token Controls, or `window.CavrilWayfarer.toggle()`):
@@ -26,26 +26,47 @@ Travel & Exploration Guide* without taking the dice out of your hands.
 
 ## Biome classification
 
-Rule: **most severe terrain keyword wins**, so a `Hex_Hills_Snowy` hex is Tundra (DC 17),
-not Hills (DC 13). Roads and rivers are *features* layered on top.
+Three sources, most authoritative first:
 
-| Tile keywords | Rules biome | Base DC | Restriction |
+1. **Augur: Hexlands tile flags** (primary). Hexlands stamps every terrain tile with
+   `flags.hexlands = { biome, elevation, vegetation, gridI, gridJ }`. Wayfarer reads those
+   directly — no guessing. River/coast feature tiles (`type:"river"`/`"coast"`) are detected
+   separately.
+2. **`baumgart.json` index** — for hexlands art dragged in manually (no flags).
+3. **Filename keywords** — for non-hexlands packs (e.g. Primus `Hex_Forest 2.png`).
+
+For hexlands hexes, **travel DC = max(elevation base, biome climate floor, dense-forest
+bump)**. Elevation is the reliable signal; biome adds cold/wet/hazard severity; vegetation
+`high` marks forest. Generic art (hills, mountains) is tagged with its first biome, so
+elevation governs those (a temperate-looking `hexHills` stays DC 13, not 15).
+
+| Elevation | Terrain | Base DC | Restriction |
 |---|---|---|---|
-| `lush` `grass` `farm` `plain` `meadow` `field` | Plains | 10 | none |
-| `desert` `sand` `dune` | Desert | 10\* | none\* |
-| `coast` `beach` `shore` | Coast | 10 | none |
-| `forest` `wood` `woodland` `taiga` | Forest | 13 | none |
-| `hill` `hills` `highland` | Hills | 13 | none |
-| `damp` `swamp` `bog` `marsh` `wetland` `jungle` | Swamp / Jungle | 15 | no Fast pace |
-| `rocky` `crag` `badland` `scree` | Rocky / Badland | 17 | no Fast pace |
-| `mountain` `peak` `alpine` | Mountains | 17 | no Fast pace |
-| `snowy` `snow` `tundra` `ice` `glacier` `frozen` | Snow / Tundra | 17 | no Fast pace |
-| `water` `ocean` `sea` `lake` `river` | Water | — | boat required |
-| `road` `path` `trail` `highway` *(feature)* | — | — | pace ×2 (infrastructure) |
-| `river` *(feature, over land)* | — | — | with boat, pace ×2 |
+| `flat` | Lowland / plains | 10 | none |
+| `medium` | Hills | 13 | none |
+| `swamp` | Wetland | 15 | no Fast |
+| `high` | Highland / mountains | 17 | no Fast |
+| `water` | Ocean / lake | — | boat required |
 
-\* Desert isn't in the base rules table; the **Desert difficulty** setting lets you pick
-DC 10 / 13 / 17 (the DC-17 option also forbids Fast pace).
+| Biome | Climate effect on DC |
+|---|---|
+| `temperate` `savanna` `boreal` | none (elevation + forest only) |
+| `desert` | floor = **Desert difficulty** setting (10 / 13 / 17) |
+| `wasteland` | floor 13 on flat ground |
+| `jungle` | floor 15 (no Fast) on flat/wetland hexes |
+| `tainted` | floor 15 (no Fast) |
+| `tundra` `frozen` | floor 17 (no Fast) |
+| `volcanic` | floor 17 (no Fast); lava (water) = **impassable** |
+| `void` | **impassable** |
+
+Vegetation `high` raises any sub-13 hex to **DC 13** (forest). Examples from your tileset:
+`hexPlains`→10, `hexForestBroadleaf`→13, `hexHills`→13, `hexJungle`/`hexMarsh`/`hexWetlands`→15,
+`hexMountain`/`hexMountainSnow`/`hexSnowField`/`hexVolcanoActive`→17, `hexLake`/`hexOcean`→boat,
+`hexLava`/`hexVoid`→impassable.
+
+The **Primus `Hex_*` fallback** keeps the old keyword rule (most-severe terrain wins:
+`lush`/`farm`/`road`→10, `forest`/`hills`→13, `damp`→15, `rocky`/`snowy`/`mountain`→17,
+`river`/`ocean`→water, `road`→pace ×2).
 
 ## Weather (1d10 at dawn)
 

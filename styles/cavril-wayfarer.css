@@ -47,6 +47,8 @@
 .cwf-badge .cwf-dc { font-weight: 700; color: #fff; }
 .cwf-badge .cwf-sub { font-size: 10px; margin-top: 2px; color: var(--cwf-muted); gap: 6px; }
 .cwf-badge .cwf-restr { color: var(--cwf-hard); font-weight: 600; }
+.cwf-badge .cwf-detail { color: var(--cwf-muted); text-transform: capitalize; }
+.cwf-here em { font-style: normal; color: var(--cwf-muted); text-transform: capitalize; font-size: 11px; }
 .cwf-badge .cwf-weather { display: inline-flex; align-items: center; gap: 3px; color: var(--cwf-wx, var(--cwf-muted)); }
 
 /* ---------- Travel panel ---------- */

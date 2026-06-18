@@ -159,10 +159,91 @@ const Domain = (() => {
         };
     }
 
+    // ---- Hexlands biome model (authoritative) ------------------------------
+    // Augur: Hexlands stamps every terrain tile with flags.hexlands =
+    //   { type:"terrain", biome, elevation, vegetation, gridI, gridJ }.
+    // We read those directly. Travel DC = MAX(elevation base, biome climate
+    // floor, dense-forest bump). Elevation is the reliable signal; biome adds
+    // cold/wet/hazard severity; vegetation "high" marks forest. Generic
+    // multi-biome art (hills, mountains) is tagged with its FIRST baumgart biome
+    // (e.g. "jungle"), so we let elevation drive those and only apply a biome
+    // floor where it makes sense (e.g. jungle only bumps flat/wetland hexes).
+    const ELEV = {
+        water:  { dc: null, restriction: "water",  label: "water" },
+        swamp:  { dc: 15,   restriction: "noFast", label: "wetland" },
+        high:   { dc: 17,   restriction: "noFast", label: "highland" },
+        medium: { dc: 13,   restriction: "none",   label: "hills" },
+        flat:   { dc: 10,   restriction: "none",   label: "lowland" }
+    };
+    const BIOME = {
+        temperate: { label: "Temperate", icon: "fa-tree",           floor: 0 },
+        savanna:   { label: "Savanna",   icon: "fa-wheat-awn",      floor: 0 },
+        boreal:    { label: "Boreal",    icon: "fa-tree",           floor: 0 },
+        desert:    { label: "Desert",    icon: "fa-sun-plant-wilt", floor: "desert" },
+        wasteland: { label: "Wasteland", icon: "fa-skull",          floor: 13, floorAt: ["flat"] },
+        jungle:    { label: "Jungle",    icon: "fa-leaf",           floor: 15, floorAt: ["flat", "swamp"], restriction: "noFast" },
+        tainted:   { label: "Tainted",   icon: "fa-radiation",      floor: 15, restriction: "noFast" },
+        tundra:    { label: "Tundra",    icon: "fa-snowflake",      floor: 17, restriction: "noFast" },
+        frozen:    { label: "Frozen",    icon: "fa-snowflake",      floor: 17, restriction: "noFast" },
+        volcanic:  { label: "Volcanic",  icon: "fa-volcano",        floor: 17, restriction: "noFast", hazard: true },
+        void:      { label: "Void",      icon: "fa-circle-dot",     block: true },
+        unknown:   { label: "Wilderness", icon: "fa-mountain-sun",  floor: 0 }
+    };
+
+    function elevDetail(elev, veg) {
+        const d = ELEV[elev]?.label || elev || "";
+        return veg === "high" ? (d ? `${d} · forest` : "forest") : d;
+    }
+
+    // rec = { biome, elevation, vegetation } — any field may be missing.
+    function classifyHexlands(rec = {}) {
+        const biome = String(rec.biome || "unknown").toLowerCase();
+        const elev = String(rec.elevation || "flat").toLowerCase();
+        const veg = String(rec.vegetation || "none").toLowerCase();
+        const B = BIOME[biome] || BIOME.unknown;
+        const E = ELEV[elev] || ELEV.flat;
+        const wrap = (out) => ({
+            known: true, source: "hexlands", biome, elevation: elev, vegetation: veg,
+            infrastructure: false, river: false, water: false, hazard: !!B.hazard,
+            keywords: [biome, elev, veg], detail: elevDetail(elev, veg), ...out
+        });
+
+        // Impassable: the Void, or lava (volcanic at open-water elevation).
+        if (B.block || (biome === "volcanic" && elev === "water")) {
+            return wrap({ terrainKey: "impassable", label: B.label, dc: null, restriction: "block", icon: B.icon });
+        }
+        // Open water (ocean / lake / flooded) → boat required.
+        if (elev === "water") {
+            return wrap({ terrainKey: "water", label: "Water", dc: null, restriction: "water", icon: "fa-water", water: true });
+        }
+
+        let dc = E.dc ?? 10;
+        let restriction = E.restriction;
+
+        // Biome climate floor (conditioned to certain elevations where set).
+        let floor = B.floor;
+        if (floor === "desert") floor = Store.desertDC();
+        if (typeof floor === "number" && floor > dc) {
+            const applies = !B.floorAt || B.floorAt.includes(elev);
+            if (applies) { dc = floor; if (B.restriction) restriction = B.restriction; }
+        }
+        // Dense forest / canopy slows travel.
+        if (veg === "high" && dc < 13) dc = 13;
+        if (dc >= 15 && restriction === "none") restriction = "noFast";
+
+        // Icon: elevation wins for relief, else biome flavour.
+        let icon = B.icon;
+        if (elev === "high") icon = "fa-mountain";
+        else if (elev === "medium") icon = "fa-mound";
+
+        return wrap({ terrainKey: biome, label: B.label, dc, restriction, icon });
+    }
+
     // Colour/severity tier for the badge.
     function tier(cls) {
         if (!cls || !cls.known) return "unknown";
         if (cls.terrainKey === "water") return "water";
+        if (cls.terrainKey === "impassable") return "severe";
         const dc = cls.dc ?? 0;
         if (dc <= 10) return "easy";
         if (dc <= 13) return "moderate";
@@ -208,7 +289,8 @@ const Domain = (() => {
     }
 
     function fastProhibited(cls) {
-        return cls?.restriction === "noFast" || cls?.restriction === "water";
+        const r = cls?.restriction;
+        return r === "noFast" || r === "water" || r === "block";
     }
 
     // ---- Travel roles (reference only — we never auto-roll) -----------------
@@ -232,8 +314,8 @@ const Domain = (() => {
     }
 
     return {
-        DEFAULT_TERRAIN, DEFAULT_FEATURES, WEATHER, WEATHER_ORDER, PACE, PACE_ORDER, ROLES,
-        terrainTable, isBiomeTile, keywordsFromSrc, classify, tier,
+        DEFAULT_TERRAIN, DEFAULT_FEATURES, BIOME, ELEV, WEATHER, WEATHER_ORDER, PACE, PACE_ORDER, ROLES,
+        terrainTable, isBiomeTile, keywordsFromSrc, classify, classifyHexlands, tier,
         rollWeatherKey, spaces, fastProhibited, rollState
     };
 })();
@@ -320,6 +402,46 @@ const Store = (() => {
 })();
 
 /* =========================================================================
+ * HEXDATA — fallback filename→{biomes,elevations,vegetation} index.
+ * Hexlands stamps its tiles with flags (our primary source); this index covers
+ * tiles dragged in manually (no flags) by reading the same baumgart.json the
+ * hexlands module ships. Loaded once, lazily; classification works off flags
+ * until it resolves.
+ * ========================================================================= */
+const HexData = (() => {
+    let map = null, loading = null;
+    const base = (src) => String(src || "").split(/[\\/]/).pop();
+    async function load() {
+        if (map) return map;
+        if (loading) return loading;
+        loading = (async () => {
+            const m = new Map();
+            try {
+                if (game.modules.get("hexlands")?.active) {
+                    const resp = await fetch("modules/hexlands/assets/hex_tiles/baumgart/baumgart.json");
+                    if (resp.ok) {
+                        for (const e of await resp.json()) {
+                            const rec = { biomes: e.biomes || [], elevations: e.elevations || [], vegetation: e.vegetation || [] };
+                            if (e.filename) m.set(e.filename, rec);
+                            if (e.path) m.set(e.path, rec);
+                        }
+                        log(`Loaded ${m.size} hexlands tile tags.`);
+                    }
+                }
+            } catch (e) { warn("baumgart index load failed", e); }
+            map = m;
+            return m;
+        })();
+        return loading;
+    }
+    return {
+        load,
+        has: (src) => !!map && (map.has(src) || map.has(base(src))),
+        get: (src) => (map ? (map.get(src) || map.get(base(src)) || null) : null)
+    };
+})();
+
+/* =========================================================================
  * CANVASRY — read tiles under the token; world→screen geometry
  * ========================================================================= */
 const Canvasry = (() => {
@@ -333,15 +455,34 @@ const Canvasry = (() => {
     function biomeTilesUnder(pt) {
         const out = [];
         for (const t of (canvas?.tiles?.placeables ?? [])) {
-            const src = t.document?.texture?.src;
-            if (!Domain.isBiomeTile(src)) continue;
+            const doc = t.document;
+            const src = doc?.texture?.src || "";
+            const hx = doc?.flags?.hexlands || null;
+            const isTerrain = hx?.type === "terrain";
+            const isFeature = hx?.type === "river" || hx?.type === "coast"
+                || /baumgart_(rivers|coasts)/i.test(src);
+            // Accept hexlands-tagged tiles, baumgart-indexed art, or Primus Hex_ tiles.
+            const isBiome = isTerrain || isFeature || Domain.isBiomeTile(src) || HexData.has(src);
+            if (!isBiome) continue;
             const b = t.bounds; // PIXI.Rectangle in world coords
             if (!b) continue;
             if (pt.x >= b.x && pt.x <= b.x + b.width && pt.y >= b.y && pt.y <= b.y + b.height) {
-                out.push({ tile: t, src, sort: t.document.sort ?? 0 });
+                out.push({ tile: t, src, hx, sort: doc.sort ?? 0,
+                    kind: isFeature ? "feature" : isTerrain ? "terrain" : "other" });
             }
         }
         return out.sort((a, b) => b.sort - a.sort); // top tile first
+    }
+
+    // Most authoritative {biome,elevation,vegetation} for a tile: flags → baumgart index.
+    function recordFor(hit) {
+        const hx = hit?.hx;
+        if (hx && (hx.biome || hx.elevation)) {
+            return { biome: hx.biome, elevation: hx.elevation, vegetation: hx.vegetation };
+        }
+        const rec = HexData.get(hit?.src);
+        if (rec) return { biome: rec.biomes?.[0], elevation: rec.elevations?.[0], vegetation: rec.vegetation?.[0] };
+        return null;
     }
 
     function biomeForToken(token) {
@@ -350,24 +491,52 @@ const Canvasry = (() => {
         if (!c) return null;
         const hits = biomeTilesUnder(c);
         if (!hits.length) return null;
-        // Hex PNGs have transparent corners, so a neighbouring hex's bounding box
-        // can also cover this token's centre. Anchor to the nearest-centre tile
-        // (the hex we're really standing on), then fold in only same-hex overlays
-        // (e.g. a separate road tile placed on the same hex), not neighbours.
-        const grid = canvas?.dimensions?.size || 100;
-        let anchor = hits[0], best = Infinity;
-        for (const h of hits) {
-            const tc = h.tile.center;
-            const d = Math.hypot(tc.x - c.x, tc.y - c.y);
-            if (d < best) { best = d; anchor = h; }
+
+        // River / coast feature tiles overlaid on this hex (separate documents).
+        const river = hits.some(h => h.kind === "feature" && (h.hx?.type === "river" || /baumgart_rivers/i.test(h.src)));
+        const coast = hits.some(h => h.kind === "feature" && (h.hx?.type === "coast" || /baumgart_coasts/i.test(h.src)));
+
+        // Choose the hex's terrain tile (ignore pure feature tiles for that).
+        const pool = hits.filter(h => h.kind !== "feature");
+        const anchorPool = pool.length ? pool : hits;
+
+        // Prefer the tile whose stored hex offset matches the token's (exact);
+        // hex PNGs have transparent corners so bounding boxes overlap neighbours.
+        // Fall back to nearest-centre.
+        let anchor = null;
+        try {
+            const off = canvas.grid?.getOffset?.(c);
+            if (off) anchor = anchorPool.find(h => h.hx && h.hx.gridI === off.i && h.hx.gridJ === off.j);
+        } catch (_e) { /* grid API varies across versions */ }
+        if (!anchor) {
+            let best = Infinity;
+            for (const h of anchorPool) {
+                const tc = h.tile.center;
+                const d = Math.hypot(tc.x - c.x, tc.y - c.y);
+                if (d < best) { best = d; anchor = h; }
+            }
         }
-        const ac = anchor.tile.center;
-        const sameHex = hits.filter(h => {
-            const tc = h.tile.center;
-            return Math.hypot(tc.x - ac.x, tc.y - ac.y) <= grid * 0.5;
-        });
-        const cls = Domain.classify(sameHex.map(h => h.src));
-        cls.signature = sameHex.map(h => h.src).sort().join("|");
+
+        // Classify from the hexlands record, else fall back to Primus filename
+        // keywords (folding in same-hex tiles for that legacy path).
+        const rec = recordFor(anchor);
+        let cls;
+        if (rec) {
+            cls = Domain.classifyHexlands(rec);
+        } else {
+            const grid = canvas?.dimensions?.size || 100;
+            const ac = anchor?.tile.center;
+            const sameHex = anchorPool.filter(h => {
+                const tc = h.tile.center;
+                return ac && Math.hypot(tc.x - ac.x, tc.y - ac.y) <= grid * 0.5;
+            });
+            cls = Domain.classify(sameHex.map(h => h.src));
+        }
+
+        // Overlay features onto the result.
+        if (river) cls.river = true;          // river → boat travels it at ×2
+        cls.coast = coast;
+        cls.signature = [anchor?.src, cls.dc, cls.restriction, river ? "r" : "", coast ? "c" : ""].join("|");
         return cls;
     }
 
@@ -456,10 +625,12 @@ const BiomeBadge = (() => {
     function html(cls, state) {
         const w = Domain.WEATHER[state.weather] || Domain.WEATHER.clear;
         const restr = cls.restriction === "noFast" ? `<span class="cwf-restr">No Fast Pace</span>`
-            : cls.restriction === "water" ? `<span class="cwf-restr">Boat required</span>` : "";
-        const dc = cls.dc != null ? `DC ${cls.dc}` : (cls.terrainKey === "water" ? "—" : "DC ?");
+            : cls.restriction === "water" ? `<span class="cwf-restr">Boat required</span>`
+            : cls.restriction === "block" ? `<span class="cwf-restr">Impassable</span>` : "";
+        const dc = cls.dc != null ? `DC ${cls.dc}` : "—";
         const infra = cls.infrastructure ? `<i class="fa-solid fa-road" title="Road — pace ×2"></i>` : "";
         const river = (cls.river && cls.terrainKey !== "water") ? `<i class="fa-solid fa-water" title="River — boat travels ×2"></i>` : "";
+        const detail = cls.detail ? `<span class="cwf-detail">${cls.detail}</span>` : "";
         return `
             <div class="cwf-badge-row cwf-main">
                 <i class="fa-solid ${cls.icon}"></i>
@@ -468,7 +639,7 @@ const BiomeBadge = (() => {
                 ${infra}${river}
             </div>
             <div class="cwf-badge-row cwf-sub">
-                ${restr}
+                ${detail}${restr}
                 <span class="cwf-weather" style="--cwf-wx:${w.color}"><i class="fa-solid ${w.icon}"></i>${w.label}</span>
             </div>`;
     }
@@ -693,9 +864,11 @@ const WayfarerPanel = (() => {
         const dis = isGM ? "" : "disabled";
 
         const here = cls
-            ? `<span class="cwf-pill" data-tier="${Domain.tier(cls)}"><i class="fa-solid ${cls.icon}"></i> ${cls.label} ${cls.dc != null ? `· DC ${cls.dc}` : ""}</span>
+            ? `<span class="cwf-pill" data-tier="${Domain.tier(cls)}"><i class="fa-solid ${cls.icon}"></i> ${cls.label}${cls.detail ? ` <em>${cls.detail}</em>` : ""} ${cls.dc != null ? `· DC ${cls.dc}` : ""}</span>
                ${cls.restriction === "noFast" ? `<span class="cwf-pill cwf-warn">No Fast Pace</span>` : ""}
-               ${cls.restriction === "water" ? `<span class="cwf-pill cwf-warn">Boat required</span>` : ""}`
+               ${cls.restriction === "water" ? `<span class="cwf-pill cwf-warn">Boat required</span>` : ""}
+               ${cls.restriction === "block" ? `<span class="cwf-pill cwf-warn">Impassable</span>` : ""}
+               ${cls.river && cls.terrainKey !== "water" ? `<span class="cwf-pill"><i class="fa-solid fa-water"></i> River</span>` : ""}`
             : `<span class="cwf-pill cwf-muted">No hex tile under the active token</span>`;
 
         const paceBtns = Domain.PACE_ORDER.map(k => {
@@ -804,8 +977,9 @@ Hooks.once("ready", () => {
         open: () => WayfarerPanel.open(),
         close: () => WayfarerPanel.close(),
         toggle: () => WayfarerPanel.toggle(),
-        Domain, Store, Canvasry, Augur, _installed: true
+        Domain, Store, Canvasry, Augur, HexData, _installed: true
     };
+    HexData.load().then(() => BiomeBadge.update());  // baumgart fallback index (hexlands)
     BiomeBadge.update();
     log("Ready. Toggle the HUD from the Token Controls toolbar or window.CavrilWayfarer.toggle().");
 });
