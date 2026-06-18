@@ -328,6 +328,14 @@ const Domain = (() => {
         return r === "noFast" || r === "water" || r === "block";
     }
 
+    // Hours of travel a single hex consumes. A full day of travel = 12h, so
+    // Slow(1)=12h, Normal(2)=6h, Fast(3)=4h per hex; Boat/Cart doubles distance
+    // per day, halving the time per hex.
+    function hoursPerHex(pace, boat) {
+        const spc = (PACE[pace]?.spaces ?? 2) * (boat ? 2 : 1);
+        return spc > 0 ? 12 / spc : 12;
+    }
+
     // ---- Travel roles (reference only — we never auto-roll) -----------------
     const ROLES = [
         { key: "navigate", name: "Navigator", skill: "Survival",            skillId: "sur", icon: "fa-compass",        blurb: "Keep course against the Biome DC." },
@@ -351,7 +359,7 @@ const Domain = (() => {
     return {
         DEFAULT_TERRAIN, DEFAULT_FEATURES, BIOME, ELEV, WEATHER, WEATHER_ORDER, PACE, PACE_ORDER, ROLES,
         terrainTable, isBiomeTile, keywordsFromSrc, classify, classifyHexlands, tier,
-        rollWeatherKey, spaces, fastProhibited, rollState
+        rollWeatherKey, spaces, fastProhibited, hoursPerHex, rollState
     };
 })();
 
@@ -428,8 +436,16 @@ const Store = (() => {
         return scene.setFlag(MOD, "state", { ...sceneState(scene), ...patch });
     }
 
+    // Advance Foundry's world clock (Mini Calendar reacts) by a number of hours.
+    async function advanceWorldTime(hours) {
+        if (!game.user.isGM || !Number.isFinite(hours) || hours <= 0) return;
+        const secs = Math.round(hours * 3600);
+        try { await game.time.advance(secs); }
+        catch { try { await game.time.advance({ second: secs }); } catch (e) { warn("world time advance failed", e); } }
+    }
+
     return {
-        register, customTerrain, partySize, pool, setPool, sceneState, setSceneState,
+        register, customTerrain, partySize, pool, setPool, sceneState, setSceneState, advanceWorldTime,
         rationsPer: () => Math.max(0, num(S.rationsPerMember, 1)),
         waterPer: () => Math.max(0, num(S.waterPerMember, 1)),
         autoWeather: () => !!game.settings.get(MOD, S.autoWeatherOnCamp),
@@ -638,6 +654,51 @@ const Canvasry = (() => {
     }
 
     return { screen, biomeTilesUnder, biomeForToken, biomeForPoint, activeToken, setPartyToken, augurSiteUnder };
+})();
+
+/* =========================================================================
+ * PARTY — resolve members & shared supplies from the party GROUP actor.
+ * The party token is expected to back a dnd5e "group" actor; its system.members
+ * are the claimable PCs and its own inventory is the shared party stash.
+ * Falls back to scene character tokens + assigned PCs if there's no group.
+ * ========================================================================= */
+const Party = (() => {
+    const RATION_RE = /ration/i;
+    const WATER_RE = /water[\s-]?skin/i;
+
+    function groupActor() {
+        const a = Canvasry.activeToken()?.actor;
+        return a?.type === "group" ? a : null;
+    }
+    function members() {
+        const g = groupActor();
+        if (g) {
+            const out = [];
+            try { for (const m of g.system.members) { const act = m.actor; if (act?.type === "character") out.push(act); } }
+            catch (e) { warn("group members read failed", e); }
+            if (out.length) return out;
+        }
+        const seen = new Set(), list = [];
+        for (const t of (canvas?.tokens?.placeables ?? [])) { const a = t.actor; if (a?.type === "character" && !seen.has(a.id)) { seen.add(a.id); list.push(a); } }
+        for (const u of (game.users ?? [])) { const a = u.character; if (a?.type === "character" && !seen.has(a.id)) { seen.add(a.id); list.push(a); } }
+        return list;
+    }
+    const size = () => Math.max(1, members().length);
+
+    function countItems(actor, re) {
+        let n = 0;
+        for (const it of (actor?.items ?? [])) if (re.test(it.name || "")) n += (it.system?.quantity ?? 1);
+        return n;
+    }
+    // Live totals summed across every member sheet + the group's shared inventory.
+    function supplies() {
+        let rations = 0, water = 0;
+        for (const a of members()) { rations += countItems(a, RATION_RE); water += countItems(a, WATER_RE); }
+        const g = groupActor();
+        if (g) { rations += countItems(g, RATION_RE); water += countItems(g, WATER_RE); }
+        return { rations, water };
+    }
+    return { groupActor, members, size, supplies, countItems, RATION_RE, WATER_RE };
 })();
 
 /* =========================================================================
@@ -972,6 +1033,7 @@ const Travel = (() => {
             catch (e) { warn("token move failed", e); break; }
             await new Promise(r => setTimeout(r, 160));
         }
+        await Store.advanceWorldTime(steps.length * Domain.hoursPerHex(pace, boat));
         dest = null; routeArr = []; reachMap = null;
         WayfarerPanel.render(); BiomeBadge.update();
     }
@@ -1083,7 +1145,7 @@ const ROLE_SKILLS = {
     forage:   ["nat", "sur", "med"]
 };
 const Turn = (() => {
-    let active = false, step = "active", route = [], governing = null;
+    let active = false, step = "active", route = [], governing = null, pace = "normal", boat = false;
     const newSlot = () => ({ actorId: null, actorName: null, skillId: null, total: null, nat: null, outcome: null, result: null });
     const roles = { navigate: newSlot(), scout: newSlot(), forage: newSlot() };
 
@@ -1093,6 +1155,7 @@ const Turn = (() => {
         active = true; step = "active";
         route = r.slice();
         governing = Travel.governing();
+        pace = Travel.pace || "normal"; boat = Travel.boat;
         for (const k of Object.keys(roles)) { roles[k] = newSlot(); roles[k].skillId = ROLE_SKILLS[k][0]; }
         Travel.cancel();                    // exit plotting state cleanly (also stops the overlay)
         CourseOverlay.draw(null, route);    // re-light the locked route during the check
@@ -1100,18 +1163,7 @@ const Turn = (() => {
         WayfarerPanel.render();
     }
 
-    function partyMembers() {
-        const seen = new Set(), list = [];
-        for (const t of (canvas?.tokens?.placeables ?? [])) {
-            const a = t.actor;
-            if (a && a.type === "character" && !seen.has(a.id)) { seen.add(a.id); list.push(a); }
-        }
-        for (const u of (game.users ?? [])) {
-            const a = u.character;
-            if (a && a.type === "character" && !seen.has(a.id)) { seen.add(a.id); list.push(a); }
-        }
-        return list;
-    }
+    function partyMembers() { return Party.members(); }
 
     function claim(roleKey, actorId) {
         // A character holds only one role — release them elsewhere first.
@@ -1173,7 +1225,9 @@ const Turn = (() => {
             if (k === "forage" && (tier === "success" || tier === "crit")) await Store.setSceneState({ foraged: true });
         }
         await applyMovement(navEffect);
-        ChatMessage.create({ content: `<div class="cwf-chat"><b>🧭 Travel Turn — DC ${dc}${governing?.label ? ` (${governing.label})` : ""}</b><br>${lines.join("<br>") || "No roles were claimed."}</div>` });
+        const hrs = route.length * Domain.hoursPerHex(pace, boat);
+        await Store.advanceWorldTime(hrs);
+        ChatMessage.create({ content: `<div class="cwf-chat"><b>🧭 Travel Turn — DC ${dc}${governing?.label ? ` (${governing.label})` : ""}</b><br>${lines.join("<br>") || "No roles were claimed."}<br><span style="opacity:.7">⏱ ${hrs} hours pass${navEffect === "dead" ? " (lost — 0 hexes)" : ""}.</span></div>` });
         step = "resolved";
         WayfarerPanel.render(); BiomeBadge.update();
     }
@@ -1347,35 +1401,23 @@ const WayfarerPanel = (() => {
     async function makeCamp() {
         const scene = canvas.scene;
         const st = Store.sceneState(scene);
-        const size = Store.partySize();
-        const needR = size * Store.rationsPer();
-        const needW = size * Store.waterPer();
-        const p = Store.pool();
+        const size = Party.size();
+        const sup = Party.supplies();
         const lines = [];
 
+        // NOTE: sheet-level consumption (decrement ration/waterskin items from each
+        // member, then the group stash) lands next pass. For now Make Camp reports
+        // the day's need against the live pool and advances the rest.
         if (st.foraged) {
             lines.push(`The Forager fed the party — no rations or waterskins consumed.`);
         } else {
-            const tookR = Math.min(needR, p.rations);
-            const tookW = Math.min(needW, p.water);
-            await Store.setPool({ rations: Math.max(0, p.rations - needR), water: Math.max(0, p.water - needW) });
-            lines.push(`Consumed ${tookR}🍖 / ${tookW}💧 for ${size} member${size === 1 ? "" : "s"}.`);
-            if (p.rations < needR || p.water < needW) {
-                lines.push(`⚠ Supplies ran short (needed ${needR}🍖 / ${needW}💧). The party suffers the consequences of going without.`);
-            }
+            lines.push(`The party would consume ${size}🍖 / ${size}💧 (pool: ${sup.rations}🍖 / ${sup.water}💧).`);
+            if (sup.rations < size || sup.water < size) lines.push(`⚠ Supplies are short of a full day's need.`);
         }
 
         const nextDay = (st.day || 1) + 1;
-        let weather = st.weather;
-        if (Store.autoWeather()) {
-            weather = Domain.rollWeatherKey();
-            const w = Domain.WEATHER[weather];
-            lines.push(`Dawn of Day ${nextDay}: <b>${w.label}</b>. ${w.note}`);
-        } else {
-            lines.push(`Dawn of Day ${nextDay}.`);
-        }
-
-        await Store.setSceneState({ day: nextDay, weather, foraged: false, shortRest: false }, scene);
+        lines.push(`Camp struck — Day ${nextDay} dawns.`);
+        await Store.setSceneState({ day: nextDay, foraged: false, shortRest: false }, scene);
         ChatMessage.create({ content: `<div class="cwf-chat"><b>🏕️ Make Camp — Long Rest</b><br>${lines.join("<br>")}</div>` });
     }
 
@@ -1467,8 +1509,8 @@ const WayfarerPanel = (() => {
         const st = Store.sceneState();
         const tok = Canvasry.activeToken();
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
-        const pool = Store.pool();
-        const size = Store.partySize();
+        const sup = Party.supplies();
+        const size = Party.size();
         const w = Domain.WEATHER[st.weather] || Domain.WEATHER.clear;
         const site = Canvasry.augurSiteUnder(tok);
         const dis = isGM ? "" : "disabled";
@@ -1566,9 +1608,7 @@ const WayfarerPanel = (() => {
 
                 <div class="cwf-section">
                     <div class="cwf-label">Weather <span class="cwf-wx-note">${w.note}</span></div>
-                    <div class="cwf-wx-row">${weatherBtns}
-                        <button class="cwf-wx-roll" data-action="roll-weather" ${dis} title="Roll weather"><i class="fa-solid fa-dice"></i></button>
-                    </div>
+                    <div class="cwf-wx-readonly"><span class="cwf-weather" style="--cwf-wx:${w.color}"><i class="fa-solid ${w.icon}"></i> ${w.label}</span> <span class="cwf-muted2">set by Mini Calendar</span></div>
                 </div>
 
                 <div class="cwf-section">
@@ -1586,10 +1626,9 @@ const WayfarerPanel = (() => {
                 </div>`}
 
                 <div class="cwf-section">
-                    <div class="cwf-label">Party supplies <span class="cwf-muted2">(${size} member${size === 1 ? "" : "s"} · ${Store.rationsPer()}🍖/${Store.waterPer()}💧 per camp)</span></div>
-                    ${stepper("Rations", "rations", pool.rations, "fa-drumstick-bite")}
-                    ${stepper("Waterskins", "water", pool.water, "fa-bottle-water")}
-                    ${stepper("Hit Dice", "hitDice", pool.hitDice, "fa-heart-pulse")}
+                    <div class="cwf-label">Party supplies <span class="cwf-muted2">(${size} member${size === 1 ? "" : "s"} · summed from sheets + group stash)</span></div>
+                    <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-drumstick-bite"></i> Rations</span><span class="cwf-step-v">${sup.rations}</span></div>
+                    <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-bottle-water"></i> Waterskins</span><span class="cwf-step-v">${sup.water}</span></div>
                 </div>
 
                 <div class="cwf-actions">
@@ -1602,7 +1641,14 @@ const WayfarerPanel = (() => {
             </div>`;
     }
 
-    return { open, close, toggle, render, isOpen };
+    // Hook-driven re-render that won't rebuild while the user is mid-interaction
+    // with a control (an innerHTML rebuild would close an open <select>/input).
+    function renderExternal() {
+        const a = document.activeElement;
+        if (root && a && root.contains(a) && (a.tagName === "SELECT" || a.tagName === "INPUT")) return;
+        render();
+    }
+    return { open, close, toggle, render, renderExternal, isOpen };
 })();
 
 /* =========================================================================
@@ -1676,8 +1722,8 @@ Hooks.once("ready", () => {
 });
 
 // Badge follows the token and re-classifies as it moves between hexes.
-Hooks.on("canvasReady", () => { BiomeBadge.update(); WayfarerPanel.render(); });
-Hooks.on("controlToken", () => { BiomeBadge.update(); WayfarerPanel.render(); });
+Hooks.on("canvasReady", () => { BiomeBadge.update(); WayfarerPanel.renderExternal(); });
+Hooks.on("controlToken", () => { BiomeBadge.update(); WayfarerPanel.renderExternal(); });
 // Only the followed token's refresh matters — skip the churn from every other token.
 Hooks.on("refreshToken", (token) => { if (token === Canvasry.activeToken()) BiomeBadge.update(); });
 // Committed position change (drag-drop, programmatic move, another client, calendar
@@ -1685,7 +1731,7 @@ Hooks.on("refreshToken", (token) => { if (token === Canvasry.activeToken()) Biom
 Hooks.on("updateToken", (doc, change = {}) => {
     if ("x" in change || "y" in change || foundry.utils.hasProperty(change, `flags.${MOD}`)) {
         BiomeBadge.update();
-        WayfarerPanel.render();
+        WayfarerPanel.renderExternal();
     }
 });
 Hooks.on("canvasPan", () => { BiomeBadge.reposition(); if (Travel.plotting) CourseOverlay.draw(Travel.reach, Travel.route); });
@@ -1693,11 +1739,14 @@ Hooks.on("canvasTearDown", () => { try { Travel.cancel(); } catch { /* noop */ }
 
 // Re-render open UI when scene travel-state changes (weather/day/pace/etc).
 Hooks.on("updateScene", (scene, changes) => {
-    if (foundry.utils.hasProperty(changes, `flags.${MOD}`)) { WayfarerPanel.render(); BiomeBadge.update(); }
+    if (foundry.utils.hasProperty(changes, `flags.${MOD}`)) { WayfarerPanel.renderExternal(); BiomeBadge.update(); }
 });
 Hooks.on("updateSetting", (setting) => {
-    if (setting?.key?.startsWith?.(`${MOD}.`)) { WayfarerPanel.render(); BiomeBadge.update(); }
+    // tableIds churns when starter tables are created mid-turn — not display-relevant.
+    if (setting?.key?.startsWith?.(`${MOD}.`) && setting.key !== `${MOD}.tableIds`) { WayfarerPanel.renderExternal(); BiomeBadge.update(); }
 });
+// Party supplies are summed from sheets — refresh the panel when an item changes.
+for (const h of ["createItem", "updateItem", "deleteItem"]) Hooks.on(h, () => WayfarerPanel.renderExternal());
 
 // Fallback toolbar button in the Token Controls group, only when Augur: Nexus is
 // absent (otherwise the Augur Tools group above carries it). Handles the V12

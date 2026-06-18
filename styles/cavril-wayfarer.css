@@ -125,6 +125,7 @@
 .cwf-wx.on { color: var(--cwf-wx); border-color: var(--cwf-wx); background: color-mix(in srgb, var(--cwf-wx) 16%, transparent); box-shadow: 0 0 0 1px var(--cwf-wx) inset; }
 .cwf-wx-roll { width: 32px; height: 30px; border-radius: 8px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-accent); cursor: pointer; }
 .cwf-wx-roll:hover { background: rgba(123,220,255,.12); }
+.cwf-wx-readonly { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
 
 /* pace + toggles */
 .cwf-seg-row { display: flex; gap: 4px; }
