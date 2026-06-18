@@ -2,17 +2,22 @@
    Dark, glanceable, chip/pill aesthetic to match the cavril-* ecosystem. */
 
 :root {
-    --cwf-bg: rgba(18, 20, 26, 0.94);
-    --cwf-bg2: rgba(30, 34, 44, 0.96);
-    --cwf-line: rgba(255, 255, 255, 0.10);
-    --cwf-text: #e7ecf3;
-    --cwf-muted: #9aa4b2;
-    --cwf-accent: #7bdcff;
-    --cwf-easy: #5fd08a;
-    --cwf-moderate: #ffd76b;
-    --cwf-hard: #ff9d52;
+    /* Palette matched to the DDB Roll Cards module (dark card, purple skill,
+       coral labels, gold accents). */
+    --cwf-bg: #17181c;
+    --cwf-bg2: #1e2025;
+    --cwf-line: rgba(255, 255, 255, 0.16);
+    --cwf-text: #f4f4f4;
+    --cwf-dim: #cfcfcf;
+    --cwf-muted: #9a9a9a;
+    --cwf-accent: #bda9e8;   /* DDB skill purple */
+    --cwf-coral: #e0824d;    /* DDB label coral */
+    --cwf-gold: #ffd34d;
+    --cwf-easy: #6bd08a;
+    --cwf-moderate: #ffd34d;
+    --cwf-hard: #e0824d;
     --cwf-severe: #ff6b6b;
-    --cwf-water: #5db4ff;
+    --cwf-water: #8fb8ff;
     --cwf-unknown: #8a8f99;
 }
 
@@ -68,22 +73,22 @@
 }
 .cwf-head {
     display: flex; align-items: center; gap: 7px;
-    padding: 8px 10px;
-    background: linear-gradient(180deg, rgba(123, 220, 255, 0.14), rgba(123, 220, 255, 0.02));
-    border-bottom: 1px solid var(--cwf-line);
+    padding: 6px 10px;
+    background: linear-gradient(90deg, #222226, #34343a);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.45);
     cursor: grab;
     user-select: none;
 }
 .cwf-head:active { cursor: grabbing; }
 .cwf-head > i { color: var(--cwf-accent); }
-.cwf-title { font-weight: 700; flex: 0 0 auto; }
-.cwf-day { margin-left: auto; font-weight: 600; color: var(--cwf-accent); background: rgba(123,220,255,.12); padding: 1px 8px; border-radius: 10px; }
+.cwf-title { font-weight: 700; flex: 0 0 auto; letter-spacing: .04em; }
+.cwf-day { margin-left: auto; font-weight: 600; color: var(--cwf-accent); background: rgba(189,169,232,.12); padding: 1px 8px; border-radius: 10px; }
 .cwf-icon { background: none; border: none; color: var(--cwf-muted); cursor: pointer; width: 22px; height: 22px; border-radius: 6px; }
 .cwf-icon:hover { color: #fff; background: rgba(255,255,255,.08); }
 
 .cwf-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 10px; }
 .cwf-section { display: flex; flex-direction: column; gap: 5px; }
-.cwf-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--cwf-muted); font-weight: 700; }
+.cwf-label { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--cwf-coral); font-weight: 700; }
 .cwf-muted2 { text-transform: none; letter-spacing: 0; color: var(--cwf-muted); font-weight: 400; }
 
 /* current hex pills */
@@ -100,11 +105,11 @@
 
 /* travel / course planner */
 .cwf-plan { width: 100%; }
-.cwf-travel { border: 1px solid var(--cwf-accent); border-radius: 10px; padding: 8px; background: rgba(123,220,255,.05); }
+.cwf-travel { border: 1px solid var(--cwf-accent); border-radius: 10px; padding: 8px; background: rgba(189,169,232,.05); }
 .cwf-route { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 2px; }
 
 /* active travel turn */
-.cwf-turn { border: 1px solid var(--cwf-accent); border-radius: 10px; padding: 8px; background: rgba(123,220,255,.06); }
+.cwf-turn { border: 1px solid var(--cwf-accent); border-radius: 10px; padding: 8px; background: rgba(189,169,232,.06); }
 .cwf-turn .cwf-role.claimed { border-color: var(--cwf-accent); }
 .cwf-claim { display: flex; gap: 5px; margin-top: 5px; }
 .cwf-sel { flex: 1; min-width: 0; height: 26px; border-radius: 6px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-text); font-size: 11px; }
@@ -124,7 +129,7 @@
 .cwf-wx:hover { color: #fff; }
 .cwf-wx.on { color: var(--cwf-wx); border-color: var(--cwf-wx); background: color-mix(in srgb, var(--cwf-wx) 16%, transparent); box-shadow: 0 0 0 1px var(--cwf-wx) inset; }
 .cwf-wx-roll { width: 32px; height: 30px; border-radius: 8px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-accent); cursor: pointer; }
-.cwf-wx-roll:hover { background: rgba(123,220,255,.12); }
+.cwf-wx-roll:hover { background: rgba(189,169,232,.12); }
 .cwf-wx-readonly { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
 
 /* pace + toggles */
@@ -149,8 +154,8 @@
 .cwf-dis { margin-left: auto; color: #fff; background: var(--cwf-severe); border-radius: 6px; padding: 0 6px; font-size: 9px; font-weight: 800; }
 .cwf-role-b { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: var(--cwf-muted); }
 .cwf-vs { color: var(--cwf-text); font-weight: 600; }
-.cwf-mini { margin-left: auto; width: 26px; height: 22px; border-radius: 6px; border: 1px solid var(--cwf-line); background: rgba(123,220,255,.1); color: var(--cwf-accent); cursor: pointer; }
-.cwf-mini:hover { background: rgba(123,220,255,.22); }
+.cwf-mini { margin-left: auto; width: 26px; height: 22px; border-radius: 6px; border: 1px solid var(--cwf-line); background: rgba(189,169,232,.1); color: var(--cwf-accent); cursor: pointer; }
+.cwf-mini:hover { background: rgba(189,169,232,.22); }
 .cwf-mini.cwf-inline { width: 22px; height: 18px; vertical-align: middle; margin-left: 6px; }
 
 /* supplies */
@@ -159,7 +164,7 @@
 .cwf-supply-l i { color: var(--cwf-accent); width: 14px; text-align: center; }
 .cwf-step { display: inline-flex; align-items: center; gap: 0; border: 1px solid var(--cwf-line); border-radius: 8px; overflow: hidden; }
 .cwf-step-b { width: 26px; height: 24px; border: none; background: var(--cwf-bg2); color: var(--cwf-text); cursor: pointer; font-size: 14px; font-weight: 700; }
-.cwf-step-b:hover:not(:disabled) { background: rgba(123,220,255,.16); }
+.cwf-step-b:hover:not(:disabled) { background: rgba(189,169,232,.16); }
 .cwf-step-b:disabled { opacity: .4; cursor: default; }
 .cwf-step-v { min-width: 32px; text-align: center; font-weight: 700; }
 

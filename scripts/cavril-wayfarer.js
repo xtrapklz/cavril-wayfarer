@@ -1426,6 +1426,10 @@ const WayfarerPanel = (() => {
     async function onClick(ev) {
         const btn = ev.target.closest?.("[data-action]");
         if (!btn) return;
+        // <select>/<input> are driven by the 'change' handler. A click on one (e.g.
+        // opening a dropdown) must NOT continue to the trailing render() below, which
+        // would rebuild the panel and snap the dropdown shut before you can pick.
+        if (ev.target.tagName === "SELECT" || ev.target.tagName === "INPUT" || ev.target.tagName === "OPTION") return;
         const action = btn.dataset.action;
         const isGM = game.user.isGM;
         try {
