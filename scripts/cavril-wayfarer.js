@@ -1343,8 +1343,23 @@ const Turn = (() => {
         WayfarerPanel.render(); BiomeBadge.update();
     }
 
+    // A roll arrived from D&D Beyond (via ddb-roll-cards' hook). Fill the claimed
+    // role for that actor (a character holds one role), matched by skill when known.
+    function ingestRoll({ actorId, skillId, total, nat } = {}) {
+        if (!active || step === "resolved" || total == null || !actorId) return;
+        const entry = Object.entries(roles).find(([, v]) => v.actorId === actorId);
+        if (!entry) return;
+        const [key, s] = entry;
+        // Don't overwrite an existing total with a roll of a different skill than assigned.
+        if (s.total != null && skillId && s.skillId && skillId !== s.skillId) return;
+        s.total = Number(total);
+        s.nat = Number.isFinite(nat) ? nat : null;
+        ui.notifications?.info(`${TITLE}: ${ROLE_LABEL[key]} (${s.actorName}) rolled ${total} on D&D Beyond.`);
+        WayfarerPanel.renderExternal();
+    }
+
     return {
-        begin, claim, setSkill, roll, enter, resolve, end, partyMembers, outcomeFor, rollState,
+        begin, claim, setSkill, roll, enter, resolve, end, ingestRoll, partyMembers, outcomeFor, rollState,
         claimedRoles, allRolled,
         get active() { return active; }, get step() { return step; }, get roles() { return roles; },
         get governing() { return governing; }, get route() { return route; }
@@ -1804,6 +1819,8 @@ Hooks.once("ready", () => {
 Hooks.on("canvasReady", () => { BiomeBadge.update(); WayfarerPanel.renderExternal(); MiniCal.refresh(); });
 // Mini Calendar updates weather as in-game time passes — re-read it.
 Hooks.on("updateWorldTime", () => MiniCal.refresh());
+// D&D Beyond rolls (via ddb-roll-cards v4.78+) auto-fill the claimed role slot.
+Hooks.on("ddb-roll-cards.roll", (payload) => { try { Turn.ingestRoll(payload); } catch (e) { warn("ddb roll ingest failed", e); } });
 Hooks.on("controlToken", () => { BiomeBadge.update(); WayfarerPanel.renderExternal(); });
 // Only the followed token's refresh matters — skip the churn from every other token.
 Hooks.on("refreshToken", (token) => { if (token === Canvasry.activeToken()) BiomeBadge.update(); });
