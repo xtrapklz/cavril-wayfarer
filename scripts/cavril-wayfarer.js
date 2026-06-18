@@ -431,7 +431,7 @@ const Store = (() => {
         rationsPer: () => Math.max(0, num(S.rationsPerMember, 1)),
         waterPer: () => Math.max(0, num(S.waterPerMember, 1)),
         autoWeather: () => !!game.settings.get(MOD, S.autoWeatherOnCamp),
-        badgeEnabled: () => !!game.settings.get(MOD, S.badgeEnabled),
+        badgeEnabled: () => game.settings.get(MOD, S.badgeEnabled) !== false,
         desertDC: () => num(S.desertDifficulty, 10)
     };
 })();
@@ -676,10 +676,34 @@ const BiomeBadge = (() => {
         el = document.createElement("div");
         el.id = "cwf-badge";
         el.className = "cwf-badge cwf-hidden";
-        (document.getElementById("hud") || document.body).appendChild(el);
+        // Mount on <body> with position:fixed (set in CSS). The HUD layer (#hud)
+        // is canvas-transformed on V13/V14, which double-applied our pan/zoom and
+        // flung the badge off-screen — body + fixed + worldTransform screen coords
+        // is stable regardless of the canvas transform.
+        document.body.appendChild(el);
         return el;
     }
     function hide() { if (el) el.classList.add("cwf-hidden"); }
+
+    // Console helper: window.CavrilWayfarer.debugBadge() — explains why the badge
+    // is or isn't showing.
+    function diagnose() {
+        const tok = Canvasry.activeToken();
+        const cls = tok ? Canvasry.biomeForToken(tok) : null;
+        const info = {
+            badgeEnabled: Store.badgeEnabled(),
+            canvasReady: !!canvas?.ready,
+            activeToken: tok?.name ?? null,
+            partyTokenFlag: canvas?.scene?.getFlag?.(MOD, "partyToken") ?? null,
+            biome: cls ? `${cls.label} (${cls.detail || ""}) DC ${cls.dc}` : null,
+            screenPos: tok ? Canvasry.screen(tok.center.x, tok.center.y) : null,
+            inDom: !!(el && document.body.contains(el)),
+            hidden: el ? el.classList.contains("cwf-hidden") : "(no element yet)",
+            rect: el ? el.getBoundingClientRect() : null
+        };
+        console.log("%c[Wayfarer] badge diagnostics", "color:#7bdcff;font-weight:bold", info);
+        return info;
+    }
 
     function html(cls, state) {
         const w = Domain.WEATHER[state.weather] || Domain.WEATHER.clear;
@@ -732,7 +756,7 @@ const BiomeBadge = (() => {
     }
 
     function destroy() { el?.remove(); el = null; lastHTML = ""; }
-    return { update, reposition, destroy };
+    return { update, reposition, destroy, diagnose };
 })();
 
 /* =========================================================================
@@ -1092,6 +1116,7 @@ Hooks.once("ready", () => {
         close: () => WayfarerPanel.close(),
         toggle: () => WayfarerPanel.toggle(),
         setPartyToken: (t) => Canvasry.setPartyToken(t),
+        debugBadge: () => BiomeBadge.diagnose(),
         Domain, Store, Canvasry, Augur, HexData, _installed: true
     };
     HexData.load().then(() => BiomeBadge.update());  // baumgart fallback index (hexlands)
