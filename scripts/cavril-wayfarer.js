@@ -1000,7 +1000,7 @@ const BiomeBadge = (() => {
             </div>
             <div class="cwf-badge-row cwf-sub">
                 ${detail}${restr}
-                <span class="cwf-weather" style="--cwf-wx:${w.color}"><i class="fa-solid ${w.icon}"></i>${w.label}</span>
+                <span class="cwf-weather" style="--cwf-wx:${w.color}"><i class="fa-solid ${w.icon}"></i>${MiniCal.label() || w.label}</span>
             </div>`;
     }
 
@@ -1463,7 +1463,8 @@ const Turn = (() => {
         for (const [k, v] of claimedRoles()) {
             const sk = CONFIG.DND5E?.skills?.[v.skillId]?.label || v.skillId;
             body += `<div class="cwf-rr">
-                <div class="cwf-rr-h"><i class="fa-solid ${ROLE_ICON[k]}"></i> <b>${ROLE_LABEL[k]}</b> <span class="cwf-rr-who">${v.actorName || "—"}</span> <span class="cwf-rr-sk">${sk}</span> <span class="cwf-tier-badge cwf-tier-${v.outcome}">${v.total} · ${TIER_LABEL[v.outcome]}</span></div>
+                <div class="cwf-rr-top"><i class="fa-solid ${ROLE_ICON[k]}"></i> <span class="cwf-rr-role">${ROLE_LABEL[k]}</span> <span class="cwf-tier-badge cwf-tier-${v.outcome}">${v.total} · ${TIER_LABEL[v.outcome]}</span></div>
+                <div class="cwf-rr-sub"><span class="cwf-rr-who">${v.actorName || "—"}</span> · <span class="cwf-rr-sk">${sk}</span></div>
                 <div class="cwf-rr-b">${v.result}</div>
             </div>`;
         }
@@ -1861,7 +1862,7 @@ const WayfarerPanel = (() => {
 
                 <div class="cwf-section">
                     <div class="cwf-label">Weather <span class="cwf-wx-note">${w.note}</span></div>
-                    <div class="cwf-wx-readonly"><span class="cwf-weather" style="--cwf-wx:${w.color}"><i class="fa-solid ${w.icon}"></i> ${w.label}</span> <span class="cwf-muted2">${MiniCal.active() ? `Mini Calendar: ${MiniCal.label() || "—"}` : "set by Mini Calendar"}</span></div>
+                    <div class="cwf-wx-readonly"><span class="cwf-weather" style="--cwf-wx:${w.color}"><i class="fa-solid ${w.icon}"></i> ${MiniCal.label() || w.label}</span> <span class="cwf-muted2">${MiniCal.active() ? "via Mini Calendar" : "set by Mini Calendar"}</span></div>
                 </div>
 
                 <div class="cwf-section">

@@ -197,12 +197,14 @@
 /* per-role result block */
 .cwf-rr { border: 1px solid rgba(255,255,255,.10); border-radius: 6px; padding: 6px 8px; background: rgba(255,255,255,.03); }
 .cwf-rr + .cwf-rr { margin-top: 2px; }
-.cwf-rr-h { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.cwf-rr-h > i { color: var(--cwf-accent); }
-.cwf-rr-who { color: #fff; font-weight: 600; }
-.cwf-rr-sk { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--cwf-accent); }
+.cwf-rr-top { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.cwf-rr-top > i { color: var(--cwf-accent); flex: 0 0 auto; }
+.cwf-rr-role { font-weight: 700; white-space: nowrap; }
+.cwf-rr-sub { font-size: 11px; color: #9a9a9a; margin-top: 1px; }
+.cwf-rr-who { color: #fff; font-weight: 600; white-space: nowrap; }
+.cwf-rr-sk { text-transform: uppercase; letter-spacing: .05em; color: var(--cwf-accent); white-space: nowrap; }
 .cwf-rr-b { font-size: 12px; color: #cfcfcf; margin-top: 4px; line-height: 1.4; }
-.cwf-tier-badge { margin-left: auto; font-weight: 800; font-size: 10px; padding: 2px 8px; border-radius: 9px; letter-spacing: .03em; white-space: nowrap; }
+.cwf-tier-badge { margin-left: auto; font-weight: 800; font-size: 10px; padding: 2px 8px; border-radius: 9px; letter-spacing: .03em; white-space: nowrap; flex: 0 0 auto; }
 .cwf-tier-crit { background: var(--cwf-easy); color: #063; }
 .cwf-tier-success { background: color-mix(in srgb, var(--cwf-easy) 50%, transparent); color: #dffbe6; }
 .cwf-tier-fail { background: color-mix(in srgb, var(--cwf-hard) 75%, transparent); color: #fff; }
