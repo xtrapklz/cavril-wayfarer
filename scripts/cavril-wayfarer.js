@@ -383,6 +383,8 @@ const Store = (() => {
         g.register(MOD, S.biomeMapJSON, { name: "Biome map override (advanced)", hint: "Optional JSON replacing the keyword→biome table. Leave blank for defaults. See the module README for the shape.", scope: "world", config: true, type: String, default: "" });
         // Party supply pool — not shown in the config sheet; edited from the panel.
         g.register(MOD, S.pool, { scope: "world", config: false, type: Object, default: { rations: 0, water: 0, hitDice: 0 } });
+        // Cached RollTable ids for the starter travel tables (created on demand).
+        g.register(MOD, "tableIds", { scope: "world", config: false, type: Object, default: {} });
     }
 
     const num = (k, d) => { const v = Number(game.settings.get(MOD, k)); return Number.isFinite(v) ? v : d; };
@@ -839,7 +841,18 @@ const Hex = (() => {
         return [];
     }
 
-    return { key, offsetOf, centerOf, neighbors, classifyAt, passable, reachable, route };
+    // The two hexes flanking the destination (for "Lost Left/Right"): neighbours
+    // of the penultimate route hex that also touch the destination. [0]=left, [1]=right.
+    function flank(routeArr, start) {
+        if (!routeArr?.length) return [];
+        const dest = routeArr[routeArr.length - 1];
+        const prev = routeArr.length >= 2 ? routeArr[routeArr.length - 2] : start;
+        if (!prev) return [];
+        const destNbs = new Set(neighbors(dest).map(key));
+        return neighbors(prev).filter(n => destNbs.has(key(n)) && key(n) !== key(dest));
+    }
+
+    return { key, offsetOf, centerOf, neighbors, classifyAt, passable, reachable, route, flank };
 })();
 
 /* =========================================================================
@@ -972,6 +985,234 @@ const Travel = (() => {
 })();
 
 /* =========================================================================
+ * TABLES — starter RollTables (editable by the GM), one per role × outcome.
+ * Created on demand into a "Cavril: Wayfarer" folder; ids cached in a setting.
+ * Navigator-Failure is a real d4 whose rolled face drives the movement effect.
+ * Falls back to inline text if RollTable creation fails on this version.
+ * ========================================================================= */
+const Tables = (() => {
+    const FOLDER = "Cavril: Wayfarer";
+    const DEFS = {
+        navigate: {
+            crit:     { name: "Navigator — Critical Success", entries: ["A shortcut or vantage point — you arrive with no extra movement, and one adjacent hidden hex is revealed."] },
+            success:  { name: "Navigator — Success", entries: ["You hold your course and reach your destination hex."] },
+            fail:     { name: "Navigator — Failure (d4)", formula: "1d4", entries: [
+                { text: "Dead in the Water — the party gets turned around. You move 0 spaces today.", effect: "dead" },
+                { text: "Lost (Left) — you drift into the hex to the left of your destination.", effect: "left" },
+                { text: "Lost (Right) — you drift into the hex to the right of your destination.", effect: "right" },
+                { text: "Minor Setback — you reach your destination but suffer a faction-based penalty.", effect: "setback" } ] },
+            critfail: { name: "Navigator — Critical Failure", entries: [{ text: "Hopelessly lost — you move 0 spaces and suffer a setback.", effect: "dead" }] }
+        },
+        scout: {
+            crit:     { name: "Scout — Critical Success", entries: ["You spot the encounter first — take a solo Sabotage, Steal, or Spy action before rejoining the party."] },
+            success:  { name: "Scout — Success", entries: ["You spot hazards and encounters in time. The party cannot be Surprised."] },
+            fail:     { name: "Scout — Failure", entries: ["You miss the signs. If an encounter occurs, the party is Surprised."] },
+            critfail: { name: "Scout — Critical Failure", entries: ["Spotted while ranging too far ahead — trapped alone for 1d4 rounds before the party reaches you. Forward movement stops."] }
+        },
+        forage: {
+            crit:     { name: "Forager — Critical Success", entries: ["A massive haul — add 1d4 + Wis modifier rations/water to the pool, or find a rare medicinal herb."] },
+            success:  { name: "Forager — Success", entries: ["You scavenge enough to feed the party — no rations or water consumed at the next camp."] },
+            fail:     { name: "Forager — Failure", entries: ["You find nothing. The party must consume its own supplies."] },
+            critfail: { name: "Forager — Critical Failure", entries: ["Toxic flora or a raided faction cache — the party is Poisoned next day, or faction hostility rises."] }
+        }
+    };
+
+    function ids() { return foundry.utils.deepClone(game.settings.get(MOD, "tableIds") || {}); }
+
+    async function ensureAll() {
+        if (!game.user.isGM) return ids();
+        const map = ids();
+        let folder = game.folders?.find(f => f.type === "RollTable" && f.name === FOLDER);
+        try { if (!folder) folder = await Folder.create({ name: FOLDER, type: "RollTable" }); } catch { /* folder optional */ }
+        for (const [role, tiers] of Object.entries(DEFS)) {
+            map[role] ??= {};
+            for (const [tier, def] of Object.entries(tiers)) {
+                if (map[role][tier] && game.tables.get(map[role][tier])) continue;
+                try {
+                    const results = def.entries.map((e, i) => ({
+                        type: CONST.TABLE_RESULT_TYPES?.TEXT ?? 0,
+                        text: typeof e === "string" ? e : e.text,
+                        weight: 1, range: [i + 1, i + 1]
+                    }));
+                    const tbl = await RollTable.create({
+                        name: def.name, formula: def.formula || `1d${def.entries.length}`,
+                        folder: folder?.id, results, replacement: true, displayRoll: true
+                    });
+                    map[role][tier] = tbl.id;
+                } catch (e) { warn(`could not create table ${def.name}`, e); }
+            }
+        }
+        await game.settings.set(MOD, "tableIds", map);
+        ui.notifications?.info(`${TITLE}: starter travel tables ready in the “${FOLDER}” folder.`);
+        return map;
+    }
+
+    // Returns { text, effect }. Draws from the GM's RollTable if present, else the inline default.
+    async function draw(role, tier) {
+        const def = DEFS[role]?.[tier];
+        const inline = () => {
+            const e = def?.entries?.[0];
+            return { text: typeof e === "string" ? e : (e?.text || ""), effect: typeof e === "object" ? e.effect : null };
+        };
+        const id = ids()?.[role]?.[tier];
+        const tbl = id && game.tables.get(id);
+        if (!tbl) return inline();
+        try {
+            const res = await tbl.draw({ displayChat: false });
+            const r = res?.results?.[0];
+            const text = r?.text ?? r?.description ?? r?.name ?? "";
+            const idx = (Array.isArray(r?.range) ? r.range[0] : 1) - 1;
+            const e = def?.entries?.[idx];
+            return { text: text || inline().text, effect: (e && typeof e === "object") ? e.effect : null };
+        } catch (e) { warn("table draw failed", e); return inline(); }
+    }
+    return { ensureAll, draw, DEFS, FOLDER };
+})();
+
+/* =========================================================================
+ * TURN — guided group check: claim roles → (swap skills) → roll → resolve →
+ * draw outcomes → move the party per the Navigator's result.
+ * ========================================================================= */
+const ROLE_LABEL = { navigate: "Navigator", scout: "Scout", forage: "Forager" };
+const ROLE_ICON = { navigate: "fa-compass", scout: "fa-binoculars", forage: "fa-seedling" };
+const TIER_LABEL = { crit: "Critical Success", success: "Success", fail: "Failure", critfail: "Critical Failure" };
+// Per-role skill options the GM can switch between for the situation. First = default.
+const ROLE_SKILLS = {
+    navigate: ["sur", "inv", "prc", "nat"],
+    scout:    ["prc", "ste", "inv", "sur"],
+    forage:   ["nat", "sur", "med"]
+};
+const Turn = (() => {
+    let active = false, step = "active", route = [], governing = null;
+    const newSlot = () => ({ actorId: null, actorName: null, skillId: null, total: null, nat: null, outcome: null, result: null });
+    const roles = { navigate: newSlot(), scout: newSlot(), forage: newSlot() };
+
+    function begin() {
+        const r = Travel.route;
+        if (!r?.length) { ui.notifications?.warn(`${TITLE}: plot a destination first.`); return; }
+        active = true; step = "active";
+        route = r.slice();
+        governing = Travel.governing();
+        for (const k of Object.keys(roles)) { roles[k] = newSlot(); roles[k].skillId = ROLE_SKILLS[k][0]; }
+        Travel.cancel();                    // exit plotting state cleanly (also stops the overlay)
+        CourseOverlay.draw(null, route);    // re-light the locked route during the check
+        Tables.ensureAll();                 // make sure editable tables exist
+        WayfarerPanel.render();
+    }
+
+    function partyMembers() {
+        const seen = new Set(), list = [];
+        for (const t of (canvas?.tokens?.placeables ?? [])) {
+            const a = t.actor;
+            if (a && a.type === "character" && !seen.has(a.id)) { seen.add(a.id); list.push(a); }
+        }
+        for (const u of (game.users ?? [])) {
+            const a = u.character;
+            if (a && a.type === "character" && !seen.has(a.id)) { seen.add(a.id); list.push(a); }
+        }
+        return list;
+    }
+
+    function claim(roleKey, actorId) {
+        // A character holds only one role — release them elsewhere first.
+        if (actorId) for (const k of Object.keys(roles)) if (k !== roleKey && roles[k].actorId === actorId) Object.assign(roles[k], { actorId: null, actorName: null, total: null, nat: null, outcome: null });
+        const a = actorId ? game.actors.get(actorId) : null;
+        Object.assign(roles[roleKey], { actorId: a?.id || null, actorName: a?.name || null, total: null, nat: null, outcome: null });
+        WayfarerPanel.render();
+    }
+    function setSkill(roleKey, skillId) { roles[roleKey].skillId = skillId; WayfarerPanel.render(); }
+    function rollState(roleKey) { const st = Store.sceneState(); return Domain.rollState(roleKey, st); }
+
+    function natOf(roll) {
+        try { const d = roll.dice?.find(x => x.faces === 20) || roll.dice?.[0]; return d?.results?.find(r => r.active)?.result ?? d?.total ?? null; }
+        catch { return null; }
+    }
+    async function roll(roleKey) {
+        const s = roles[roleKey];
+        if (!s.actorId) return;
+        const actor = game.actors.get(s.actorId);
+        if (!actor?.rollSkill) { ui.notifications?.warn("That character can't roll skills."); return; }
+        const rs = rollState(roleKey);
+        let result = null;
+        try { result = await actor.rollSkill({ skill: s.skillId, advantage: rs.adv, disadvantage: rs.dis }, { configure: false }); }
+        catch { try { result = await actor.rollSkill(s.skillId, { advantage: rs.adv, disadvantage: rs.dis, fastForward: true }); } catch (e) { warn("rollSkill failed", e); } }
+        const rr = Array.isArray(result) ? result[0] : result;
+        if (rr) { s.total = rr.total ?? null; s.nat = natOf(rr); }
+        WayfarerPanel.render();
+    }
+    function enter(roleKey, val) {
+        const n = Number(val);
+        if (Number.isFinite(n)) { roles[roleKey].total = n; roles[roleKey].nat = null; }
+        WayfarerPanel.render();
+    }
+
+    function outcomeFor(s) {
+        if (s.total == null) return null;
+        const dc = governing?.dc ?? 10;
+        if (s.nat === 20) return "crit";
+        if (s.nat === 1) return "critfail";
+        if (s.total >= dc + 10) return "crit";
+        if (s.total <= dc - 10) return "critfail";
+        return s.total >= dc ? "success" : "fail";
+    }
+    const claimedRoles = () => Object.entries(roles).filter(([, v]) => v.actorId);
+    const allRolled = () => { const c = claimedRoles(); return c.length > 0 && c.every(([, v]) => v.total != null); };
+
+    async function resolve() {
+        const dc = governing?.dc ?? 10;
+        const lines = [];
+        let navEffect = "arrive";
+        for (const [k, v] of claimedRoles()) {
+            const tier = outcomeFor(v) || "fail";
+            v.outcome = tier;
+            const drawn = await Tables.draw(k, tier);
+            v.result = drawn.text;
+            const skLabel = CONFIG.DND5E?.skills?.[v.skillId]?.label || v.skillId;
+            lines.push(`<b>${ROLE_LABEL[k]}</b> — ${v.actorName} (${skLabel}) rolled ${v.total} vs DC ${dc}: <i>${TIER_LABEL[tier]}</i><br>${drawn.text}`);
+            if (k === "navigate") navEffect = drawn.effect || (tier === "fail" || tier === "critfail" ? "dead" : "arrive");
+            if (k === "forage" && (tier === "success" || tier === "crit")) await Store.setSceneState({ foraged: true });
+        }
+        await applyMovement(navEffect);
+        ChatMessage.create({ content: `<div class="cwf-chat"><b>🧭 Travel Turn — DC ${dc}${governing?.label ? ` (${governing.label})` : ""}</b><br>${lines.join("<br>") || "No roles were claimed."}</div>` });
+        step = "resolved";
+        WayfarerPanel.render(); BiomeBadge.update();
+    }
+
+    async function applyMovement(effect) {
+        const tok = Canvasry.activeToken();
+        if (!tok || !route.length) { CourseOverlay.clear(); return; }
+        let path = route;
+        if (effect === "dead") path = [];                         // move 0
+        else if (effect === "left" || effect === "right") {
+            const flanks = Hex.flank(route, Hex.offsetOf(tok.center));
+            const target = effect === "left" ? (flanks[0] || flanks[1]) : (flanks[1] || flanks[0]);
+            path = target ? [target] : route;                     // drift one hex off-target
+        }
+        for (const off of path) {
+            const c = canvas.grid.getCenterPoint(off);
+            try { await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true }); }
+            catch (e) { warn("token move failed", e); break; }
+            await new Promise(r => setTimeout(r, 160));
+        }
+        CourseOverlay.clear();
+    }
+
+    function end() {
+        active = false; step = "active"; route = []; governing = null;
+        for (const k of Object.keys(roles)) roles[k] = newSlot();
+        CourseOverlay.clear();
+        WayfarerPanel.render(); BiomeBadge.update();
+    }
+
+    return {
+        begin, claim, setSkill, roll, enter, resolve, end, partyMembers, outcomeFor, rollState,
+        claimedRoles, allRolled,
+        get active() { return active; }, get step() { return step; }, get roles() { return roles; },
+        get governing() { return governing; }, get route() { return route; }
+    };
+})();
+
+/* =========================================================================
  * UI — WayfarerPanel (day / weather / pace / supplies / actions)
  * ========================================================================= */
 const WayfarerPanel = (() => {
@@ -1005,6 +1246,15 @@ const WayfarerPanel = (() => {
     // ---- event wiring (delegated) -----------------------------------------
     function wire(el) {
         el.addEventListener("click", onClick);
+        // Dropdowns / manual-entry inputs in the turn card.
+        el.addEventListener("change", (ev) => {
+            const t = ev.target.closest?.("[data-action]");
+            if (!t || !game.user.isGM) return;
+            const role = t.dataset.role;
+            if (t.dataset.action === "turn-claim") Turn.claim(role, t.value);
+            else if (t.dataset.action === "turn-skill") Turn.setSkill(role, t.value);
+            else if (t.dataset.action === "turn-enter") Turn.enter(role, t.value);
+        });
         // drag by header
         el.addEventListener("pointerdown", (ev) => {
             const handle = ev.target.closest?.("[data-drag]");
@@ -1047,6 +1297,10 @@ const WayfarerPanel = (() => {
                 case "travel-boat": Travel.setBoat(!Travel.boat); break;
                 case "travel-move": await Travel.confirmMove(); break;
                 case "travel-cancel": Travel.cancel(); break;
+                case "turn-begin": Turn.begin(); break;
+                case "turn-roll": await Turn.roll(btn.dataset.role); break;
+                case "turn-resolve": await Turn.resolve(); break;
+                case "turn-end": Turn.end(); break;
                 case "enter-site": await enterSite(); break;
             }
         } catch (e) { warn("panel action failed", action, e); }
@@ -1159,6 +1413,51 @@ const WayfarerPanel = (() => {
     }
 
     // ---- render ------------------------------------------------------------
+    // The active group-check card (claim → swap skill → roll → resolve).
+    function turnCard(dis) {
+        const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
+        const dc = Turn.governing?.dc ?? 10;
+        const govLabel = Turn.governing?.label || "—";
+        const members = Turn.partyMembers();
+        const memberOpts = (sel) => `<option value="">— unclaimed —</option>` + members.map(a => `<option value="${a.id}" ${sel === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("");
+        const skillOpts = (role, sel) => ROLE_SKILLS[role].map(s => `<option value="${s}" ${sel === s ? "selected" : ""}>${CONFIG.DND5E?.skills?.[s]?.label || s}</option>`).join("");
+
+        const cards = Object.keys(ROLE_LABEL).map(k => {
+            const s = Turn.roles[k];
+            const rs = Turn.rollState(k);
+            const advTag = rs.mode === "advantage" ? `<span class="cwf-adv">ADV</span>` : rs.mode === "disadvantage" ? `<span class="cwf-dis">DIS</span>` : "";
+            const tier = Turn.outcomeFor(s);
+            const badge = s.total != null ? `<span class="cwf-tier cwf-${tier}">${s.total} · ${TIER_LABEL[tier]}</span>` : "";
+            const rollRow = s.actorId ? `
+                <div class="cwf-roll-row">
+                    <button class="cwf-btn cwf-roll" data-action="turn-roll" data-role="${k}" ${dis}><i class="fa-solid fa-dice-d20"></i> Roll</button>
+                    <input class="cwf-enter" data-action="turn-enter" data-role="${k}" type="number" placeholder="#" title="Type a d20 total (manual / in-person)" value="${s.total ?? ""}" ${dis}>
+                    ${badge}
+                </div>` : "";
+            return `
+                <div class="cwf-role ${s.actorId ? "claimed" : ""}">
+                    <div class="cwf-role-h"><i class="fa-solid ${ROLE_ICON[k]}"></i> <b>${ROLE_LABEL[k]}</b> ${advTag}</div>
+                    <div class="cwf-claim">
+                        <select class="cwf-sel" data-action="turn-claim" data-role="${k}" ${dis} title="Who is claiming this role?">${memberOpts(s.actorId)}</select>
+                        <select class="cwf-sel" data-action="turn-skill" data-role="${k}" ${dis} title="Skill for this role this turn">${skillOpts(k, s.skillId)}</select>
+                    </div>
+                    ${rollRow}
+                </div>`;
+        }).join("");
+
+        const footer = Turn.step === "resolved"
+            ? `<button class="cwf-btn cwf-primary" data-action="turn-end" ${dis}><i class="fa-solid fa-flag-checkered"></i> New turn</button>`
+            : `<button class="cwf-btn" data-action="turn-end" ${dis}><i class="fa-solid fa-xmark"></i> Cancel</button>
+               <button class="cwf-btn cwf-primary" data-action="turn-resolve" ${dis || (Turn.allRolled() ? "" : "disabled")}><i class="fa-solid fa-gavel"></i> Resolve turn</button>`;
+
+        return `
+            <div class="cwf-section cwf-turn">
+                <div class="cwf-label">Travel Turn · <b>DC ${dc}</b> <span class="cwf-muted2">${govLabel} · ${Turn.route.length} hex${Turn.route.length === 1 ? "" : "es"}</span></div>
+                <div class="cwf-roles">${cards}</div>
+                <div class="cwf-actions">${footer}</div>
+            </div>`;
+    }
+
     function render() {
         if (!isOpen()) return;
         try { _render(); } catch (e) { warn("travel HUD render failed:", e); }
@@ -1206,7 +1505,8 @@ const WayfarerPanel = (() => {
                     ${summary}
                     <div class="cwf-actions">
                         <button class="cwf-btn" data-action="travel-cancel"><i class="fa-solid fa-xmark"></i> Cancel</button>
-                        <button class="cwf-btn cwf-primary" data-action="travel-move" ${n ? "" : "disabled"}><i class="fa-solid fa-shoe-prints"></i> Move party</button>
+                        <button class="cwf-btn" data-action="travel-move" ${n ? "" : "disabled"} title="Skip the checks and just move the party"><i class="fa-solid fa-shoe-prints"></i> Move only</button>
+                        <button class="cwf-btn cwf-primary" data-action="turn-begin" ${n ? "" : "disabled"}><i class="fa-solid fa-flag"></i> Begin turn</button>
                     </div>
                 </div>`;
             }
@@ -1262,7 +1562,7 @@ const WayfarerPanel = (() => {
                     <div class="cwf-label">Current hex ${isGM ? `<button class="cwf-mini cwf-inline" data-action="set-party" title="Set the selected token as the party marker (the HUD then follows it)"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}</div>
                     <div class="cwf-here">${here}</div>
                 </div>
-                ${travelSection}
+                ${Turn.active ? turnCard(dis) : travelSection}
 
                 <div class="cwf-section">
                     <div class="cwf-label">Weather <span class="cwf-wx-note">${w.note}</span></div>
@@ -1280,10 +1580,10 @@ const WayfarerPanel = (() => {
                     </div>
                 </div>
 
-                <div class="cwf-section">
-                    <div class="cwf-label">Roles <span class="cwf-muted2">(roll at the table — buttons are optional)</span></div>
+                ${Turn.active ? "" : `<div class="cwf-section">
+                    <div class="cwf-label">Roles <span class="cwf-muted2">(reference — use Plan a route for a full turn)</span></div>
                     <div class="cwf-roles">${roleCards}</div>
-                </div>
+                </div>`}
 
                 <div class="cwf-section">
                     <div class="cwf-label">Party supplies <span class="cwf-muted2">(${size} member${size === 1 ? "" : "s"} · ${Store.rationsPer()}🍖/${Store.waterPer()}💧 per camp)</span></div>
@@ -1366,7 +1666,8 @@ Hooks.once("ready", () => {
         setPartyToken: (t) => Canvasry.setPartyToken(t),
         debugBadge: () => BiomeBadge.diagnose(),
         planRoute: () => Travel.startPlot(),
-        Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, _installed: true
+        createTables: () => Tables.ensureAll(),
+        Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, _installed: true
     };
     HexData.load().then(() => BiomeBadge.update());  // baumgart fallback index (hexlands)
     registerWayfarerToolbar();                        // Augur Tools group (preferred)
