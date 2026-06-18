@@ -1,0 +1,37 @@
+{
+    "id": "cavril-wayfarer",
+    "title": "Cavril: Wayfarer",
+    "description": "Passive hexcrawl biome awareness and wilderness-travel bookkeeping. Reads the named hex tile under the active player token to show the current biome, its travel DC and movement restriction; tracks party rations, waterskins and hit-dice; rolls daily weather and surfaces its effects. Softly integrates with Augur: Nexus (enter a Site's linked scene straight from the hexmap). Built around The Augur's Primus hex-tile naming (Hex_Forest, Hex_Hills_Snowy, Hex_Damp, ...).",
+    "version": "0.1.0",
+    "url": "https://github.com/xtrapklz/cavril-wayfarer",
+    "manifest": "https://github.com/xtrapklz/cavril-wayfarer/releases/latest/download/module.json",
+    "download": "https://github.com/xtrapklz/cavril-wayfarer/releases/download/v0.1.0/cavril-wayfarer.zip",
+    "readme": "https://github.com/xtrapklz/cavril-wayfarer/blob/main/README.md",
+    "bugs": "https://github.com/xtrapklz/cavril-wayfarer/issues",
+    "compatibility": {
+        "minimum": "12",
+        "verified": "14"
+    },
+    "authors": [
+        {
+            "name": "Cavril (xtrapklz)",
+            "url": "https://github.com/xtrapklz"
+        }
+    ],
+    "esmodules": [
+        "scripts/cavril-wayfarer.js"
+    ],
+    "styles": [
+        "styles/cavril-wayfarer.css"
+    ],
+    "packs": [],
+    "relationships": {
+        "systems": [],
+        "requires": []
+    },
+    "flags": {
+        "cavril-wayfarer": {
+            "augurOptional": "augur-nexus"
+        }
+    }
+}
