@@ -580,8 +580,15 @@ const Canvasry = (() => {
         return cls;
     }
 
-    // The token the badge should follow: the controlled one, else this user's PC.
+    // The token the badge/turn follows. Priority: the designated party token
+    // (scene flag) → the controlled token → this user's PC → a lone player
+    // character token on the scene (the usual hexcrawl party marker).
     function activeToken() {
+        const pid = canvas?.scene?.getFlag?.(MOD, "partyToken");
+        if (pid) {
+            const pt = canvas?.tokens?.get?.(pid);
+            if (pt) return pt;
+        }
         const ctrl = canvas?.tokens?.controlled?.[0];
         if (ctrl) return ctrl;
         const ch = game.user?.character;
@@ -589,7 +596,19 @@ const Canvasry = (() => {
             const tok = canvas?.tokens?.placeables?.find(t => t.actor?.id === ch.id);
             if (tok) return tok;
         }
+        const pcs = (canvas?.tokens?.placeables ?? []).filter(t => t.actor?.hasPlayerOwner);
+        if (pcs.length) return pcs[0];
         return null;
+    }
+
+    // Designate the selected token as the party marker (GM only).
+    async function setPartyToken(token) {
+        if (!game.user.isGM) return;
+        const t = token || canvas?.tokens?.controlled?.[0];
+        if (!t) { ui.notifications?.warn(`${TITLE}: select the party token first.`); return; }
+        await canvas.scene?.setFlag(MOD, "partyToken", t.id);
+        ui.notifications?.info(`${TITLE}: party marker set to “${t.name}”.`);
+        BiomeBadge.update();
     }
 
     // Augur Site tile under/near the token, if augur is active. Returns
@@ -612,7 +631,7 @@ const Canvasry = (() => {
         return best;
     }
 
-    return { screen, biomeTilesUnder, biomeForToken, activeToken, augurSiteUnder };
+    return { screen, biomeTilesUnder, biomeForToken, activeToken, setPartyToken, augurSiteUnder };
 })();
 
 /* =========================================================================
@@ -786,6 +805,7 @@ const WayfarerPanel = (() => {
                 case "adj": await adjust(btn.dataset.target, Number(btn.dataset.delta)); break;
                 case "haul": await foragerHaul(); break;
                 case "camp": await makeCamp(); break;
+                case "set-party": await Canvasry.setPartyToken(); break;
                 case "enter-site": await enterSite(); break;
             }
         } catch (e) { warn("panel action failed", action, e); }
@@ -968,7 +988,7 @@ const WayfarerPanel = (() => {
             </div>
             <div class="cwf-body" ${collapsedRef ? 'style="display:none"' : ""}>
                 <div class="cwf-section">
-                    <div class="cwf-label">Current hex</div>
+                    <div class="cwf-label">Current hex ${isGM ? `<button class="cwf-mini cwf-inline" data-action="set-party" title="Set the selected token as the party marker (the HUD then follows it)"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}</div>
                     <div class="cwf-here">${here}</div>
                 </div>
 
@@ -1071,6 +1091,7 @@ Hooks.once("ready", () => {
         open: () => WayfarerPanel.open(),
         close: () => WayfarerPanel.close(),
         toggle: () => WayfarerPanel.toggle(),
+        setPartyToken: (t) => Canvasry.setPartyToken(t),
         Domain, Store, Canvasry, Augur, HexData, _installed: true
     };
     HexData.load().then(() => BiomeBadge.update());  // baumgart fallback index (hexlands)
@@ -1084,6 +1105,14 @@ Hooks.on("canvasReady", () => { BiomeBadge.update(); WayfarerPanel.render(); });
 Hooks.on("controlToken", () => { BiomeBadge.update(); WayfarerPanel.render(); });
 // Only the followed token's refresh matters — skip the churn from every other token.
 Hooks.on("refreshToken", (token) => { if (token === Canvasry.activeToken()) BiomeBadge.update(); });
+// Committed position change (drag-drop, programmatic move, another client, calendar
+// nudge) — the reliable "the party crossed into a new hex" signal that was missing.
+Hooks.on("updateToken", (doc, change = {}) => {
+    if ("x" in change || "y" in change || foundry.utils.hasProperty(change, `flags.${MOD}`)) {
+        BiomeBadge.update();
+        WayfarerPanel.render();
+    }
+});
 Hooks.on("canvasPan", () => BiomeBadge.reposition());
 Hooks.on("canvasTearDown", () => BiomeBadge.destroy());
 

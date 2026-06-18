@@ -131,6 +131,7 @@
 .cwf-vs { color: var(--cwf-text); font-weight: 600; }
 .cwf-mini { margin-left: auto; width: 26px; height: 22px; border-radius: 6px; border: 1px solid var(--cwf-line); background: rgba(123,220,255,.1); color: var(--cwf-accent); cursor: pointer; }
 .cwf-mini:hover { background: rgba(123,220,255,.22); }
+.cwf-mini.cwf-inline { width: 22px; height: 18px; vertical-align: middle; margin-left: 6px; }
 
 /* supplies */
 .cwf-supply { display: flex; align-items: center; justify-content: space-between; padding: 2px 0; }
