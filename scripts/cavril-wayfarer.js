@@ -698,8 +698,82 @@ const Party = (() => {
         if (g) { rations += countItems(g, RATION_RE); water += countItems(g, WATER_RE); }
         return { rations, water };
     }
-    return { groupActor, members, size, supplies, countItems, RATION_RE, WATER_RE };
+
+    // Reduce up to `n` matching units from one actor's items; returns amount taken.
+    async function take(actor, re, n) {
+        let need = n, taken = 0;
+        for (const it of (actor?.items ?? [])) {
+            if (need <= 0) break;
+            if (!re.test(it.name || "")) continue;
+            const q = it.system?.quantity ?? 1;
+            const use = Math.min(q, need);
+            if (use > 0) {
+                try { await it.update({ "system.quantity": q - use }); taken += use; need -= use; }
+                catch (e) { warn("supply consume failed", e); }
+            }
+        }
+        return taken;
+    }
+    // Consume perR rations + perW water for each member: from their own sheet first,
+    // then the group's shared stash. Returns { rations, water, short }.
+    async function consume(perR, perW) {
+        if (!game.user.isGM) return { rations: 0, water: 0, short: false };
+        const g = groupActor();
+        let totR = 0, totW = 0, short = false;
+        for (const m of members()) {
+            for (const [re, per, isR] of [[RATION_RE, perR, true], [WATER_RE, perW, false]]) {
+                let got = await take(m, re, per);
+                if (got < per && g) got += await take(g, re, per - got);
+                if (isR) totR += got; else totW += got;
+                if (got < per) short = true;
+            }
+        }
+        return { rations: totR, water: totW, short };
+    }
+    async function addItem(actor, re, defaultName, qty) {
+        if (!actor || !qty || qty <= 0) return;
+        const existing = (actor.items ?? []).find(it => re.test(it.name || ""));
+        if (existing) { try { await existing.update({ "system.quantity": (existing.system?.quantity ?? 0) + qty }); } catch (e) { warn(e); } }
+        else { try { await actor.createEmbeddedDocuments("Item", [{ name: defaultName, type: "loot", system: { quantity: qty } }]); } catch (e) { warn("create stash item failed", e); } }
+    }
+    // Forager haul → the group's shared inventory.
+    async function addToStash(rations, water) {
+        if (!game.user.isGM) return;
+        const g = groupActor();
+        if (!g) { ui.notifications?.warn(`${TITLE}: no party group actor to hold the haul.`); return; }
+        await addItem(g, RATION_RE, "Rations", rations);
+        await addItem(g, WATER_RE, "Waterskin", water);
+    }
+    return { groupActor, members, size, supplies, countItems, consume, addToStash, RATION_RE, WATER_RE };
 })();
+
+/* =========================================================================
+ * MINICAL — read the live weather from wgtgm-mini-calendar (it owns weather).
+ * Cached on updateWorldTime; mapped to the four travel-weather categories.
+ * ========================================================================= */
+const MiniCal = (() => {
+    let _key = null, _label = null;
+    const active = () => !!game.modules.get("wgtgm-mini-calendar")?.active;
+    const api = () => game.modules.get("wgtgm-mini-calendar")?.api;
+    function mapForecast(name) {
+        const s = String(name || "").toLowerCase();
+        if (/heat|scorch|blaz|cold snap|freez|blizzard|extreme/.test(s)) return "extreme";
+        if (/fog|mist|sand|haze|smog/.test(s)) return "fog";
+        if (/rain|snow|hail|sleet|storm|downpour|shower/.test(s)) return "rain";
+        return "clear";
+    }
+    async function refresh() {
+        if (!active()) { _key = null; _label = null; return; }
+        try {
+            const f = await api()?.getForecast?.();
+            if (f) { _key = mapForecast(f.forecastName); _label = f.forecastName || null; WayfarerPanel.renderExternal(); BiomeBadge.update(); }
+        } catch (e) { warn("mini-calendar forecast read failed", e); }
+    }
+    return { active, refresh, key: () => (active() ? (_key || "clear") : null), label: () => _label };
+})();
+
+// Effective travel weather: Mini Calendar's live weather if present, else scene state.
+const effectiveWeather = () => (MiniCal.key() ?? Store.sceneState().weather) || "clear";
 
 /* =========================================================================
  * AUGUR — soft integration with augur-nexus (optional)
@@ -1173,7 +1247,7 @@ const Turn = (() => {
         WayfarerPanel.render();
     }
     function setSkill(roleKey, skillId) { roles[roleKey].skillId = skillId; WayfarerPanel.render(); }
-    function rollState(roleKey) { const st = Store.sceneState(); return Domain.rollState(roleKey, st); }
+    function rollState(roleKey) { return Domain.rollState(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() }); }
 
     function natOf(roll) {
         try { const d = roll.dice?.find(x => x.faces === 20) || roll.dice?.[0]; return d?.results?.find(r => r.active)?.result ?? d?.total ?? null; }
@@ -1222,7 +1296,18 @@ const Turn = (() => {
             const skLabel = CONFIG.DND5E?.skills?.[v.skillId]?.label || v.skillId;
             lines.push(`<b>${ROLE_LABEL[k]}</b> — ${v.actorName} (${skLabel}) rolled ${v.total} vs DC ${dc}: <i>${TIER_LABEL[tier]}</i><br>${drawn.text}`);
             if (k === "navigate") navEffect = drawn.effect || (tier === "fail" || tier === "critfail" ? "dead" : "arrive");
-            if (k === "forage" && (tier === "success" || tier === "crit")) await Store.setSceneState({ foraged: true });
+            if (k === "forage") {
+                if (tier === "success" || tier === "crit") await Store.setSceneState({ foraged: true });
+                if (tier === "crit") {
+                    const fa = game.actors.get(v.actorId);
+                    const wis = fa?.system?.abilities?.wis?.mod ?? 0;
+                    let haul = wis + 2;
+                    try { haul = (await (new Roll("1d4")).evaluate()).total + wis; } catch { /* keep fallback */ }
+                    haul = Math.max(1, haul);
+                    await Party.addToStash(haul, haul);
+                    lines.push(`<i>Forager haul: +${haul}🍖 / +${haul}💧 added to the party stash.</i>`);
+                }
+            }
         }
         await applyMovement(navEffect);
         const hrs = route.length * Domain.hoursPerHex(pace, boat);
@@ -1372,15 +1457,14 @@ const WayfarerPanel = (() => {
     async function foragerHaul() {
         const content = `
             <div class="cwf-dialog">
-                <p>Add a Forager haul to the party pool.</p>
+                <p>Add a Forager haul to the party's shared stash (the group actor's inventory).</p>
                 <label>Rations <input type="number" name="rations" value="0" min="0"></label>
                 <label>Waterskins <input type="number" name="water" value="0" min="0"></label>
             </div>`;
         const DialogV2 = foundry.applications?.api?.DialogV2;
         const apply = async (rations, water) => {
-            const p = Store.pool();
-            await Store.setPool({ rations: (p.rations | 0) + (rations | 0), water: (p.water | 0) + (water | 0) });
-            ChatMessage.create({ content: `<b>🧺 Forager Haul</b> — +${rations | 0} rations, +${water | 0} waterskins added to the party pool.` });
+            await Party.addToStash(rations | 0, water | 0);
+            ChatMessage.create({ content: `<b>🧺 Forager Haul</b> — +${rations | 0} rations, +${water | 0} waterskins added to the party stash.` });
             render();
         };
         if (DialogV2) {
@@ -1405,14 +1489,14 @@ const WayfarerPanel = (() => {
         const sup = Party.supplies();
         const lines = [];
 
-        // NOTE: sheet-level consumption (decrement ration/waterskin items from each
-        // member, then the group stash) lands next pass. For now Make Camp reports
-        // the day's need against the live pool and advances the rest.
+        // Consume 1 ration + 1 waterskin per member: from each member's own sheet
+        // first, then the group's shared stash.
         if (st.foraged) {
             lines.push(`The Forager fed the party — no rations or waterskins consumed.`);
         } else {
-            lines.push(`The party would consume ${size}🍖 / ${size}💧 (pool: ${sup.rations}🍖 / ${sup.water}💧).`);
-            if (sup.rations < size || sup.water < size) lines.push(`⚠ Supplies are short of a full day's need.`);
+            const c = await Party.consume(1, 1);
+            lines.push(`Consumed ${c.rations}🍖 / ${c.water}💧 for ${size} member${size === 1 ? "" : "s"} (sheets first, then the group stash).`);
+            if (c.short) lines.push(`⚠ Supplies ran short — some members go without (apply exhaustion/etc. as you rule it).`);
         }
 
         const nextDay = (st.day || 1) + 1;
@@ -1435,9 +1519,8 @@ const WayfarerPanel = (() => {
         if (!role) return;
         const tok = Canvasry.activeToken();
         const actor = tok?.actor;
-        const st = Store.sceneState();
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
-        const rs = Domain.rollState(roleKey, st);
+        const rs = Domain.rollState(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() });
         const dcTxt = cls?.dc != null ? ` vs DC ${cls.dc}` : "";
         if (!actor?.rollSkill) {
             ui.notifications?.info(`${role.name}: roll ${role.skill}${dcTxt}${rs.mode !== "normal" ? ` (${rs.mode})` : ""}.`);
@@ -1511,7 +1594,7 @@ const WayfarerPanel = (() => {
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
         const sup = Party.supplies();
         const size = Party.size();
-        const w = Domain.WEATHER[st.weather] || Domain.WEATHER.clear;
+        const w = Domain.WEATHER[effectiveWeather()] || Domain.WEATHER.clear;
         const site = Canvasry.augurSiteUnder(tok);
         const dis = isGM ? "" : "disabled";
 
@@ -1562,13 +1645,8 @@ const WayfarerPanel = (() => {
 
         const { n: spaceCount, infra } = Domain.spaces(st, cls);
 
-        const weatherBtns = Domain.WEATHER_ORDER.map(k => {
-            const wx = Domain.WEATHER[k];
-            return `<button class="cwf-wx ${st.weather === k ? "on" : ""}" data-action="weather" data-weather="${k}" ${dis} title="${wx.note}" style="--cwf-wx:${wx.color}"><i class="fa-solid ${wx.icon}"></i></button>`;
-        }).join("");
-
         const roleCards = Domain.ROLES.map(r => {
-            const rsx = Domain.rollState(r.key, st);
+            const rsx = Domain.rollState(r.key, { pace: st.pace, weather: effectiveWeather() });
             const tag = rsx.mode === "advantage" ? `<span class="cwf-adv">ADV</span>` : rsx.mode === "disadvantage" ? `<span class="cwf-dis">DIS</span>` : "";
             const dcTxt = cls?.dc != null ? `DC ${cls.dc}` : "—";
             return `
@@ -1608,7 +1686,7 @@ const WayfarerPanel = (() => {
 
                 <div class="cwf-section">
                     <div class="cwf-label">Weather <span class="cwf-wx-note">${w.note}</span></div>
-                    <div class="cwf-wx-readonly"><span class="cwf-weather" style="--cwf-wx:${w.color}"><i class="fa-solid ${w.icon}"></i> ${w.label}</span> <span class="cwf-muted2">set by Mini Calendar</span></div>
+                    <div class="cwf-wx-readonly"><span class="cwf-weather" style="--cwf-wx:${w.color}"><i class="fa-solid ${w.icon}"></i> ${w.label}</span> <span class="cwf-muted2">${MiniCal.active() ? `Mini Calendar: ${MiniCal.label() || "—"}` : "set by Mini Calendar"}</span></div>
                 </div>
 
                 <div class="cwf-section">
@@ -1717,12 +1795,15 @@ Hooks.once("ready", () => {
     };
     HexData.load().then(() => BiomeBadge.update());  // baumgart fallback index (hexlands)
     registerWayfarerToolbar();                        // Augur Tools group (preferred)
+    MiniCal.refresh();                                // read live weather from Mini Calendar
     BiomeBadge.update();
     log("Ready. Open the HUD from the Augur Tools toolbar, press Alt+H, or run window.CavrilWayfarer.toggle().");
 });
 
 // Badge follows the token and re-classifies as it moves between hexes.
-Hooks.on("canvasReady", () => { BiomeBadge.update(); WayfarerPanel.renderExternal(); });
+Hooks.on("canvasReady", () => { BiomeBadge.update(); WayfarerPanel.renderExternal(); MiniCal.refresh(); });
+// Mini Calendar updates weather as in-game time passes — re-read it.
+Hooks.on("updateWorldTime", () => MiniCal.refresh());
 Hooks.on("controlToken", () => { BiomeBadge.update(); WayfarerPanel.renderExternal(); });
 // Only the followed token's refresh matters — skip the churn from every other token.
 Hooks.on("refreshToken", (token) => { if (token === Canvasry.activeToken()) BiomeBadge.update(); });
