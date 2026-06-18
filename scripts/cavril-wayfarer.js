@@ -727,15 +727,22 @@ const WayfarerPanel = (() => {
 
     function open() {
         if (isOpen()) return;
-        root = document.createElement("div");
-        root.id = "cwf-panel";
-        root.className = "cwf-panel";
-        root.style.left = "auto";
-        root.style.right = "320px";
-        root.style.top = "120px";
-        document.body.appendChild(root);
-        wire(root);
-        render();
+        try {
+            root = document.createElement("div");
+            root.id = "cwf-panel";
+            root.className = "cwf-panel";
+            root.style.left = "auto";
+            root.style.right = "320px";
+            root.style.top = "120px";
+            document.body.appendChild(root);
+            wire(root);
+            render();
+            log("Travel HUD opened.");
+        } catch (e) {
+            warn("Failed to open the travel HUD:", e);
+            ui.notifications?.error(`${TITLE}: failed to open the HUD — see console (F12).`);
+            close();
+        }
     }
     function close() { root?.remove(); root = null; }
     function toggle() { isOpen() ? close() : open(); }
@@ -893,6 +900,9 @@ const WayfarerPanel = (() => {
     // ---- render ------------------------------------------------------------
     function render() {
         if (!isOpen()) return;
+        try { _render(); } catch (e) { warn("travel HUD render failed:", e); }
+    }
+    function _render() {
         const isGM = game.user.isGM;
         const st = Store.sceneState();
         const tok = Canvasry.activeToken();
@@ -1006,8 +1016,52 @@ const WayfarerPanel = (() => {
 /* =========================================================================
  * BOOT — settings + hooks
  * ========================================================================= */
+
+// One tool definition, used both for Augur's shared toolbar and the standalone
+// fallback. toggle:true + onChange(event, active) is the shape the working
+// Augur/Hexlands buttons use on V13/V14 — clicking flips `active` and we open or
+// close accordingly (idempotent, no double-fire).
+let _toolbarViaAugur = false;
+function wayfarerTool() {
+    return {
+        name: "wayfarer-panel",
+        title: `${TITLE} — travel HUD`,
+        icon: "fa-solid fa-mountain-sun",
+        toggle: true,
+        active: WayfarerPanel.isOpen(),
+        order: 99,
+        onChange: (_event, active) => { if (active) WayfarerPanel.open(); else WayfarerPanel.close(); },
+        isVisible: () => true
+    };
+}
+
+// Preferred path: contribute to Augur: Nexus's shared "Augur Tools" control group
+// (the exact mechanism Hexlands uses, proven on this setup).
+async function registerWayfarerToolbar() {
+    if (!game.modules.get("augur-nexus")?.active) return false;
+    try {
+        const { registerToolbarTools } = await import("/modules/augur-nexus/scripts/api/toolbar.js");
+        registerToolbarTools(MOD, [wayfarerTool()]);
+        _toolbarViaAugur = true;
+        ui.controls?.render?.(true);
+        log("Toolbar button registered in the Augur Tools group.");
+        return true;
+    } catch (e) {
+        warn("Augur toolbar registration failed; falling back to standard scene controls.", e);
+        return false;
+    }
+}
+
 Hooks.once("init", () => {
     Store.register();
+    // Guaranteed-access toggle, independent of the toolbar.
+    try {
+        game.keybindings.register(MOD, "toggle", {
+            name: `${TITLE}: toggle travel HUD`,
+            editable: [{ key: "KeyH", modifiers: ["Alt"] }],
+            onDown: () => { WayfarerPanel.toggle(); return true; }
+        });
+    } catch (e) { warn("keybinding registration failed", e); }
     log(`${TITLE} initialised.`);
 });
 
@@ -1020,8 +1074,9 @@ Hooks.once("ready", () => {
         Domain, Store, Canvasry, Augur, HexData, _installed: true
     };
     HexData.load().then(() => BiomeBadge.update());  // baumgart fallback index (hexlands)
+    registerWayfarerToolbar();                        // Augur Tools group (preferred)
     BiomeBadge.update();
-    log("Ready. Toggle the HUD from the Token Controls toolbar or window.CavrilWayfarer.toggle().");
+    log("Ready. Open the HUD from the Augur Tools toolbar, press Alt+H, or run window.CavrilWayfarer.toggle().");
 });
 
 // Badge follows the token and re-classifies as it moves between hexes.
@@ -1040,23 +1095,16 @@ Hooks.on("updateSetting", (setting) => {
     if (setting?.key?.startsWith?.(`${MOD}.`)) { WayfarerPanel.render(); BiomeBadge.update(); }
 });
 
-// Toolbar button under Token Controls (handles both the V12 array shape and
-// the V13/V14 record shape). Toggles the Wayfarer panel.
+// Fallback toolbar button in the Token Controls group, only when Augur: Nexus is
+// absent (otherwise the Augur Tools group above carries it). Handles the V12
+// array shape and the V13/V14 record shape.
 Hooks.on("getSceneControlButtons", (controls) => {
-    const tool = {
-        name: "wayfarer-panel",
-        title: `${TITLE} — travel HUD`,
-        icon: "fa-solid fa-mountain-sun",
-        button: true,
-        visible: true,
-        order: 99,
-        onClick: () => WayfarerPanel.toggle(),
-        onChange: () => WayfarerPanel.toggle()
-    };
+    if (_toolbarViaAugur) return;
+    const { isVisible, ...tool } = wayfarerTool();
     try {
         if (Array.isArray(controls)) {
             const grp = controls.find(c => c.name === "token" || c.name === "tokens");
-            if (grp?.tools && Array.isArray(grp.tools)) grp.tools.push(tool);
+            if (Array.isArray(grp?.tools)) grp.tools.push(tool);
         } else if (controls && typeof controls === "object") {
             const grp = controls.tokens || controls.token
                 || Object.values(controls).find(c => c?.name === "tokens" || c?.name === "token");
