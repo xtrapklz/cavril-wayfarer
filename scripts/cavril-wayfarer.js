@@ -396,6 +396,9 @@ const Store = (() => {
         // Cavril: Maestro biome → environment soundscape.
         g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Optional JSON mapping hexlands biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay","desert":"goldenFlatsDay"}. Blank uses sensible defaults. "" = silence for that biome.', scope: "world", config: true, type: String, default: "" });
+        // Drive Mini Calendar's weather climate from the party's current biome.
+        g.register(MOD, "syncMiniCalBiome", { name: "Set Mini Calendar climate by biome", hint: "Push the party's current biome into Mini Calendar's weather climate (temperate / tropical / desert / polar) so its weather matches where you are.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "biomeClimateJSON", { name: "Biome → Mini Calendar climate (advanced)", hint: 'Optional JSON mapping hexlands biome → Mini Calendar climate, e.g. {"frozen":"polar","jungle":"tropical"}. Blank uses sensible defaults. Mini Calendar only has: temperate, tropical, desert, polar.', scope: "world", config: true, type: String, default: "" });
     }
 
     const num = (k, d) => { const v = Number(game.settings.get(MOD, k)); return Number.isFinite(v) ? v : d; };
@@ -777,7 +780,7 @@ const Party = (() => {
  * Cached on updateWorldTime; mapped to the four travel-weather categories.
  * ========================================================================= */
 const MiniCal = (() => {
-    let _key = null, _label = null;
+    let _key = null, _label = null, _climate = null;
     const active = () => !!game.modules.get("wgtgm-mini-calendar")?.active;
     const api = () => game.modules.get("wgtgm-mini-calendar")?.api;
     function mapForecast(name) {
@@ -794,7 +797,53 @@ const MiniCal = (() => {
             if (f) { _key = mapForecast(f.forecastName); _label = f.forecastName || null; WayfarerPanel.renderExternal(); BiomeBadge.update(); }
         } catch (e) { warn("mini-calendar forecast read failed", e); }
     }
-    return { active, api, refresh, key: () => (active() ? (_key || "clear") : null), label: () => _label };
+
+    // Mini Calendar ships 4 weather climates (temperate / tropical / desert / polar).
+    // Map each hexlands biome (or Primus terrain) onto the closest one. GM-editable.
+    const CLIMATE = {
+        temperate: "temperate", boreal: "temperate", tundra: "polar", frozen: "polar",
+        jungle: "tropical", savanna: "tropical", desert: "desert", volcanic: "desert",
+        wasteland: "desert", tainted: "temperate", void: "temperate", water: "temperate",
+        forest: "temperate", hills: "temperate", plains: "temperate", swamp: "tropical",
+        rocky: "desert", mountains: "polar", coast: "temperate"
+    };
+    function climateMap() {
+        const raw = game.settings.get(MOD, "biomeClimateJSON");
+        if (raw && String(raw).trim()) {
+            try { const p = JSON.parse(raw); if (p && typeof p === "object") return { ...CLIMATE, ...p }; }
+            catch (e) { warn("biomeClimateJSON invalid — using defaults", e); }
+        }
+        return CLIMATE;
+    }
+    function climateFor(cls) {
+        if (!cls) return null;
+        const key = cls.terrainKey === "water" ? "water" : (cls.biome || cls.terrainKey);
+        const m = climateMap();
+        return Object.prototype.hasOwnProperty.call(m, key) ? m[key] : null;
+    }
+    // Push the party's current biome → Mini Calendar's active weather climate, so its
+    // weather generation reflects where the party actually is. Deduped to climate changes.
+    async function syncBiome(cls) {
+        if (!game.user.isGM || !active() || !game.settings.get(MOD, "syncMiniCalBiome")) return;
+        const climate = climateFor(cls);
+        if (!climate || climate === _climate) return;
+        _climate = climate;
+        try {
+            if (game.settings.get("wgtgm-mini-calendar", "biome") !== climate) {
+                await game.settings.set("wgtgm-mini-calendar", "biome", climate);
+                const { WeatherEngine } = await import("/modules/wgtgm-mini-calendar/scripts/weather.js");
+                await WeatherEngine?.refreshWeather?.();
+                log(`Mini Calendar weather climate → ${climate} (biome: ${cls.biome || cls.terrainKey}).`);
+            }
+        } catch (e) { warn("mini-calendar biome sync failed", e); }
+        refresh();
+    }
+    function resetBiome() { _climate = null; }
+
+    return {
+        active, api, refresh, syncBiome, resetBiome, climateFor, CLIMATE,
+        key: () => (active() ? (_key || "clear") : null), label: () => _label
+    };
 })();
 
 // Advance the clock from camp to the next dawn (becomes the Camp Turn workflow).
@@ -962,6 +1011,7 @@ const BiomeBadge = (() => {
         const cls = Canvasry.biomeForToken(tok);
         if (!cls) { hide(); return; } // not standing on a biome tile → off the hexmap
         Music.update(cls);            // cross-fade Maestro's environment to this biome (GM, deduped)
+        MiniCal.syncBiome(cls);       // set Mini Calendar's weather climate to this biome (GM, deduped)
         const node = ensure();
         // Position: centred just above the token (CSS translateX -50%).
         const top = tok.center;
@@ -1926,7 +1976,7 @@ Hooks.once("ready", () => {
 });
 
 // Badge follows the token and re-classifies as it moves between hexes.
-Hooks.on("canvasReady", () => { Music.reset(); BiomeBadge.update(); WayfarerPanel.renderExternal(); MiniCal.refresh(); });
+Hooks.on("canvasReady", () => { Music.reset(); MiniCal.resetBiome(); BiomeBadge.update(); WayfarerPanel.renderExternal(); MiniCal.refresh(); });
 // Mini Calendar updates weather as in-game time passes — re-read it.
 Hooks.on("updateWorldTime", () => MiniCal.refresh());
 // D&D Beyond rolls (via ddb-roll-cards v4.78+) auto-fill the claimed role slot.
