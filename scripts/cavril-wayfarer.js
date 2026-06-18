@@ -393,6 +393,9 @@ const Store = (() => {
         g.register(MOD, S.pool, { scope: "world", config: false, type: Object, default: { rations: 0, water: 0, hitDice: 0 } });
         // Cached RollTable ids for the starter travel tables (created on demand).
         g.register(MOD, "tableIds", { scope: "world", config: false, type: Object, default: {} });
+        // Cavril: Maestro biome → environment soundscape.
+        g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Optional JSON mapping hexlands biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay","desert":"goldenFlatsDay"}. Blank uses sensible defaults. "" = silence for that biome.', scope: "world", config: true, type: String, default: "" });
     }
 
     const num = (k, d) => { const v = Number(game.settings.get(MOD, k)); return Number.isFinite(v) ? v : d; };
@@ -776,6 +779,54 @@ const MiniCal = (() => {
 const effectiveWeather = () => (MiniCal.key() ?? Store.sceneState().weather) || "clear";
 
 /* =========================================================================
+ * MUSIC — drive Cavril: Maestro's environment channel from the current biome.
+ * Maestro plays one "emberEnvironment" soundscape; the biome picks the
+ * arrangement (Maestro auto-swaps Day/Night by world time). GM-only; map is
+ * configurable. arrangement "" = silence; missing biome = leave music alone.
+ * ========================================================================= */
+const Music = (() => {
+    const DEFAULTS = {
+        // hexlands biomes
+        temperate: "ameraspGroveDay", boreal: "bloodwoodsDay", jungle: "jungleDay",
+        desert: "goldenFlatsDay", savanna: "redrakFieldsDay", frozen: "mountainsDay",
+        tundra: "skybrushDay", volcanic: "cauldronDay", wasteland: "splinterCanyonsDay",
+        tainted: "mycelianExpanse", void: "", water: "oceanDay",
+        // Primus keyword terrains (cls.terrainKey when there's no hexlands biome)
+        forest: "ameraspGroveDay", hills: "skybrushDay", mountains: "mountainsDay",
+        swamp: "inkaroPools", plains: "redrakFieldsDay", rocky: "spiresDay", coast: "tidalPoolsDay"
+    };
+    let _last = null;
+    const active = () => !!globalThis.Maestro?.play;
+    function map() {
+        const raw = game.settings.get(MOD, "musicMapJSON");
+        if (raw && String(raw).trim()) {
+            try { const p = JSON.parse(raw); if (p && typeof p === "object") return { ...DEFAULTS, ...p }; }
+            catch (e) { warn("musicMapJSON invalid — using defaults", e); }
+        }
+        return DEFAULTS;
+    }
+    function arrangementFor(cls) {
+        if (!cls) return null;
+        const key = cls.terrainKey === "water" ? "water" : (cls.biome || cls.terrainKey);
+        const m = map();
+        return Object.prototype.hasOwnProperty.call(m, key) ? m[key] : null;
+    }
+    async function update(cls) {
+        if (!game.user.isGM || !game.settings.get(MOD, "musicEnabled") || !active()) return;
+        const arr = arrangementFor(cls);
+        if (arr == null) return;                       // biome not mapped → leave current music
+        const sig = arr || "(silence)";
+        if (sig === _last) return;                     // already playing it
+        _last = sig;
+        try {
+            if (arr) await globalThis.Maestro.play("emberEnvironment", { channel: "environment", arrangementId: arr });
+            else await globalThis.Maestro.stop("environment");
+        } catch (e) { warn("maestro environment switch failed", e); }
+    }
+    return { active, update, arrangementFor, reset: () => { _last = null; }, DEFAULTS };
+})();
+
+/* =========================================================================
  * AUGUR — soft integration with augur-nexus (optional)
  * ========================================================================= */
 const Augur = (() => {
@@ -874,6 +925,7 @@ const BiomeBadge = (() => {
         if (!tok) { hide(); return; }
         const cls = Canvasry.biomeForToken(tok);
         if (!cls) { hide(); return; } // not standing on a biome tile → off the hexmap
+        Music.update(cls);            // cross-fade Maestro's environment to this biome (GM, deduped)
         const node = ensure();
         // Position: centred just above the token (CSS translateX -50%).
         const top = tok.center;
@@ -1810,7 +1862,7 @@ Hooks.once("ready", () => {
         debugBadge: () => BiomeBadge.diagnose(),
         planRoute: () => Travel.startPlot(),
         createTables: () => Tables.ensureAll(),
-        Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, _installed: true
+        Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, _installed: true
     };
     HexData.load().then(() => BiomeBadge.update());  // baumgart fallback index (hexlands)
     registerWayfarerToolbar();                        // Augur Tools group (preferred)
@@ -1820,7 +1872,7 @@ Hooks.once("ready", () => {
 });
 
 // Badge follows the token and re-classifies as it moves between hexes.
-Hooks.on("canvasReady", () => { BiomeBadge.update(); WayfarerPanel.renderExternal(); MiniCal.refresh(); });
+Hooks.on("canvasReady", () => { Music.reset(); BiomeBadge.update(); WayfarerPanel.renderExternal(); MiniCal.refresh(); });
 // Mini Calendar updates weather as in-game time passes — re-read it.
 Hooks.on("updateWorldTime", () => MiniCal.refresh());
 // D&D Beyond rolls (via ddb-roll-cards v4.78+) auto-fill the claimed role slot.
