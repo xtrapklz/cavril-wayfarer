@@ -329,8 +329,9 @@ const Domain = (() => {
     }
 
     // Hours of travel a single hex consumes. A full day of travel = 12h, so
-    // Slow(1)=12h, Normal(2)=6h, Fast(3)=4h per hex; Boat/Cart doubles distance
-    // per day, halving the time per hex.
+    // Slow(1)=12h, Normal(2)=6h, Fast(3)=4h per hex. LEGACY: actual travel time
+    // now comes from Hex.pathCost (boat/cart cheapens only river/road tiles); this
+    // flat-rate helper is kept for reference and isn't on the travel path.
     function hoursPerHex(pace, boat) {
         const spc = (PACE[pace]?.spaces ?? 2) * (boat ? 2 : 1);
         return spc > 0 ? 12 / spc : 12;
@@ -405,6 +406,13 @@ const Store = (() => {
         g.register(MOD, "biomeDangerJSON", { name: "Biome danger modifier (advanced)", hint: 'Optional JSON of biome → night danger (0-2), e.g. {"volcanic":2,"jungle":1}. Blank uses defaults.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "campMapJSON", { name: "Biome → camp ambience (advanced)", hint: 'Optional JSON of biome → Maestro arrangement for camp. Blank = "campVista" for all.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "lastWatch", { scope: "world", config: false, type: Array, default: [] });
+        // Daytime travel encounters (same Danger model + encounter scale as the night camp).
+        g.register(MOD, "dayEncounters", { name: "Daytime travel encounters", hint: "Roll an encounter check while travelling (per Travel Turn / Move). The Scout's success lowers the odds and prevents surprise. Uses the same Encounter die as the night.", scope: "world", config: true, type: Boolean, default: true });
+        // Forced march → exhaustion. All tunable so you can balance it to taste.
+        g.register(MOD, "forcedMarch", { name: "Forced march exhaustion", hint: "Pushing the pace risks a level of exhaustion (CON save). A long rest at dawn eases it.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "forcedMarchPace", { name: "Forced march triggers on", hint: "Which travel pace counts as forcing the march.", scope: "world", config: true, type: String, choices: { fast: "Fast pace only", normalFast: "Normal & Fast", all: "Any pace" }, default: "fast" });
+        g.register(MOD, "forcedMarchDC", { name: "Forced march save DC", hint: "CON save DC each member rolls after a forced-march day (fail = +1 exhaustion).", scope: "world", config: true, type: Number, default: 10 });
+        g.register(MOD, "longRestRelief", { name: "Exhaustion eased per long rest", hint: "Levels of exhaustion removed from each member at dawn (a long rest). 0 = never auto-clear.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 6, step: 1 } });
         // Movement penalties for rugged terrain (separate from the biome DC).
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
@@ -950,6 +958,7 @@ async function advanceToDawn() {
     const st = Store.sceneState();
     const nextDay = (st.day || 1) + 1;
     await Store.setSceneState({ day: nextDay, foraged: false, shortRest: false });
+    await cwfLongRestRelief();
     try {
         const mc = MiniCal.api?.();
         if (mc?.setTime) await mc.setTime(1, "dawn");   // tomorrow's dawn
@@ -960,6 +969,84 @@ async function advanceToDawn() {
 
 // Effective travel weather: Mini Calendar's live weather if present, else scene state.
 const effectiveWeather = () => (MiniCal.key() ?? Store.sceneState().weather) || "clear";
+
+// Scene night/encounter danger score (shared by day travel + night camp).
+const cwfDangerScore = () => Store.sceneState().danger ?? (Number(game.settings.get(MOD, "dangerDefault")) || 0);
+
+// Average party level — context for the encounter hook a future generator uses.
+function cwfAvgPartyLevel() {
+    try { const ms = Party.members(); if (!ms.length) return 1; return Math.max(1, Math.round(ms.reduce((a, m) => a + (m.system?.details?.level ?? 1), 0) / ms.length)); }
+    catch { return 1; }
+}
+
+// Resolve an encounter's CONTENT. Fires "cavril-wayfarer.encounter" first so a
+// dedicated generator (planned: CR-balanced, biome-tagged monster DB → scene map)
+// can supply the encounter by setting ctx.text + ctx.handled; otherwise falls back
+// to the editable per-biome RollTable, then a generic line.
+async function cwfEncounterText(cls, { when = "day", surprised = false } = {}) {
+    const biome = cls?.biome || "unknown", label = cls?.label || "Wilderness";
+    const ctx = { module: MOD, when, biome, biomeLabel: label, partyLevel: cwfAvgPartyLevel(), surprised, text: null, handled: false };
+    try { Hooks.callAll("cavril-wayfarer.encounter", ctx); } catch (e) { warn("encounter hook failed", e); }
+    if (ctx.handled && ctx.text) return ctx.text;
+    return await Tables.drawEncounter(biome, label);
+}
+
+// One daytime travel-encounter check along a route (Danger model, at most one).
+// The Scout's success reduces the odds (scoutMod) and prevents surprise.
+async function cwfTravelEncounter(routeArr, { scoutMod = 0, surprised = true } = {}) {
+    if (!game.user.isGM || !game.settings.get(MOD, "dayEncounters") || !routeArr?.length) return false;
+    const danger = cwfDangerScore(), scale = Danger.scale();
+    for (const off of routeArr) {
+        const cls = Hex.classifyAt(off);
+        const x = Danger.hourlyX(danger, Danger.biomeMod(cls), 0, scoutMod);
+        if (x <= 0) continue;
+        let roll = 0; try { roll = (await new Roll(`1d${scale}`).evaluate()).total; } catch { roll = Math.ceil(Math.random() * scale); }
+        if (roll <= x) {
+            const text = await cwfEncounterText(cls, { when: "day", surprised });
+            const tag = surprised ? `<span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : `<span class="cwf-tier-badge cwf-tier-success">Forewarned</span>`;
+            const body = `<div class="cwf-rr"><div class="cwf-rr-top"><i class="fa-solid fa-dragon"></i> <span class="cwf-rr-role">Encounter</span> ${tag}</div><div class="cwf-rr-b">${text}</div></div>`;
+            ChatMessage.create({ content: cwfCardShell("fa-dragon", "Travel Encounter", body, { sub: `${cls?.label || "Wilderness"} · ${x}/${scale}` }) });
+            return true;
+        }
+    }
+    return false;
+}
+
+// Forced march: a hard-pace travel day risks a level of exhaustion (CON save,
+// rolled quietly off the actor's save bonus to avoid a chat flood). Configurable.
+async function cwfForcedMarch(pace) {
+    if (!game.user.isGM || !game.settings.get(MOD, "forcedMarch")) return;
+    const which = game.settings.get(MOD, "forcedMarchPace") || "fast";
+    const triggers = which === "all" ? true : which === "normalFast" ? (pace === "fast" || pace === "normal") : (pace === "fast");
+    if (!triggers) return;
+    const dc = Math.max(1, Number(game.settings.get(MOD, "forcedMarchDC")) || 10);
+    const members = Party.members();
+    if (!members.length) return;
+    const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
+    const rows = [];
+    for (const a of members) {
+        const con = a.system?.abilities?.con || {};
+        const bonus = Number.isFinite(con.save) ? con.save : (con.mod ?? 0);
+        const f = `1d20 ${bonus >= 0 ? "+" : "-"} ${Math.abs(bonus)}`;
+        let total = 0; try { total = (await new Roll(f).evaluate()).total; } catch { total = Math.ceil(Math.random() * 20) + bonus; }
+        const failed = total < dc;
+        let lvl = a.system?.attributes?.exhaustion ?? 0;
+        if (failed) { lvl = Math.min(6, lvl + 1); try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { warn("apply exhaustion failed", e); } }
+        rows.push(`<div class="cwf-night-h ${failed ? "hit" : ""}">${esc(a.name)} · CON ${total} vs ${dc} · ${failed ? `exhausted (lvl ${lvl})` : "holds up"}</div>`);
+    }
+    ChatMessage.create({ content: cwfCardShell("fa-person-running", "Forced March", `<div class="cwf-night">${rows.join("")}</div>`, { sub: `${pace} pace · DC ${dc}` }) });
+}
+
+// A long rest at dawn eases the strain of the road.
+async function cwfLongRestRelief() {
+    if (!game.user.isGM) return;
+    const ease = Number(game.settings.get(MOD, "longRestRelief"));
+    if (!(ease > 0)) return;
+    for (const a of Party.members()) {
+        const lvl = a.system?.attributes?.exhaustion ?? 0;
+        if (lvl > 0) { try { await a.update({ "system.attributes.exhaustion": Math.max(0, lvl - ease) }); } catch (e) { warn("ease exhaustion failed", e); } }
+    }
+}
 
 /* =========================================================================
  * MUSIC — drive Cavril: Maestro's environment channel from the current biome.
@@ -1537,6 +1624,9 @@ const Travel = (() => {
             await new Promise(r => setTimeout(r, 160));
         }
         await Store.advanceWorldTime(travelHours(steps));
+        // Move-only skips the group check → no Scout, so the party travels unwarned.
+        await cwfTravelEncounter(steps, { scoutMod: 0, surprised: true });
+        await cwfForcedMarch(pace);
         waypoints = []; routeArr = []; reachMap = null; anchor = null; plotTok = null;
         WayfarerPanel.render(); BiomeBadge.update();
     }
@@ -1635,7 +1725,44 @@ const Tables = (() => {
             return { text: text || inline().text, effect: (e && typeof e === "object") ? e.effect : null };
         } catch (e) { warn("table draw failed", e); return inline(); }
     }
-    return { ensureAll, draw, DEFS, FOLDER };
+
+    // ---- per-biome encounter tables ---------------------------------------
+    // Generic, biome-agnostic seeds. The GM edits each biome's table to taste; a
+    // future encounter-generator module overrides via the "cavril-wayfarer.encounter"
+    // hook before these are ever drawn. Tables are created lazily, one per biome.
+    const ENCOUNTER_ENTRIES = [
+        "Predators on the hunt, drawn by the party's scent.",
+        "A hostile patrol or band of raiders crosses your path.",
+        "Territorial beasts defending their ground.",
+        "A wounded or desperate traveler — aid, or bait for an ambush?",
+        "Scavengers picking at a fresh kill — and you've interrupted them.",
+        "An uneasy quiet, then tracks: something larger is near."
+    ];
+    async function ensureEncounter(biomeKey, label) {
+        const cached = ids()?.encounter?.[biomeKey];
+        if (cached) { const t = game.tables.get(cached); if (t) return t; }
+        if (!game.user.isGM) return null;
+        const map = ids(); map.encounter ??= {};
+        let folder = game.folders?.find(f => f.type === "RollTable" && f.name === FOLDER);
+        try { if (!folder) folder = await Folder.create({ name: FOLDER, type: "RollTable" }); } catch { /* folder optional */ }
+        try {
+            const results = ENCOUNTER_ENTRIES.map((t, i) => ({ type: CONST.TABLE_RESULT_TYPES?.TEXT ?? 0, text: t, weight: 1, range: [i + 1, i + 1] }));
+            const tbl = await RollTable.create({ name: `Encounters — ${label}`, formula: `1d${ENCOUNTER_ENTRIES.length}`, folder: folder?.id, results, replacement: true, displayRoll: true });
+            map.encounter[biomeKey] = tbl.id;
+            await game.settings.set(MOD, "tableIds", map);
+            return tbl;
+        } catch (e) { warn(`could not create encounter table for ${label}`, e); return null; }
+    }
+    async function drawEncounter(biomeKey, label) {
+        const fallback = ENCOUNTER_ENTRIES[0];
+        try {
+            const tbl = await ensureEncounter(biomeKey, label);
+            if (!tbl) return fallback;
+            const res = await tbl.draw({ displayChat: false });
+            return res?.results?.[0]?.text || fallback;
+        } catch (e) { warn("encounter draw failed", e); return fallback; }
+    }
+    return { ensureAll, draw, ensureEncounter, drawEncounter, DEFS, FOLDER };
 })();
 
 /* =========================================================================
@@ -1662,13 +1789,14 @@ const ROLE_SKILLS = {
     forage:   ["nat", "sur", "med"]
 };
 const Turn = (() => {
-    let active = false, step = "active", route = [], governing = null, pace = "normal", boat = false;
+    let active = false, step = "active", route = [], governing = null, pace = "normal", boat = false, turnTok = null;
     const newSlot = () => ({ actorId: null, actorName: null, skillId: null, total: null, nat: null, outcome: null, result: null });
     const roles = { navigate: newSlot(), scout: newSlot(), forage: newSlot() };
 
     function begin() {
         const r = Travel.route;
         if (!r?.length) { ui.notifications?.warn(`${TITLE}: plot a destination first.`); return; }
+        turnTok = Travel.token || Canvasry.activeToken();   // lock the party token now (selection can change mid-turn)
         active = true; step = "active";
         route = r.slice();
         governing = Travel.governing();
@@ -1786,12 +1914,21 @@ const Turn = (() => {
         const foot = `<span class="cwf-card-clock"><i class="fa-solid fa-clock"></i> ${hrs} ${hrs === 1 ? "hour" : "hours"} pass${navEffect === "dead" ? " — lost, 0 hexes" : ""}.</span>`;
         ChatMessage.create({ content: cwfCardShell("fa-compass", "Travel Turn", body, { sub, footerHTML: foot }) });
 
+        // Daytime travel encounter — the Scout's success eases the odds and keeps
+        // the party from being Surprised (mirrors a night watcher reducing danger).
+        if (navEffect !== "dead") {
+            const sc = roles.scout, scActor = sc.actorId ? game.actors.get(sc.actorId) : null;
+            const scGood = sc.outcome === "success" || sc.outcome === "crit";
+            await cwfTravelEncounter(route, { scoutMod: (scActor && scGood) ? Danger.highestMod(scActor) : 0, surprised: !(scActor && scGood) });
+        }
+        await cwfForcedMarch(pace);
+
         step = "resolved";
         WayfarerPanel.render(); BiomeBadge.update();
     }
 
     async function applyMovement(effect) {
-        const tok = Canvasry.activeToken();
+        const tok = turnTok || Canvasry.activeToken();
         if (!tok || !route.length) { CourseOverlay.clear(); return; }
         let path = route;
         if (effect === "dead") path = [];                         // move 0
@@ -1810,7 +1947,7 @@ const Turn = (() => {
     }
 
     function end() {
-        active = false; step = "active"; route = []; governing = null;
+        active = false; step = "active"; route = []; governing = null; turnTok = null;
         for (const k of Object.keys(roles)) roles[k] = newSlot();
         CourseOverlay.clear();
         WayfarerPanel.render(); BiomeBadge.update();
@@ -1908,10 +2045,12 @@ const Camp = (() => {
             : oneOnly ? `⚔ <b>Encounter at hour ${firstHour}</b> — ${firstWatcher ? `${esc(firstWatcher.name)}'s watch` : "no one on watch"}.`
             : `⚔ <b>${encounters} encounter${encounters === 1 ? "" : "s"}</b> in the night.`;
         body += cwfRow("Result", resultText);
+        if (encounters > 0) { try { body += cwfRow("Encounter", await cwfEncounterText(cls, { when: "night", surprised: !firstWatcher })); } catch (e) { warn("night encounter text failed", e); } }
         ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "" }) });
 
         const prev = Store.sceneState().day || 1;
         await Store.setSceneState({ day: prev + 1, foraged: false, shortRest: false });
+        await cwfLongRestRelief();   // the night's rest eases exhaustion
         try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(1, Number(game.settings.get(MOD, "wakeHour")) || 6); else await Store.advanceWorldTime(N); }
         catch (e) { warn("advance to dawn failed", e); }
         active = false;
@@ -2002,6 +2141,7 @@ const WayfarerPanel = (() => {
                 case "set-party": await Canvasry.setPartyToken(); break;
                 case "reset-journey": case "end-journey": await endJourney(); break;
                 case "haul": await foragerHaul(); break;
+                case "restock": await restockSupplies(); break;
                 case "camp": await makeCamp(); break;
                 case "enter-site": await enterSite(); break;
                 case "plan-route": Travel.startPlot(); break;
@@ -2048,6 +2188,37 @@ const WayfarerPanel = (() => {
             new Dialog({
                 title: "Forager Haul", content,
                 buttons: { ok: { label: "Add", callback: (h) => apply(Number(h[0].querySelector('[name=rations]').value), Number(h[0].querySelector('[name=water]').value)) } },
+                default: "ok"
+            }).render(true);
+        }
+    }
+
+    // Restock at a settlement: top the shared stash up by N days × party size.
+    async function restockSupplies() {
+        const size = Party.size() || 1;
+        const content = `
+            <div class="cwf-dialog">
+                <p>Restock the party at a settlement — adds supplies to the shared stash for the journey ahead.</p>
+                <label>Days of supplies <input type="number" name="days" value="7" min="1"></label>
+                <p class="cwf-muted2">Adds days × ${size} member${size === 1 ? "" : "s"} of rations and waterskins.</p>
+            </div>`;
+        const apply = async (days) => {
+            const r = Math.max(0, days | 0) * size;
+            await Party.addToStash(r, r);
+            ChatMessage.create({ content: cwfCardShell("fa-box-open", "Restocked", cwfRow("Supplies", `+${r}🍖 / +${r}💧 added to the party stash (${days | 0} day${(days | 0) === 1 ? "" : "s"} × ${size}).`)) });
+            render();
+        };
+        const DialogV2 = foundry.applications?.api?.DialogV2;
+        if (DialogV2) {
+            const res = await DialogV2.prompt({
+                window: { title: "Restock" }, content,
+                ok: { label: "Restock", callback: (_e, b) => Number(b.form.days.value) }
+            }).catch(() => null);
+            if (res != null) await apply(res);
+        } else {
+            new Dialog({
+                title: "Restock", content,
+                buttons: { ok: { label: "Restock", callback: (h) => apply(Number(h[0].querySelector('[name=days]').value)) } },
                 default: "ok"
             }).render(true);
         }
@@ -2214,7 +2385,7 @@ const WayfarerPanel = (() => {
                     <div class="cwf-label">Plot course <span class="cwf-muted2">${hint}</span></div>
                     <div class="cwf-seg-row">${tpace}</div>
                     <div class="cwf-toggles">
-                        <button class="cwf-toggle ${Travel.boat ? "on" : ""}" data-action="travel-boat" title="Boat on a river / cart on a road doubles your reach"><i class="fa-solid fa-sailboat"></i> Boat / Cart</button>
+                        <button class="cwf-toggle ${Travel.boat ? "on" : ""}" data-action="travel-boat" title="A boat on a river / cart on a road travels faster there (⅓ movement cost instead of ½)"><i class="fa-solid fa-sailboat"></i> Boat / Cart</button>
                         <button class="cwf-toggle ${Travel.shortRest ? "on" : ""}" data-action="travel-short" title="A Short Rest costs 1 Space of movement"><i class="fa-solid fa-mug-hot"></i> Short Rest</button>
                     </div>
                     ${summary}
@@ -2262,6 +2433,7 @@ const WayfarerPanel = (() => {
                     <div class="cwf-label">Settlement</div>
                     <div class="cwf-actions">
                         <button class="cwf-btn cwf-site-btn" data-action="enter-site"><i class="fa-solid fa-dungeon"></i> Enter ${esc(site.name)}</button>
+                        ${isGM ? `<button class="cwf-btn" data-action="restock" title="Restock supplies for the journey ahead"><i class="fa-solid fa-box-open"></i> Restock</button>` : ""}
                         ${isGM ? `<button class="cwf-btn" data-action="end-journey" title="Arrived — reset the journey day counter"><i class="fa-solid fa-flag-checkered"></i> End journey</button>` : ""}
                     </div>
                 </div>` : ""}
