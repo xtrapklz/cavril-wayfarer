@@ -1138,6 +1138,26 @@ async function cwfTravelMove(tok, path, { pace = "normal", boat = false, scoutGo
     return { halted };
 }
 
+// Ordered biome breakdown of a route (run-length encoded), so the GM can see why
+// the governing DC is what it is — the worst hex along the way drives it. Segments
+// matching govDc are flagged so the DC-driver stands out.
+function cwfRouteBreakdownHTML(routeArr, govDc) {
+    if (!routeArr?.length) return "";
+    const segs = [];
+    for (const off of routeArr) {
+        const cls = Hex.classifyAt(off);
+        const label = cls?.label || "Unknown", dc = cls?.dc ?? null;
+        const last = segs[segs.length - 1];
+        if (last && last.label === label && last.dc === dc) last.count++;
+        else segs.push({ label, dc, icon: cls?.icon || "fa-location-dot", tier: cls ? Domain.tier(cls) : null, count: 1 });
+    }
+    const chips = segs.map(s => {
+        const gov = govDc != null && s.dc === govDc;
+        return `<span class="cwf-route-seg${gov ? " gov" : ""}"${s.tier ? ` data-tier="${s.tier}"` : ""}><i class="fa-solid ${s.icon}"></i> ${s.label}${s.count > 1 ? ` ×${s.count}` : ""}${s.dc != null ? ` · DC ${s.dc}` : ""}</span>`;
+    }).join(`<span class="cwf-route-arrow">›</span>`);
+    return `<div class="cwf-route-bd" title="The route's hardest hex sets the Travel Turn DC">${chips}</div>`;
+}
+
 // Forced march: a hard-pace travel day risks a level of exhaustion (CON save,
 // rolled quietly off the actor's save bonus to avoid a chat flood). Configurable.
 async function cwfForcedMarch(pace) {
@@ -2527,6 +2547,7 @@ const WayfarerPanel = (() => {
         return `
             <div class="cwf-section cwf-turn">
                 <div class="cwf-label">Travel Turn · <b>DC ${dc}</b> <span class="cwf-muted2">${govLabel} · ${Turn.route.length} hex${Turn.route.length === 1 ? "" : "es"}</span></div>
+                ${cwfRouteBreakdownHTML(Turn.route, dc)}
                 <div class="cwf-roles">${cards}</div>
                 <div class="cwf-actions">${footer}</div>
             </div>`;
@@ -2620,6 +2641,7 @@ const WayfarerPanel = (() => {
                         <button class="cwf-toggle ${Travel.shortRest ? "on" : ""}" data-action="travel-short" title="A Short Rest costs 1 Space of movement"><i class="fa-solid fa-mug-hot"></i> Short Rest</button>
                     </div>
                     ${summary}
+                    ${n ? cwfRouteBreakdownHTML(Travel.route, gov?.dc) : ""}
                     <div class="cwf-actions">
                         <button class="cwf-btn" data-action="travel-cancel"><i class="fa-solid fa-xmark"></i> Cancel</button>
                         <button class="cwf-btn" data-action="travel-undo" ${wps ? "" : "disabled"} title="Remove the last stop"><i class="fa-solid fa-rotate-left"></i> Undo</button>
