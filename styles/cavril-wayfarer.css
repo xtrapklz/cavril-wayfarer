@@ -204,6 +204,15 @@
 .cwf-card-v em { font-style: normal; color: #9a9a9a; }
 .cwf-card-foot { padding: 8px 10px; border-top: 1px solid rgba(255,255,255,.10); }
 .cwf-card-clock { font-size: 11px; color: #9a9a9a; display: inline-flex; align-items: center; gap: 5px; }
+/* stepped-travel card buttons */
+.cwf-cardbtns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cwf-cardbtns .cwf-card-clock { margin-right: auto; }
+.cwf-cardbtn { height: 28px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-text); cursor: pointer; font-weight: 600; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+.cwf-cardbtn:hover { border-color: var(--cwf-accent); }
+.cwf-cardbtn.cwf-primary { background: color-mix(in srgb, var(--cwf-hard) 26%, var(--cwf-bg2)); border-color: var(--cwf-hard); }
+.cwf-cardbtn.cwf-primary:hover { background: color-mix(in srgb, var(--cwf-hard) 42%, var(--cwf-bg2)); }
+.cwf-cardbtn i { color: var(--cwf-accent); }
+.cwf-cardbtn.cwf-primary i { color: #fff; }
 .cwf-card-btn { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid rgba(189,169,232,.5); background: rgba(189,169,232,.16); color: #f4f4f4; font-weight: 700; letter-spacing: .04em; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .cwf-card-btn:hover { background: rgba(189,169,232,.3); }
 /* per-role result block */

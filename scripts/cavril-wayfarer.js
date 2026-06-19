@@ -1016,6 +1016,7 @@ function cwfDelayMs() { const v = Number(game.settings.get(MOD, "universalDelay"
 // While a travel sequence runs we advance the clock per hex; suppress the per-hex
 // weather/panel re-render thrash and refresh ONCE when it ends (covered by a cinematic).
 let cwfBusy = false;
+const cwfEsc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
 
 const Cinematic = (() => {
     const TONE = {
@@ -1128,26 +1129,21 @@ function cwfWeightedPick(weights) {
 // Resolve ONE hex's travel event. x = scene Danger (0-5) + biome danger (0-2),
 // −1 if the Scout succeeded. Mostly mundane flavor (continue); a danger-scaled
 // chance of a real event — narrative (continue) or combat/puzzle/site (HALT).
-// Returns null (keep moving) or { halt, hours, kind }. Whispers to the GM.
+// RETURNS the content for the travel card (the stepper renders it) — it no longer
+// posts its own card. { halt, hours?, line, icon?, label?, tag?, cinematic? }.
 async function cwfHexEvent(cls, { scoutGood = false } = {}) {
-    if (!game.user.isGM || !game.settings.get(MOD, "travelEvents")) return null;
+    if (!game.user.isGM || !game.settings.get(MOD, "travelEvents")) return { halt: false, line: "the way is clear." };
     const scale = Math.max(2, Number(game.settings.get(MOD, "eventScale")) || 20);
     const biome = cls?.label || "Wilderness";
     let x = cwfDangerScore() + Danger.biomeMod(cls);
     if (scoutGood) x = Math.max(0, x - 1);
     let roll = scale; try { roll = (await new Roll(`1d${scale}`).evaluate()).total; } catch { roll = Math.ceil(Math.random() * scale); }
-    // Common case — nothing of note. A mundane flavor beat; the party travels on.
-    if (x <= 0 || roll > x) {
-        cwfWhisper("fa-feather", "On the road", `<div class="cwf-rr-b">${await Tables.drawFlavor()}</div>`, biome);
-        return null;
-    }
-    // A real event. Narrative is the most common (continue); combat scales with
-    // danger; puzzle and site are rare and halt the day.
+    // Common case — a mundane flavor beat; the party travels on.
+    if (x <= 0 || roll > x) return { halt: false, line: await Tables.drawFlavor() };
+    // A real event. Narrative is most common (continue); combat scales with danger;
+    // puzzle and site are rare and halt the day.
     const kind = cwfWeightedPick({ narrative: 5, combat: 3 + x, puzzle: 2, site: 1 });
-    if (kind === "narrative") {
-        cwfWhisper("fa-feather-pointed", "A turn in the road", `<div class="cwf-rr-b">${await Tables.drawEvent("narrative")}</div>`, biome);
-        return null;
-    }
+    if (kind === "narrative") return { halt: false, line: await Tables.drawEvent("narrative") };
     const hours = Math.max(0, Number(game.settings.get(MOD, "encounterHours")) || 1);
     const meta = ({
         combat: { icon: "fa-dragon", label: "Encounter!" },
@@ -1155,55 +1151,92 @@ async function cwfHexEvent(cls, { scoutGood = false } = {}) {
         site:   { icon: "fa-dungeon", label: "A Discovery" }
     })[kind];
     const text = kind === "combat" ? await cwfEncounterText(cls, { when: "day", surprised: !scoutGood }) : await Tables.drawEvent(kind);
-    Cinematic.broadcast({ icon: meta.icon, title: meta.label, subtitle: biome, tone: "encounter" });
     const tag = (kind === "combat" && !scoutGood) ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
-    cwfWhisper(meta.icon, meta.label, `<div class="cwf-rr"><div class="cwf-rr-top"><i class="fa-solid ${meta.icon}"></i> <span class="cwf-rr-role">${meta.label}</span>${tag}</div><div class="cwf-rr-b">${text}</div></div>`, `${biome} · halts travel · +${hours}h`);
-    return { halt: true, hours, kind };
+    return { halt: true, hours, kind, icon: meta.icon, label: meta.label, tag, line: text, cinematic: { icon: meta.icon, title: meta.label, subtitle: biome, tone: "encounter" } };
 }
 
-// Gradual hex-by-hex movement: animate into each hex, advance the clock for that
-// hex, roll a travel event, and HALT for the day on a real encounter. lostHours =
-// a "got lost" day that wandered without progress still spends that much time. The
-// clock/weather thrash is suppressed during the walk (cwfBusy) and refreshed once at
-// the end — any net weather shift is covered by a brief cinematic so it isn't jarring.
-async function cwfTravelMove(tok, path, { pace = "normal", boat = false, scoutGood = false, lostHours = 0 } = {}) {
-    if (!tok) { CourseOverlay.clear(); return { halted: false }; }
+// ---- STEPPED TRAVEL — one chat card the GM advances hex-by-hex, at their own pace.
+// "Next hex" moves the token, advances the clock, updates the weather, rolls the hex's
+// event, and APPENDS a line to the SAME card (no flurry of per-hex cards). An encounter
+// halts; at the end the card offers Make camp. Forced march folds into the same card.
+let cwfTrek = null;
+const cwfGmIds = () => game.users.filter(u => u.isGM).map(u => u.id);
+function cwfClockLabel() {
+    try { const secs = game.time?.worldTime ?? 0; const h = (Math.floor(secs / 3600) % 24 + 24) % 24, m = (Math.floor(secs / 60) % 60 + 60) % 60; return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; }
+    catch { return ""; }
+}
+function cwfTrekCardHTML() {
+    const t = cwfTrek; if (!t) return "";
+    const log = t.lines.length
+        ? `<div class="cwf-night-sec">On the road</div><div class="cwf-night">${t.lines.join("")}</div>`
+        : `<div class="cwf-muted2" style="margin-top:6px">Step through each hex when you're ready to move on.</div>`;
+    const march = t.marchHTML ? `<div class="cwf-night-sec">Forced march${t.marchSub ? ` · ${cwfEsc(t.marchSub)}` : ""}</div>${t.marchHTML}` : "";
+    let foot;
+    if (t.done) foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-flag-checkered"></i> ${t.halted ? "Halted" : "Arrived"} · ${cwfClockLabel()}</span><button class="cwf-cardbtn cwf-primary" data-cwf="camp"><i class="fa-solid fa-campground"></i> Make camp</button></div>`;
+    else foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock">Hex ${t.idx}/${t.route.length} · ${cwfClockLabel()}</span><button class="cwf-cardbtn cwf-primary" data-cwf="step"><i class="fa-solid fa-shoe-prints"></i> Next hex</button><button class="cwf-cardbtn" data-cwf="stop" title="Stop here for the day"><i class="fa-solid fa-flag-checkered"></i> Stop</button></div>`;
+    return cwfCardShell(t.icon, t.title, (t.header || "") + log + march, { sub: t.sub, footerHTML: foot });
+}
+async function cwfTrekRefresh() {
+    const t = cwfTrek; if (!t?.msgId) return;
+    const msg = game.messages.get(t.msgId);
+    if (msg) { try { await msg.update({ content: cwfTrekCardHTML() }); } catch (e) { warn("trek card update failed", e); } }
+}
+async function cwfStartTravel(tok, route, { pace = "normal", boat = false, scoutGood = false, lostHours = 0, header = "", title = "Travel", icon = "fa-person-walking-arrow-right", sub = "" } = {}) {
+    if (!game.user.isGM || !tok) return;
+    try { CourseOverlay.stop(); } catch { /* noop */ }
+    cwfTrek = { tokId: tok.id, route: (route || []).slice(), idx: 0, pace, boat, scoutGood, acc: 0, prev: Hex.offsetOf(tok.center), lines: [], header, title, icon, sub, halted: false, done: false, lostHours, marchHTML: "", marchSub: "" };
+    const msg = await ChatMessage.create({ content: cwfTrekCardHTML(), whisper: cwfGmIds() }).catch(() => null);
+    cwfTrek.msgId = msg?.id;
+    if (!cwfTrek.route.length) {   // a "got lost" day — no hexes, just spend the time
+        if (lostHours > 0) await Store.advanceWorldTime(Math.round(lostHours));
+        cwfTrek.lines.push(`<div class="cwf-night-h hit">Lost — you wander all day and make no progress.</div>`);
+        await cwfFinishTravel();
+    }
+}
+async function cwfDoHexStep() {
+    const t = cwfTrek; if (!t || t.done) return;
+    if (t.idx >= t.route.length) { await cwfFinishTravel(); return; }
+    const tok = canvas?.tokens?.get(t.tokId) || Canvasry.activeToken();
+    const off = t.route[t.idx];
+    const cls = Hex.classifyAt(off);
+    const biome = cls?.label || "Wilderness";
+    if (tok) { try { const c = canvas.grid.getCenterPoint(off); await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true }); } catch (e) { warn("step move failed", e); } }
+    const sp = Domain.PACE[t.pace]?.spaces ?? 2;
+    t.acc += sp > 0 ? (Hex.stepCost(off, cls, { boat: t.boat }, t.prev) / sp) * 12 : 0;
+    t.prev = off;
+    const whole = Math.floor(t.acc); if (whole >= 1) { t.acc -= whole; await Store.advanceWorldTime(whole); }
+    t.idx++;
+    // weather — manual step, so update freely and announce a change in-card + a beat.
     const wxBefore = MiniCal.key();
-    cwfBusy = true;
-    let halted = false;
-    try {
-        if (!path?.length) {
-            if (lostHours > 0) await Store.advanceWorldTime(Math.round(lostHours));
-        } else {
-            const sp = Domain.PACE[pace]?.spaces ?? 2;
-            let acc = 0, prev = Hex.offsetOf(tok.center);   // hex the party departs from
-            for (const off of path) {
-                const c = canvas.grid.getCenterPoint(off);
-                try { await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true }); }
-                catch (e) { warn("token move failed", e); break; }
-                await new Promise(r => setTimeout(r, 600));   // slow enough to narrate to
-                const cls = Hex.classifyAt(off);
-                acc += sp > 0 ? (Hex.stepCost(off, cls, { boat }, prev) / sp) * 12 : 0;   // fractional hours (infra connectivity from prev hex)
-                prev = off;
-                const whole = Math.floor(acc); if (whole >= 1) { acc -= whole; await Store.advanceWorldTime(whole); }
-                const ev = await cwfHexEvent(cls, { scoutGood });
-                if (ev?.halt) { if (ev.hours) await Store.advanceWorldTime(ev.hours); halted = true; break; }
-            }
-            if (!halted && acc >= 0.5) await Store.advanceWorldTime(Math.round(acc));   // trailing partial hour
-        }
-        // Read the new weather silently (render still suppressed); cover a shift with a cinematic.
-        await MiniCal.refresh();
-        const wxAfter = MiniCal.key();
-        if (game.user.isGM && wxAfter && wxBefore && wxAfter !== wxBefore) {
-            const wl = Domain.WEATHER[wxAfter] || Domain.WEATHER.clear;
-            const here = Hex.classifyAt(Hex.offsetOf(tok.center));
-            Cinematic.broadcast({ icon: wl.icon || "fa-cloud", title: MiniCal.label() || wl.label || "Weather", subtitle: `${here?.label || "the wilds"} · ${pace} pace`, tone: "weather" });
-            await new Promise(r => setTimeout(r, cwfDelayMs()));   // sit in the beat while it changes behind the blur
-        }
-    } catch (e) { warn("travel move failed", e); }
-    finally { cwfBusy = false; CourseOverlay.clear(); }
+    try { await MiniCal.refresh(); } catch { /* noop */ }
+    const wxAfter = MiniCal.key();
+    if (wxAfter && wxBefore && wxAfter !== wxBefore) {
+        const wl = Domain.WEATHER[wxAfter] || Domain.WEATHER.clear;
+        t.lines.push(`<div class="cwf-night-h"><i class="fa-solid ${wl.icon}"></i> The weather turns — ${cwfEsc(MiniCal.label() || wl.label)}.</div>`);
+        Cinematic.broadcast({ icon: wl.icon || "fa-cloud", title: MiniCal.label() || wl.label || "Weather", subtitle: `${biome} · ${t.pace} pace`, tone: "weather" });
+    }
+    // hex event
+    const ev = await cwfHexEvent(cls, { scoutGood: t.scoutGood });
+    if (ev?.halt) {
+        if (ev.hours) await Store.advanceWorldTime(ev.hours);
+        t.lines.push(`<div class="cwf-night-h hit"><i class="fa-solid ${ev.icon}"></i> <b>${ev.label}</b>${ev.tag || ""} · ${biome} · +${ev.hours}h<br>${ev.line}</div>`);
+        t.halted = true;
+        if (ev.cinematic) Cinematic.broadcast(ev.cinematic);
+        await cwfFinishTravel();
+    } else {
+        t.lines.push(`<div class="cwf-night-h"><span class="cwf-rr-sk">Hex ${t.idx} · ${biome} · ${cwfClockLabel()}</span> — ${ev?.line || "the way is clear."}</div>`);
+        if (t.idx >= t.route.length) await cwfFinishTravel();
+        else await cwfTrekRefresh();
+    }
     WayfarerPanel.renderExternal(); BiomeBadge.update();
-    return { halted };
+}
+async function cwfFinishTravel() {
+    const t = cwfTrek; if (!t || t.done) return;
+    if (!t.halted && t.acc >= 0.5) { await Store.advanceWorldTime(Math.round(t.acc)); t.acc = 0; }
+    try { const fm = await cwfForcedMarch(t.pace); if (fm?.html) { t.marchHTML = fm.html; t.marchSub = fm.sub || ""; } } catch (e) { warn("forced march failed", e); }
+    t.done = true;
+    await cwfTrekRefresh();
+    WayfarerPanel.renderExternal(); BiomeBadge.update();
 }
 
 // Ordered biome breakdown of a route (run-length encoded), so the GM can see why
@@ -1228,14 +1261,16 @@ function cwfRouteBreakdownHTML(routeArr, govDc) {
 
 // Forced march: a hard-pace travel day risks a level of exhaustion (CON save,
 // rolled quietly off the actor's save bonus to avoid a chat flood). Configurable.
+// Returns { html, sub } for the travel card (no longer posts its own card), or
+// { html: "" } when the pace/settings don't trigger a forced march.
 async function cwfForcedMarch(pace) {
-    if (!game.user.isGM || !game.settings.get(MOD, "forcedMarch")) return;
+    if (!game.user.isGM || !game.settings.get(MOD, "forcedMarch")) return { html: "" };
     const which = game.settings.get(MOD, "forcedMarchPace") || "fast";
     const triggers = which === "all" ? true : which === "normalFast" ? (pace === "fast" || pace === "normal") : (pace === "fast");
-    if (!triggers) return;
+    if (!triggers) return { html: "" };
     const dc = Math.max(1, Number(game.settings.get(MOD, "forcedMarchDC")) || 10);
     const members = Party.members();
-    if (!members.length) return;
+    if (!members.length) return { html: "" };
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
     const rows = [];
     for (const a of members) {
@@ -1248,7 +1283,7 @@ async function cwfForcedMarch(pace) {
         if (failed) { lvl = Math.min(6, lvl + 1); try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { warn("apply exhaustion failed", e); } }
         rows.push(`<div class="cwf-night-h ${failed ? "hit" : ""}">${esc(a.name)} · CON ${total} vs ${dc} · ${failed ? `exhausted (lvl ${lvl})` : "holds up"}</div>`);
     }
-    ChatMessage.create({ content: cwfCardShell("fa-person-running", "Forced March", `<div class="cwf-night">${rows.join("")}</div>`, { sub: `${pace} pace · DC ${dc}` }) });
+    return { html: `<div class="cwf-night">${rows.join("")}</div>`, sub: `${pace} pace · DC ${dc}` };
 }
 
 // Watch shift length (the night splits evenly) and the exhaustion TOLL a watcher
@@ -2029,11 +2064,9 @@ const Travel = (() => {
         if (!tok || !routeArr.length) return;
         const steps = routeArr.slice();
         plotting = false; CourseOverlay.stop();
-        // Move-only skips the group check → no Scout, so the party travels unwarned.
-        // Gradual movement advances the clock + rolls a travel event each hex, and
-        // halts the day where an encounter strikes.
-        await cwfTravelMove(tok, steps, { pace, boat, scoutGood: false });
-        await cwfForcedMarch(pace);
+        // Move-only skips the group check (no Scout) → start the stepped travel card;
+        // the GM clicks through each hex at their own pace.
+        await cwfStartTravel(tok, steps, { pace, boat, scoutGood: false, title: "Travel", icon: "fa-person-walking-arrow-right" });
         waypoints = []; routeArr = []; reachMap = null; anchor = null; plotTok = null;
         WayfarerPanel.render(); BiomeBadge.update();
     }
@@ -2377,8 +2410,8 @@ const Turn = (() => {
                 }
             }
         }
-        // Whisper the role outcomes to the GM FIRST so they can narrate them aloud
-        // while the token travels (players hear the story, not a spoiler card).
+        // Role outcomes become the HEADER of the single stepped travel card; the GM
+        // narrates and clicks "Next hex" through the route at their own pace.
         let body = "";
         for (const [k, v] of claimedRoles()) {
             const sk = CONFIG.DND5E?.skills?.[v.skillId]?.label || v.skillId;
@@ -2389,35 +2422,25 @@ const Turn = (() => {
             </div>`;
         }
         if (!body) body = `<div class="cwf-card-row"><span class="cwf-card-v">No roles were claimed.</span></div>`;
-        cwfWhisper("fa-compass", "Travel Turn", body, `DC ${dc}${governing?.label ? ` · ${governing.label}` : ""}`);
 
         // Scout success eases the per-hex event odds and keeps the party unsurprised.
         const sc = roles.scout, scActor = sc.actorId ? game.actors.get(sc.actorId) : null;
         const scoutGood = !!(scActor && (sc.outcome === "success" || sc.outcome === "crit"));
 
-        // Gradual movement: the clock + per-hex travel events advance as the token
-        // crosses each hex; a real encounter halts the day where it strikes.
-        await applyMovement(navEffect, scoutGood);
-        await cwfForcedMarch(pace);
+        // Path from the Navigator's result → start the stepped travel card.
+        const tok = turnTok || Canvasry.activeToken();
+        const sp = Domain.PACE[pace]?.spaces ?? 2;
+        let path = route.slice(), lostHours = 0;
+        if (navEffect === "dead") { path = []; lostHours = (tok && sp > 0) ? Math.round((Hex.pathCost(route, { boat }, Hex.offsetOf(tok.center)) / sp) * 12) : 0; }
+        else if (navEffect === "left" || navEffect === "right") {
+            const flanks = tok ? Hex.flank(route, Hex.offsetOf(tok.center)) : [];
+            const target = navEffect === "left" ? (flanks[0] || flanks[1]) : (flanks[1] || flanks[0]);
+            path = target ? [target] : route.slice();
+        }
+        if (tok) await cwfStartTravel(tok, path, { pace, boat, scoutGood, lostHours, header: body, title: "Travel Turn", icon: "fa-compass", sub: `DC ${dc}${governing?.label ? ` · ${governing.label}` : ""}` });
 
         step = "resolved";
         WayfarerPanel.render(); BiomeBadge.update();
-    }
-
-    // Compute the path from the Navigator's result, then hand off to the shared
-    // gradual-movement engine (per-hex time + travel events + halt-on-encounter).
-    async function applyMovement(effect, scoutGood = false) {
-        const tok = turnTok || Canvasry.activeToken();
-        if (!tok || !route.length) { CourseOverlay.clear(); return { halted: false }; }
-        const sp = Domain.PACE[pace]?.spaces ?? 2;
-        let path = route, lostHours = 0;
-        if (effect === "dead") { path = []; lostHours = sp > 0 ? Math.round((Hex.pathCost(route, { boat }, Hex.offsetOf(tok.center)) / sp) * 12) : 0; }  // wandered all day, no progress
-        else if (effect === "left" || effect === "right") {
-            const flanks = Hex.flank(route, Hex.offsetOf(tok.center));
-            const target = effect === "left" ? (flanks[0] || flanks[1]) : (flanks[1] || flanks[0]);
-            path = target ? [target] : route;                     // drift one hex off-target
-        }
-        return await cwfTravelMove(tok, path, { pace, boat, scoutGood, lostHours });
     }
 
     function end() {
@@ -2969,7 +2992,7 @@ const WayfarerPanel = (() => {
         if (root && a && root.contains(a) && (a.tagName === "SELECT" || a.tagName === "INPUT")) return;
         render();
     }
-    return { open, close, toggle, render, renderExternal, isOpen };
+    return { open, close, toggle, render, renderExternal, isOpen, makeCamp };
 })();
 
 /* =========================================================================
@@ -3064,13 +3087,28 @@ Hooks.on("dnd5e.preLongRest", (actor, config) => {
     catch (e) { warn("preLongRest hook failed", e); }
 });
 
-// Wire the "Advance to morning" button on Make Camp chat cards (V13/14 + V12 shapes).
-function wireDawnButton(root) {
-    const el = root?.querySelector?.("[data-cwf='dawn']");
-    if (el && !el.dataset.cwfWired) { el.dataset.cwfWired = "1"; el.addEventListener("click", () => advanceToDawn()); }
+// Wire Wayfarer chat-card buttons (V13/14 + V12 html shapes): dawn advance, and the
+// stepped travel card's Next hex / Stop / Make camp controls.
+function wireCardButtons(root) {
+    if (!root?.querySelectorAll) return;
+    root.querySelectorAll("[data-cwf]").forEach(el => {
+        if (el.dataset.cwfWired) return;
+        el.dataset.cwfWired = "1";
+        el.addEventListener("click", async (ev) => {
+            ev.preventDefault();
+            const act = el.dataset.cwf;
+            try {
+                if (act === "dawn") { advanceToDawn(); return; }
+                if (!game.user.isGM) return;
+                if (act === "step") await cwfDoHexStep();
+                else if (act === "stop") await cwfFinishTravel();
+                else if (act === "camp") { cwfTrek = null; await WayfarerPanel.makeCamp(); }
+            } catch (e) { warn("card button failed", e); }
+        });
+    });
 }
-Hooks.on("renderChatMessageHTML", (_m, html) => wireDawnButton(html));
-Hooks.on("renderChatMessage", (_m, html) => wireDawnButton(html?.[0] ?? html));
+Hooks.on("renderChatMessageHTML", (_m, html) => wireCardButtons(html));
+Hooks.on("renderChatMessage", (_m, html) => wireCardButtons(html?.[0] ?? html));
 Hooks.on("controlToken", () => { BiomeBadge.update(); WayfarerPanel.renderExternal(); });
 // Only the followed token's refresh matters — skip the churn from every other token.
 Hooks.on("refreshToken", (token) => { if (token === Canvasry.activeToken()) BiomeBadge.update(); });
