@@ -427,6 +427,9 @@ const Store = (() => {
         g.register(MOD, "watchRest", { name: "Watches affect rest", hint: "How many keep watch sets the rest quality: nobody = deep sleep (best recovery, but unguarded); 1 = up all night (gains exhaustion); 2 = broken rest (no recovery); 3+ = normal. Off = a fed+watered member always recovers the normal amount.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "restNoWatch", { name: "Recovery with NO watch", hint: "Exhaustion levels each fed+watered member recovers on an unguarded night (everyone sleeps deep). Default 2.", scope: "world", config: true, type: Number, default: 2, range: { min: 0, max: 6, step: 1 } });
         g.register(MOD, "watchSoloPenalty", { name: "Lone-watcher exhaustion", hint: "Exhaustion a single all-night watcher gains for taking the whole watch alone. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 6, step: 1 } });
+        // Rest & D&D Beyond re-sync.
+        g.register(MOD, "longRestAtDawn", { name: "Long rest at dawn", hint: "When the night resolves to dawn, run a dnd5e long rest for the party (HP, spell slots, hit dice). Exhaustion stays under Wayfarer's watch rules.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "resyncAtDawn", { name: "Offer DDB re-sync at dawn", hint: "After the dawn long rest, prompt to re-sync the party's sheets from D&D Beyond (you confirm each time). Off = use the Re-sync button when you're ready.", scope: "world", config: true, type: Boolean, default: false });
         // Movement penalties for rugged terrain (separate from the biome DC).
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
@@ -1052,6 +1055,8 @@ async function advanceToDawn() {
     } catch (e) { warn("advance to dawn failed", e); await Store.advanceWorldTime(8); }
     Cinematic.broadcast({ icon: "fa-sun", title: "Dawn", subtitle: `Day ${nextDay}`, tone: "dawn" });
     ChatMessage.create({ content: cwfCardShell("fa-sun", `Dawn — Day ${nextDay}`, cwfRow("Morning", "The watch ends and a new day begins.")) });
+    if (game.settings.get(MOD, "longRestAtDawn")) await cwfPartyRest("long", { newDay: true, silent: true });
+    if (game.settings.get(MOD, "resyncAtDawn")) cwfResyncSheets();
 }
 
 // Effective travel weather: Mini Calendar's live weather if present, else scene state.
@@ -1282,6 +1287,101 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
         if (note) rows.push(`<div class="cwf-night-h ${(!fed || !watered || delta < 0) ? "hit" : ""}">${esc(a.name)} · ${note.trim()} · exh ${lvl}</div>`);
     }
     if (rows.length) ChatMessage.create({ content: cwfCardShell("fa-bed", "Rest & Provisions", `<div class="cwf-night">${rows.join("")}</div>`, { sub: cwfWatchRestLabel(n) }) });
+}
+
+// ---- rest (HP / spell slots / hit dice) — dnd5e does the recovery; Wayfarer keeps
+// exhaustion (exhaustionDelta:0), so the watch rules above stay authoritative. ----
+function cwfHitDiceTotal(a) {
+    const top = a.system?.attributes?.hd;
+    if (top && Number.isFinite(top.value)) return top.value;        // dnd5e 5.x derived total
+    let hd = 0;
+    for (const c of (a.items ?? [])) {
+        if (c.type !== "class") continue;
+        const v = Number.isFinite(c.system?.hd?.value) ? c.system.hd.value
+            : (Number.isFinite(c.system?.levels) ? c.system.levels - (c.system?.hd?.spent ?? c.system?.hitDiceUsed ?? 0) : null);
+        if (Number.isFinite(v)) hd += v;
+    }
+    return hd;
+}
+function cwfRestSnapshot(a) {
+    const sp = a.system?.spells || {};
+    let slots = 0;
+    for (const k of Object.keys(sp)) { const s = sp[k]; if (s && Number.isFinite(s.value)) slots += s.value; }
+    return { hp: a.system?.attributes?.hp?.value ?? 0, slots, hd: cwfHitDiceTotal(a), exh: a.system?.attributes?.exhaustion ?? 0 };
+}
+// Per-character before/after summary, WHISPERED to the GM so they can confirm with
+// each player exactly what recovered (HP / slots / hit dice / exhaustion).
+function cwfRestSummary(type, rows) {
+    const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
+    const out = rows.map(({ name, before, after }) => {
+        const d = { hp: after.hp - before.hp, sl: after.slots - before.slots, hd: after.hd - before.hd, ex: after.exh - before.exh };
+        const sign = (v) => `${v > 0 ? "+" : ""}${v}`;
+        const bits = [];
+        if (d.hp) bits.push(`${sign(d.hp)} HP`);
+        if (d.sl) bits.push(`${sign(d.sl)} slot${Math.abs(d.sl) === 1 ? "" : "s"}`);
+        if (d.hd) bits.push(`${sign(d.hd)} hit di${Math.abs(d.hd) === 1 ? "e" : "ce"}`);
+        if (d.ex) bits.push(`${sign(d.ex)} exhaustion`);
+        return `<div class="cwf-night-h ${d.hp || d.sl ? "hit" : ""}">${esc(name)} · ${bits.length ? bits.join(" · ") : "no change"} <span class="cwf-rr-sk">→ HP ${after.hp}, exh ${after.exh}</span></div>`;
+    }).join("");
+    cwfWhisper(type === "long" ? "fa-bed" : "fa-mug-hot", type === "long" ? "Long Rest" : "Short Rest", `<div class="cwf-night">${out}</div>`, "confirm with each player what they recovered");
+}
+// Rest the whole party. Long rest restores HP/slots/hit dice (NOT exhaustion).
+// Short rest auto-spends hit dice (Foundry-rolled for now; DDB-sourced is the next step).
+async function cwfPartyRest(type, { newDay = false, silent = false } = {}) {
+    if (!game.user.isGM) return;
+    const mem = Party.members();
+    if (!mem.length) { ui.notifications?.warn(`${TITLE}: no party members found to rest.`); return; }
+    if (!silent) Cinematic.broadcast(type === "long"
+        ? { icon: "fa-bed", title: "Long Rest", subtitle: "the party recovers", tone: "dawn" }
+        : { icon: "fa-mug-hot", title: "Short Rest", subtitle: "a moment's respite", tone: "dusk" });
+    const rows = [];
+    for (const a of mem) {
+        const before = cwfRestSnapshot(a);
+        try {
+            if (type === "long") {
+                await a.longRest({ dialog: false, chat: false, newDay, exhaustionDelta: 0 });
+                // Wayfarer owns exhaustion (watch rules) — guarantee the rest didn't move it,
+                // whatever the dnd5e rest variant does.
+                if ((a.system?.attributes?.exhaustion ?? 0) !== before.exh) {
+                    try { await a.update({ "system.attributes.exhaustion": before.exh }); } catch (e) { warn("restore exhaustion failed", e); }
+                }
+            } else await a.shortRest({ dialog: false, chat: false, autoHD: true, autoHDThreshold: 1 });
+        } catch (e) { warn("rest failed", a.name, e); }
+        rows.push({ name: a.name, before, after: cwfRestSnapshot(a) });
+    }
+    cwfRestSummary(type, rows);
+}
+
+// GM confirm dialog (DialogV2 with a Dialog fallback).
+async function cwfConfirm(title, content) {
+    const DialogV2 = foundry.applications?.api?.DialogV2;
+    try {
+        if (DialogV2?.confirm) return await DialogV2.confirm({ window: { title }, content: `<p>${content}</p>`, modal: true });
+        return await Dialog.confirm({ title, content: `<p>${content}</p>` });
+    } catch { return false; }
+}
+
+// Prompted re-sync of every DDB-linked party member via ddb-importer (DDB → Foundry,
+// pulling players' sheet edits back). Confirmed first so live state isn't clobbered.
+async function cwfResyncSheets() {
+    if (!game.user.isGM) return;
+    const imp = game.modules.get("ddb-importer");
+    if (!imp?.active) { ui.notifications?.warn(`${TITLE}: ddb-importer is not installed/active.`); return; }
+    const mem = Party.members().filter(a => a.flags?.ddbimporter?.dndbeyond?.characterId);
+    if (!mem.length) { ui.notifications?.warn(`${TITLE}: no party members are linked to D&D Beyond.`); return; }
+    const ok = await cwfConfirm("Re-sync sheets from D&D Beyond?",
+        `Pull the latest D&D Beyond data into Foundry for: <b>${mem.map(a => foundry.utils.escapeHTML?.(a.name) ?? a.name).join(", ")}</b>. This OVERWRITES each Foundry sheet with its current DDB state — make sure everyone has finished editing first.`);
+    if (!ok) return;
+    const mgr = imp.api?.DDBCharacterManager;
+    if (!mgr?.importCharacter) { ui.notifications?.error(`${TITLE}: couldn't find ddb-importer's re-import API (DDBCharacterManager.importCharacter).`); return; }
+    ui.notifications?.info(`${TITLE}: re-syncing ${mem.length} character${mem.length === 1 ? "" : "s"} from D&D Beyond…`);
+    const rows = [];
+    for (const a of mem) {
+        const esc = foundry.utils.escapeHTML?.(a.name) ?? a.name;
+        try { await mgr.importCharacter({ actor: a }); rows.push(`<div class="cwf-night-h">✅ ${esc}</div>`); }
+        catch (e) { warn("resync failed", a.name, e); rows.push(`<div class="cwf-night-h hit">❌ ${esc} — ${foundry.utils.escapeHTML?.(e?.message || "failed") ?? "failed"}</div>`); }
+    }
+    cwfWhisper("fa-arrows-rotate", "Sheets Re-synced", `<div class="cwf-night">${rows.join("")}</div>`, "from D&D Beyond");
 }
 
 /* =========================================================================
@@ -2395,8 +2495,12 @@ const Camp = (() => {
         Cinematic.broadcast({ icon: "fa-sun", title: "Dawn", subtitle: `Day ${nextDay}${encounters ? " · a restless night" : " · all is quiet"}`, tone: "dawn" });
         try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(1, Number(game.settings.get(MOD, "wakeHour")) || 6); else await Store.advanceWorldTime(N); }
         catch (e) { warn("advance to dawn failed", e); }
+        // Dawn = a long rest: restore HP / spell slots / hit dice (exhaustion already
+        // resolved above by the watch rules). Silent — the Dawn cinematic just played.
+        if (game.settings.get(MOD, "longRestAtDawn")) await cwfPartyRest("long", { newDay: true, silent: true });
         active = false;
         WayfarerPanel.render(); BiomeBadge.update();
+        if (game.settings.get(MOD, "resyncAtDawn")) cwfResyncSheets();   // prompted; players' DDB edits → Foundry
     }
     function cancel() { active = false; WayfarerPanel.render(); }
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
@@ -2484,6 +2588,9 @@ const WayfarerPanel = (() => {
                 case "reset-journey": case "end-journey": await endJourney(); break;
                 case "haul": await foragerHaul(); break;
                 case "restock": await restockSupplies(); break;
+                case "rest-short": await cwfPartyRest("short"); break;
+                case "rest-long": await cwfPartyRest("long", { newDay: true }); break;
+                case "resync": await cwfResyncSheets(); break;
                 case "camp": await makeCamp(); break;
                 case "enter-site": await enterSite(); break;
                 case "plan-route": Travel.startPlot(); break;
@@ -2780,6 +2887,15 @@ const WayfarerPanel = (() => {
                     <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-drumstick-bite"></i> Rations</span><span class="cwf-step-v">${sup.rations}</span></div>
                     <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-bottle-water"></i> Waterskins</span><span class="cwf-step-v">${sup.water}</span></div>
                 </div>
+
+                ${isGM ? `<div class="cwf-section">
+                    <div class="cwf-label">Rest <span class="cwf-muted2">recovery whispered to you</span></div>
+                    <div class="cwf-actions">
+                        <button class="cwf-btn" data-action="rest-short" title="Short rest — auto-spend hit dice, recover short-rest features"><i class="fa-solid fa-mug-hot"></i> Short rest</button>
+                        <button class="cwf-btn" data-action="rest-long" title="Long rest — HP, spell slots, hit dice (exhaustion stays on the watch rules)"><i class="fa-solid fa-bed"></i> Long rest</button>
+                        <button class="cwf-btn" data-action="resync" title="Pull the party's latest sheets from D&D Beyond (confirms first)"><i class="fa-solid fa-arrows-rotate"></i> Re-sync</button>
+                    </div>
+                </div>` : ""}
 
                 ${site ? `<div class="cwf-section">
                     <div class="cwf-label">Settlement</div>
