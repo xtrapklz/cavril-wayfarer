@@ -526,26 +526,104 @@ const Canvasry = (() => {
         return { x: m.a * x + m.c * y + m.tx, y: m.b * x + m.d * y + m.ty };
     }
 
-    function biomeTilesUnder(pt) {
-        const out = [];
+    // ---- Spatial tile index ------------------------------------------------
+    // Classifying a hex used to scan ALL tiles (regex per tile) on every call,
+    // and the course planner calls it per-hex inside two Dijkstra passes — so a
+    // single click was O(hexes × tiles) ≈ hundreds of thousands of regex tests
+    // (1.5–2.4 s on a 482-tile map). We now bucket every biome/feature/road tile
+    // by its hex offset ONCE; lookups become O(tiles-in-this-hex) ≈ 1–4.
+    const _isRiverSrc = (hx, src) => hx?.type === "river" || /baumgart_rivers/i.test(src) || /hex[_ ]?river|\briver\b/i.test(src);
+    const _isCoastSrc = (hx, src) => hx?.type === "coast" || /baumgart_coasts/i.test(src);
+    const _isRoadSrc  = (hx, src) => hx?.type === "road"  || /\b(road|path|trail|highway)\b/i.test(src) || /hex[_ ]?road/i.test(src);
+
+    let _tileIndex = null, _tileIndexKey = "", _tileIndexVer = 0;
+    // Rebuild trigger: scene + tile/drawing counts (CRUD hooks also invalidate
+    // explicitly so a repaint/move that keeps the count still refreshes).
+    const _tileIndexKeyNow = () =>
+        `${canvas?.scene?.id || ""}:${canvas?.tiles?.placeables?.length || 0}:${canvas?.drawings?.placeables?.length || 0}`;
+
+    function buildTileIndex() {
+        const byHex = new Map();           // "i,j" → hit[]
+        const span = [];                   // oversized/untagged feature+road art → bounds-checked
+        const gsize = canvas?.dimensions?.size || 100;
+        const push = (k, hit) => { const a = byHex.get(k); if (a) a.push(hit); else byHex.set(k, [hit]); };
         for (const t of (canvas?.tiles?.placeables ?? [])) {
             const doc = t.document;
             const src = doc?.texture?.src || "";
             const hx = doc?.flags?.hexlands || null;
             const isTerrain = hx?.type === "terrain";
-            const isFeature = hx?.type === "river" || hx?.type === "coast"
-                || /baumgart_(rivers|coasts)/i.test(src);
+            const isFeature = hx?.type === "river" || hx?.type === "coast" || /baumgart_(rivers|coasts)/i.test(src);
+            const isRiver = _isRiverSrc(hx, src), isCoast = _isCoastSrc(hx, src), isRoad = _isRoadSrc(hx, src);
             // Accept hexlands-tagged tiles, baumgart-indexed art, or Primus Hex_ tiles.
             const isBiome = isTerrain || isFeature || Domain.isBiomeTile(src) || HexData.has(src);
-            if (!isBiome) continue;
-            const b = t.bounds; // PIXI.Rectangle in world coords
-            if (!b) continue;
-            if (pt.x >= b.x && pt.x <= b.x + b.width && pt.y >= b.y && pt.y <= b.y + b.height) {
-                out.push({ tile: t, src, hx, sort: doc.sort ?? 0,
-                    kind: isFeature ? "feature" : isTerrain ? "terrain" : "other" });
+            if (!isBiome && !isRoad && !isRiver) continue;
+            const hit = { tile: t, src, hx, sort: doc.sort ?? 0,
+                kind: isFeature ? "feature" : isTerrain ? "terrain" : "other",
+                isBiome, isRiver, isCoast, isRoad };
+            // Key by the tile's own hex offset: stored gridI/gridJ (exact, no
+            // bounds math) or its center's offset. Hex PNGs have transparent
+            // corners so bounding boxes overlap neighbours — the offset is the
+            // authoritative "which hex this tile belongs to".
+            let i = hx?.gridI, j = hx?.gridJ;
+            if (i == null || j == null) {
+                try { const off = canvas.grid?.getOffset?.(t.center); if (off) { i = off.i; j = off.j; } } catch (_e) { /* grid API varies */ }
+            }
+            if (i != null && j != null) push(`${i},${j}`, hit);
+            // A single hand-drawn river/road art tile can straddle several hexes;
+            // keep untagged or oversized ones in a bounds-checked fallback so the
+            // feature still registers on every hex it covers.
+            const b = t.bounds;
+            const oversized = b && (b.width > gsize * 1.5 || b.height > gsize * 1.5);
+            if ((isRiver || isRoad || isCoast) && (i == null || j == null || oversized)) span.push(hit);
+        }
+        return { byHex, span };
+    }
+
+    function getTileIndex() {
+        const k = _tileIndexKeyNow();
+        if (_tileIndex && _tileIndexKey === k) return _tileIndex;
+        _tileIndex = buildTileIndex(); _tileIndexKey = k; _tileIndexVer++;
+        return _tileIndex;
+    }
+    function invalidateTileIndex() { _tileIndex = null; _tileIndexKey = ""; _tileIndexVer++; }
+    function tileIndexVersion() { return _tileIndexVer; }
+
+    function biomeTilesUnder(pt) {
+        if (!pt) return [];
+        const idx = getTileIndex();
+        let hits = [];
+        try {
+            const off = canvas.grid?.getOffset?.(pt);
+            if (off) hits = (idx.byHex.get(`${off.i},${off.j}`) || []).filter(h => h.isBiome);
+        } catch (_e) { /* grid API varies */ }
+        if (idx.span.length) {                                   // fold in straddling biome art (river/coast)
+            hits = hits.slice();
+            for (const h of idx.span) {
+                if (!h.isBiome) continue;
+                const b = h.tile.bounds;
+                if (b && pt.x >= b.x && pt.x <= b.x + b.width && pt.y >= b.y && pt.y <= b.y + b.height && !hits.includes(h)) hits.push(h);
             }
         }
-        return out.sort((a, b) => b.sort - a.sort); // top tile first
+        return hits.sort((a, b) => b.sort - a.sort); // top tile first
+    }
+
+    // River/road presence for the hex containing `pt` — index-backed (tiles only;
+    // road *drawings* are handled by the caller). O(tiles-in-hex).
+    function tileFeaturesAt(pt) {
+        let river = false, road = false;
+        if (!pt) return { river, road };
+        const idx = getTileIndex();
+        try {
+            const off = canvas.grid?.getOffset?.(pt);
+            const hits = off ? idx.byHex.get(`${off.i},${off.j}`) : null;
+            if (hits) for (const h of hits) { if (h.isRiver) river = true; if (h.isRoad) road = true; }
+        } catch (_e) { /* grid API varies */ }
+        for (const h of idx.span) {
+            if (river && road) break;
+            const b = h.tile.bounds;
+            if (b && pt.x >= b.x && pt.x <= b.x + b.width && pt.y >= b.y && pt.y <= b.y + b.height) { if (h.isRiver) river = true; if (h.isRoad) road = true; }
+        }
+        return { river, road };
     }
 
     // Most authoritative {biome,elevation,vegetation,name} for a tile: flags →
@@ -676,7 +754,7 @@ const Canvasry = (() => {
         return best;
     }
 
-    return { screen, biomeTilesUnder, biomeForToken, biomeForPoint, activeToken, setPartyToken, augurSiteUnder };
+    return { screen, biomeTilesUnder, tileFeaturesAt, invalidateTileIndex, tileIndexVersion, biomeForToken, biomeForPoint, activeToken, setPartyToken, augurSiteUnder };
 })();
 
 /* =========================================================================
@@ -1126,7 +1204,26 @@ const Hex = (() => {
         try { const a = canvas.grid.getAdjacentOffsets?.(o); if (Array.isArray(a)) return a; } catch { /* noop */ }
         return [];
     }
-    const classifyAt = (o) => { const c = centerOf(o); return c ? Canvasry.biomeForPoint(c) : null; };
+    // classifyAt/featuresAt are pure for a given tile layout. Dijkstra + route +
+    // pathCost + governing all re-hit the same hexes within one interaction, so
+    // memoize by offset key. The cache auto-clears when the tile index rebuilds
+    // (tiles/drawings changed), so it stays valid across recomputes too.
+    const _classifyCache = new Map(), _featuresCache = new Map();
+    let _cacheVer = -1;
+    function _syncCaches() {
+        const v = Canvasry.tileIndexVersion?.() ?? 0;
+        if (v !== _cacheVer) { _classifyCache.clear(); _featuresCache.clear(); _cacheVer = v; }
+    }
+    const classifyAt = (o) => {
+        if (!o) return null;
+        _syncCaches();
+        const k = key(o);
+        if (_classifyCache.has(k)) return _classifyCache.get(k);
+        const c = centerOf(o);
+        const cls = c ? Canvasry.biomeForPoint(c) : null;
+        _classifyCache.set(k, cls);
+        return cls;
+    };
 
     // Can the party enter this hex? Unpainted/off-map and impassable are out;
     // open water needs a boat.
@@ -1140,20 +1237,26 @@ const Hex = (() => {
     // Does a hex carry a river and/or road? (feature tiles, filename, or a
     // world-flagged road drawing). Drives the movement-cost bonus.
     function featuresAt(off) {
+        if (!off) return { river: false, road: false };
+        _syncCaches();
+        const k = key(off);
+        const cached = _featuresCache.get(k);
+        if (cached) return cached;
         const c = centerOf(off);
         if (!c) return { river: false, road: false };
-        let river = false, road = false;
-        const within = (b) => b && c.x >= b.x && c.x <= b.x + b.width && c.y >= b.y && c.y <= b.y + b.height;
-        for (const t of (canvas?.tiles?.placeables ?? [])) {
-            const doc = t.document, src = doc?.texture?.src || "", hx = doc?.flags?.hexlands;
-            const isRiver = hx?.type === "river" || /baumgart_rivers/i.test(src) || /hex[_ ]?river|\briver\b/i.test(src);
-            const isRoad = hx?.type === "road" || /\b(road|path|trail|highway)\b/i.test(src) || /hex[_ ]?road/i.test(src);
-            if ((isRiver || isRoad) && within(t.bounds)) { if (isRiver) river = true; if (isRoad) road = true; }
+        // Tiles via the spatial index (O(tiles-in-hex)); road drawings are few and
+        // hand-drawn so a direct bounds scan stays cheap (skipped once road found).
+        const f = Canvasry.tileFeaturesAt(c);
+        let { river, road } = f;
+        if (!road) {
+            const within = (b) => b && c.x >= b.x && c.x <= b.x + b.width && c.y >= b.y && c.y <= b.y + b.height;
+            for (const d of (canvas?.drawings?.placeables ?? [])) {
+                if (d.document?.flags?.world?.isRoad && within(d.bounds)) { road = true; break; }
+            }
         }
-        for (const d of (canvas?.drawings?.placeables ?? [])) {
-            if (d.document?.flags?.world?.isRoad && within(d.bounds)) road = true;
-        }
-        return { river, road };
+        const res = { river, road };
+        _featuresCache.set(k, res);
+        return res;
     }
 
     // Terrain movement penalty (extra spaces for rugged ground) — independent of
@@ -1394,6 +1497,7 @@ const Travel = (() => {
 
     return {
         startPlot, onPick, setPace, setBoat, setShortRest, confirmMove, cancel, governing,
+        refresh: () => { if (plotting) recompute(); },
         get plotting() { return plotting; }, get pace() { return pace; }, get boat() { return boat; },
         get shortRest() { return shortRest; }, get budget() { return budget(); },
         get route() { return routeArr; }, get reach() { return reachMap; }, get hasDest() { return !!dest; }
@@ -2190,7 +2294,11 @@ Hooks.once("ready", () => {
 });
 
 // Badge follows the token and re-classifies as it moves between hexes.
-Hooks.on("canvasReady", () => { Music.reset(); MiniCal.resetBiome(); BiomeBadge.update(); WayfarerPanel.renderExternal(); MiniCal.refresh(); });
+Hooks.on("canvasReady", () => { Canvasry.invalidateTileIndex(); Music.reset(); MiniCal.resetBiome(); BiomeBadge.update(); WayfarerPanel.renderExternal(); MiniCal.refresh(); });
+// Repainting/moving terrain, river, road, or coast tiles (or road drawings)
+// invalidates the spatial classify index so reach/route stay accurate.
+for (const h of ["createTile", "updateTile", "deleteTile", "createDrawing", "updateDrawing", "deleteDrawing"])
+    Hooks.on(h, () => { try { Canvasry.invalidateTileIndex(); if (Travel.plotting) Travel.refresh?.(); } catch { /* noop */ } });
 // Mini Calendar updates weather as in-game time passes — re-read it.
 Hooks.on("updateWorldTime", () => MiniCal.refresh());
 // D&D Beyond rolls (via ddb-roll-cards v4.78+) auto-fill the claimed role slot.
