@@ -398,6 +398,8 @@ const Store = (() => {
         // Night camp / watch / danger.
         g.register(MOD, "dangerDefault", { name: "Default danger level", hint: "Base night-encounter danger (0-5) for new scenes. Adjustable per scene in the Camp panel.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 5, step: 1 } });
         g.register(MOD, "nightHours", { name: "Night length (hours)", hint: "How many hourly encounter checks the night runs (watches split this evenly).", scope: "world", config: true, type: Number, default: 8 });
+        g.register(MOD, "encounterScale", { name: "Encounter die (x/N per hour)", hint: "Denominator for the hourly encounter check. Higher = rarer. Default 50.", scope: "world", config: true, type: Number, default: 50 });
+        g.register(MOD, "oneEncounterPerNight", { name: "One encounter per night", hint: "Stop checking once a night encounter triggers (at most one per night).", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "campHour", { name: "Bed-down hour (0-23)", hint: "Hour the party turns in when you Make Camp.", scope: "world", config: true, type: Number, default: 21 });
         g.register(MOD, "wakeHour", { name: "Wake hour (0-23)", hint: "Hour the party rises at dawn after the night resolves.", scope: "world", config: true, type: Number, default: 6 });
         g.register(MOD, "biomeDangerJSON", { name: "Biome danger modifier (advanced)", hint: 'Optional JSON of biome → night danger (0-2), e.g. {"volcanic":2,"jungle":1}. Blank uses defaults.', scope: "world", config: true, type: String, default: "" });
@@ -975,11 +977,13 @@ const Danger = (() => {
         if (!ab) return 0;
         return Math.max(0, ...Object.values(ab).map(a => a?.mod ?? 0));
     }
-    // x/20 numerator for one hour. The on-watch member's highest mod reduces the danger score.
+    // Encounter die size (x/scale per hour). Configurable; default 50.
+    const scale = () => Math.max(2, Number(game.settings.get(MOD, "encounterScale")) || 50);
+    // x numerator for one hour. The on-watch member's highest mod reduces the danger score.
     function hourlyX(danger, biomeM, hostileM, watcherMod = 0) {
-        return Math.max(0, Math.min(20, Math.max(0, (danger | 0) - watcherMod) + biomeM + hostileM));
+        return Math.max(0, Math.min(scale(), Math.max(0, (danger | 0) - watcherMod) + biomeM + hostileM));
     }
-    return { biomeMod, hostileMod, highestMod, hourlyX };
+    return { biomeMod, hostileMod, highestMod, hourlyX, scale };
 })();
 
 /* =========================================================================
@@ -1727,17 +1731,17 @@ const Camp = (() => {
         const tok = Canvasry.activeToken();
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
         const danger = dangerScore(), biomeM = Danger.biomeMod(cls), hostileM = Danger.hostileMod(tok);
-        const N = nightHours();
-        const lines = []; let encounters = 0;
+        const N = nightHours(), scale = Danger.scale(), oneOnly = !!game.settings.get(MOD, "oneEncounterPerNight");
+        const lines = []; let encounters = 0, firstHour = 0, firstWatcher = null;
         for (let h = 0; h < N; h++) {
             const wid = watcherForHour(h);
             const watcher = wid ? game.actors.get(wid) : null;
             const wmod = watcher ? Danger.highestMod(watcher) : 0;
             const x = Danger.hourlyX(danger, biomeM, hostileM, wmod);
-            let roll = 0; try { roll = (await new Roll("1d20").evaluate()).total; } catch { roll = Math.ceil(Math.random() * 20); }
+            let roll = 0; try { roll = (await new Roll(`1d${scale}`).evaluate()).total; } catch { roll = Math.ceil(Math.random() * scale); }
             const hit = roll <= x && x > 0;
-            if (hit) encounters++;
-            lines.push(`<div class="cwf-night-h ${hit ? "hit" : ""}">Hr ${h + 1} · ${watcher ? esc(watcher.name) : "<em>unwatched</em>"} · ${x}/20 · 🎲${roll}${hit ? " · ⚔" : ""}</div>`);
+            lines.push(`<div class="cwf-night-h ${hit ? "hit" : ""}">Hr ${h + 1} · ${watcher ? esc(watcher.name) : "<em>unwatched</em>"} · ${x}/${scale} · 🎲${roll}${hit ? " · ⚔" : ""}</div>`);
+            if (hit) { encounters++; if (!firstHour) { firstHour = h + 1; firstWatcher = watcher; } if (oneOnly) break; }
         }
         const sched = watchers.length
             ? watchers.map(id => { const a = game.actors.get(id); return `${esc(a?.name || "?")} (−${Danger.highestMod(a)})`; }).join(" → ")
@@ -1747,7 +1751,10 @@ const Camp = (() => {
         body += cwfRow("Danger", `${danger} + biome ${biomeM} + hostiles ${hostileM}`);
         body += cwfRow("Watch", sched + (watchers.length ? ` · ~${shiftHours()}h each` : ""));
         body += `<div class="cwf-night">${lines.join("")}</div>`;
-        body += cwfRow("Result", encounters ? `<b>${encounters} encounter${encounters === 1 ? "" : "s"}</b> in the night.` : "A quiet night.");
+        const resultText = !encounters ? "A quiet night."
+            : oneOnly ? `⚔ <b>Encounter at hour ${firstHour}</b> — ${firstWatcher ? `${esc(firstWatcher.name)}'s watch` : "no one on watch"}.`
+            : `⚔ <b>${encounters} encounter${encounters === 1 ? "" : "s"}</b> in the night.`;
+        body += cwfRow("Result", resultText);
         ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "" }) });
 
         const prev = Store.sceneState().day || 1;
@@ -1986,7 +1993,7 @@ const WayfarerPanel = (() => {
         const watchNote = watch.length ? `${watch.length} on watch · ~${Camp.shiftHours()}h each` : "no watch — unguarded";
         return `
             <div class="cwf-section cwf-turn">
-                <div class="cwf-label">Camp · Night <span class="cwf-muted2">${esc(cls?.label || "")} · base <b>${base}</b>/20 per hr</span></div>
+                <div class="cwf-label">Camp · Night <span class="cwf-muted2">${esc(cls?.label || "")} · base <b>${base}</b>/${Danger.scale()} per hr</span></div>
                 <div class="cwf-card-row"><span class="cwf-card-l">Danger</span><span class="cwf-card-v">score ${danger} + biome ${biomeM} + hostiles ${hostileM}</span></div>
                 <div class="cwf-seg-row">${dial}</div>
                 <div class="cwf-label" style="margin-top:6px">Watch order <span class="cwf-muted2">${watchNote}</span></div>
