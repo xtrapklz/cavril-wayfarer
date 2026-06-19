@@ -425,8 +425,8 @@ const Store = (() => {
         g.register(MOD, "thirstDC", { name: "Thirst save DC", hint: "CON save DC a member rolls on a night with no water (fail = +1 exhaustion).", scope: "world", config: true, type: Number, default: 15 });
         // Watch ↔ rest: a long watch shift BLOCKS that member's long-rest exhaustion
         // recovery (the native rest still restores HP / slots / hit dice).
-        g.register(MOD, "watchRest", { name: "Watches block rest recovery", hint: "A member who stands a long watch shift recovers no exhaustion from the following long rest (they still recover HP, slots, hit dice). Off = the watch costs nothing.", scope: "world", config: true, type: Boolean, default: true });
-        g.register(MOD, "watchBlockHours", { name: "Watch hours that block recovery", hint: "A watch shift this long or longer blocks exhaustion recovery. The night (Night length) splits evenly among watchers, so with an 8h night: 1–2 watchers = 4h+ shifts (blocked), 3+ = shorter (fine). Default 4.", scope: "world", config: true, type: Number, default: 4 });
+        g.register(MOD, "watchRest", { name: "Watches cost exhaustion", hint: "Standing watch applies an exhaustion toll = the shift length ÷ the hours below (the dawn long rest gives 1 level back). They still recover HP / slots / hit dice. Off = the watch costs nothing.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "watchBlockHours", { name: "Hours per watch-exhaustion level", hint: "Each whole multiple of this in a watcher's shift = +1 exhaustion (the dawn rest then recovers 1). The night (Night length) splits evenly among watchers, so with an 8h night & 4h here: 1 watcher (8h)=+2 → nets +1 (all-nighter gains a level), 2 (4h)=+1 → nets 0 (no recovery), 3+ (<4h)=0 → recovers. Default 4.", scope: "world", config: true, type: Number, default: 4 });
         // Rest & D&D Beyond re-sync.
         g.register(MOD, "longRestAtDawn", { name: "Long rest at dawn", hint: "When the night resolves to dawn, run a dnd5e long rest for the party (HP, spell slots, hit dice). Exhaustion stays under Wayfarer's watch rules.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "resyncAtDawn", { name: "Offer DDB re-sync at dawn", hint: "After the dawn long rest, prompt to re-sync the party's sheets from D&D Beyond (you confirm each time). Off = use the Re-sync button when you're ready.", scope: "world", config: true, type: Boolean, default: false });
@@ -1211,31 +1211,35 @@ async function cwfForcedMarch(pace) {
     ChatMessage.create({ content: cwfCardShell("fa-person-running", "Forced March", `<div class="cwf-night">${rows.join("")}</div>`, { sub: `${pace} pace · DC ${dc}` }) });
 }
 
-// Watch shift length (night split evenly) and whether it's long enough to block
-// the coming long rest's exhaustion recovery. We DON'T compute recovery amounts —
-// the native dnd5e rest does that; Wayfarer only blocks it (a four-hour-plus watch).
+// Watch shift length (the night splits evenly) and the exhaustion TOLL a watcher
+// takes for it = floor(shift ÷ block-hours). Since the dawn long rest recovers 1
+// level, a toll of N nets to N−1: with an 8h night & 4h threshold → 1 watcher (8h)
+// =+2 (nets +1, an all-nighter gains a level), 2 (4h)=+1 (nets 0, no recovery),
+// 3+ (<4h)=0 (nets −1, recovers normally). No hook, no recovery math — just apply.
 const cwfWatchShiftHours = (n) => { const nh = Math.max(1, Number(game.settings.get(MOD, "nightHours")) || 8); return n > 0 ? nh / n : 0; };
-function cwfWatchBlocks(n) {
-    if (!game.settings.get(MOD, "watchRest") || n <= 0) return false;
-    const thresh = Math.max(0.5, Number(game.settings.get(MOD, "watchBlockHours")) || 4);
-    return cwfWatchShiftHours(n) >= thresh;
+function cwfWatchLevels(n) {
+    if (!game.settings.get(MOD, "watchRest") || n <= 0) return 0;
+    const block = Math.max(0.5, Number(game.settings.get(MOD, "watchBlockHours")) || 4);
+    return Math.floor(cwfWatchShiftHours(n) / block);
 }
-// One-line description of what the current watch costs (for the camp UI).
+// One-line description of what the current watch nets after the dawn rest (camp UI).
 function cwfWatchRestLabel(n) {
     if (!game.settings.get(MOD, "watchRest")) return "";
-    if (n <= 0) return "no watch — unguarded, but everyone sleeps through";
-    const sh = cwfWatchShiftHours(n);
-    return cwfWatchBlocks(n)
-        ? `~${Math.round(sh)}h shifts — watchers get NO exhaustion recovery`
-        : `~${Math.round(sh * 10) / 10}h shifts — short enough to still recover`;
+    if (n <= 0) return "no watch — everyone recovers normally";
+    const net = cwfWatchLevels(n) - 1;   // the dawn long rest gives one back
+    const lab = net <= -1 ? "watchers still recover" : net === 0 ? "watchers don't recover" : `watchers end +${net} exhaustion`;
+    return `~${Math.round(cwfWatchShiftHours(n) * 10) / 10}h shifts — ${lab}`;
 }
 
-// Camp = the lead-in to a long rest, resolved at dawn. Wayfarer touches exhaustion in
-// exactly two ways (the native dnd5e rest owns recovery): it APPLIES levels for hunger
-// (past a 3 + CON-mod day grace) and thirst (a dry-night CON save), and it BLOCKS the
-// long rest's exhaustion recovery (a flag the dnd5e.preLongRest hook honours) for anyone
-// who stood a long watch shift or went to bed without food/water. `consumeResult` =
-// Party.consume()'s perMember breakdown; foraged → all provided; watchers = actorIds.
+// Camp = the lead-in to the dawn long rest. Wayfarer touches exhaustion in only two
+// ways (the native dnd5e rest does the recovery):
+//   • APPLIES levels — hunger (past a 3 + CON-mod day grace), thirst (a dry-night CON
+//     save), and the WATCH TOLL (floor(shift ÷ block-hours)). The watch toll relies on
+//     the dawn rest's −1 to net out (lone +2 → +1, pair +1 → 0, trio 0 → −1).
+//   • BLOCKS the rest's exhaustion recovery for anyone who bedded down WITHOUT food or
+//     water (5e: no provisions, no recovery) — a one-shot flag the dnd5e.preLongRest
+//     hook honours. (The watch is a toll, not a block — food/water is the block.)
+// `consumeResult` = Party.consume()'s perMember breakdown; foraged → all provided.
 async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] } = {}) {
     if (!game.user.isGM) return;
     const starve = !!game.settings.get(MOD, "starveExhaustion");
@@ -1246,7 +1250,8 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
     const thirstDC = Math.max(1, Number(game.settings.get(MOD, "thirstDC")) || 15);
     const watchSet = new Set(watchers || []);
     const n = watchSet.size;
-    const watchBlocks = cwfWatchBlocks(n);
+    const watchLevels = cwfWatchLevels(n);
+    const shiftH = Math.round(cwfWatchShiftHours(n) * 10) / 10;
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
     const rows = [];
     for (const a of mem) {
@@ -1257,7 +1262,7 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
         let lvl = a.system?.attributes?.exhaustion ?? 0;
         const before = lvl;
         let note = "";
-        // APPLY exhaustion: hunger (past grace) + thirst (failed save).
+        // APPLY: hunger (past grace) + thirst (failed save).
         if (starve) {
             let days = Number(a.getFlag?.(MOD, "daysNoFood")) || 0;
             if (fed) days = 0;
@@ -1271,17 +1276,18 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
                 if (total < thirstDC) { lvl = Math.min(6, lvl + 1); note += `💧 thirst +1 (CON ${total} vs ${thirstDC}) `; } else note += `💧 parched, saved ${total} `;
             }
         }
-        if (lvl !== before) { try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { warn("apply exhaustion failed", e); } }
-        // BLOCK the coming long rest's exhaustion recovery: a long watch, or bedding
-        // down hungry/thirsty (no true rest). Honoured by the dnd5e.preLongRest hook.
+        // APPLY: the watch toll — the dawn rest's −1 nets it to gain / no-recovery / recover.
         const isWatcher = watchSet.has(a.id);
-        const blocked = (isWatcher && watchBlocks) || !fed || !watered;
+        if (isWatcher && watchLevels > 0) { lvl = Math.min(6, lvl + watchLevels); note += `🛡 watch +${watchLevels} (~${shiftH}h shift) `; }
+        if (lvl !== before) { try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { warn("apply exhaustion failed", e); } }
+        // BLOCK the dawn rest's exhaustion recovery for anyone who went without food/water.
+        const blocked = !fed || !watered;
         try {
             if (blocked) await a.setFlag?.(MOD, "blockRest", true);
             else if (a.getFlag?.(MOD, "blockRest")) await a.unsetFlag?.(MOD, "blockRest");
         } catch { /* noop */ }
-        if (blocked) note += (isWatcher && watchBlocks) ? `🛡 long watch — no rest recovery ` : `🚱 went without — no rest recovery `;
-        if (note) rows.push(`<div class="cwf-night-h ${blocked ? "hit" : ""}">${esc(a.name)} · ${note.trim()} · exh ${lvl}</div>`);
+        if (blocked) note += `🚱 went without — no rest recovery `;
+        if (note) rows.push(`<div class="cwf-night-h ${(blocked || (isWatcher && watchLevels > 1)) ? "hit" : ""}">${esc(a.name)} · ${note.trim()} · exh ${lvl}</div>`);
     }
     if (rows.length) ChatMessage.create({ content: cwfCardShell("fa-bed", "Rest & Provisions", `<div class="cwf-night">${rows.join("")}</div>`, { sub: cwfWatchRestLabel(n) }) });
 }
@@ -1336,8 +1342,8 @@ async function cwfPartyRest(type, { newDay = false, silent = false } = {}) {
         const before = cwfRestSnapshot(a);
         try {
             // Native rest does all recovery. Exhaustion recovery is blocked per-member
-            // by the dnd5e.preLongRest hook when Wayfarer set the blockRest flag (long
-            // watch / went without food or water).
+            // by the dnd5e.preLongRest hook when Wayfarer set the blockRest flag (bedded
+            // down without food or water). The watch toll is applied levels, not a block.
             if (type === "long") await a.longRest({ dialog: false, chat: false, newDay });
             else await a.shortRest({ dialog: false, chat: false, autoHD: true, autoHDThreshold: 1 });
         } catch (e) { warn("rest failed", a.name, e); }
