@@ -395,6 +395,9 @@ const Store = (() => {
         g.register(MOD, "tableIds", { scope: "world", config: false, type: Object, default: {} });
         // Remembered role assignments (actor + skill per role), pre-filled each turn.
         g.register(MOD, "lastRoles", { scope: "world", config: false, type: Object, default: {} });
+        // Movement penalties for rugged terrain (separate from the biome DC).
+        g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
         // Cavril: Maestro biome → environment soundscape.
         g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Optional JSON mapping hexlands biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay","desert":"goldenFlatsDay"}. Blank uses sensible defaults. "" = silence for that biome.', scope: "world", config: true, type: String, default: "" });
@@ -1085,13 +1088,34 @@ const Hex = (() => {
         return { river, road };
     }
 
-    // Movement cost to ENTER a hex. Normal = 1 space; a river/road tile costs 1/2
-    // (cover 2 hexes per space → +1 reach/tile), and 1/3 with a boat/cart (+2/tile).
-    // So Fast (3 spaces) along an all-river+boat route reaches 3×3 = 9 hexes.
-    function stepCost(off, { boat = false } = {}) {
+    // Terrain movement penalty (extra spaces for rugged ground) — independent of
+    // the biome DC. Keyed on elevation (hexlands) with Primus terrainKey fallback.
+    const DEFAULT_PENALTY = { flat: 0, medium: 1, high: 2, swamp: 1, water: 0 };
+    function penaltyMap() {
+        const raw = game.settings.get(MOD, "terrainPenaltyJSON");
+        if (raw && String(raw).trim()) { try { const p = JSON.parse(raw); if (p && typeof p === "object") return { ...DEFAULT_PENALTY, ...p }; } catch (e) { warn("terrainPenaltyJSON invalid", e); } }
+        return DEFAULT_PENALTY;
+    }
+    function terrainPenalty(cls) {
+        if (!cls || !game.settings.get(MOD, "terrainPenalties")) return 0;
+        const map = penaltyMap();
+        const e = cls.elevation;
+        if (e && Object.prototype.hasOwnProperty.call(map, e)) return map[e] || 0;
+        const k = cls.terrainKey;
+        if (k === "mountains" || k === "rocky") return map.high ?? 2;
+        if (k === "hills") return map.medium ?? 1;
+        if (k === "swamp") return map.swamp ?? 1;
+        return 0;
+    }
+
+    // Movement cost to ENTER a hex: (1 base + terrain penalty) ÷ road/river
+    // multiplier. Normal flat = 1; hills +1, mountains +2; a river/road tile is ½
+    // (⅓ with boat/cart) — and that division also eases a road/pass or river that
+    // cuts through rough terrain. Fast (3) along an all-river+boat route → 9 hexes.
+    function stepCost(off, cls, { boat = false } = {}) {
         const f = featuresAt(off);
         const m = (f.river || f.road) ? (boat ? 3 : 2) : 1;
-        return 1 / m;
+        return (1 + terrainPenalty(cls)) / m;
     }
 
     // Pop the lowest-cost frontier entry (small N → linear scan is fine).
@@ -1111,7 +1135,7 @@ const Hex = (() => {
             for (const nb of neighbors(cur.off)) {
                 const cls = classifyAt(nb);
                 if (!passable(cls, opts)) continue;
-                const nc = cur.c + stepCost(nb, opts);
+                const nc = cur.c + stepCost(nb, cls, opts);
                 if (nc > budget + EPS) continue;
                 const k = key(nb);
                 if (nc + EPS < (best.get(k) ?? Infinity)) {
@@ -1139,7 +1163,7 @@ const Hex = (() => {
             for (const nb of neighbors(cur.off)) {
                 const cls = classifyAt(nb);
                 if (!passable(cls, opts)) continue;
-                const nc = cur.c + stepCost(nb, opts);
+                const nc = cur.c + stepCost(nb, cls, opts);
                 if (nc > budget + EPS) continue;
                 const k = key(nb);
                 if (nc + EPS < (best.get(k) ?? Infinity)) {
@@ -1155,7 +1179,7 @@ const Hex = (() => {
     }
 
     // Total movement cost of a route (spaces consumed).
-    const pathCost = (routeArr, opts = {}) => (routeArr || []).reduce((c, off) => c + stepCost(off, opts), 0);
+    const pathCost = (routeArr, opts = {}) => (routeArr || []).reduce((c, off) => c + stepCost(off, classifyAt(off), opts), 0);
 
     // The two hexes flanking the destination (for "Lost Left/Right"): neighbours
     // of the penultimate route hex that also touch the destination. [0]=left, [1]=right.
@@ -1168,7 +1192,7 @@ const Hex = (() => {
         return neighbors(prev).filter(n => destNbs.has(key(n)) && key(n) !== key(dest));
     }
 
-    return { key, offsetOf, centerOf, neighbors, classifyAt, passable, featuresAt, stepCost, reachable, route, pathCost, flank };
+    return { key, offsetOf, centerOf, neighbors, classifyAt, passable, featuresAt, terrainPenalty, stepCost, reachable, route, pathCost, flank };
 })();
 
 /* =========================================================================
@@ -1820,7 +1844,8 @@ const WayfarerPanel = (() => {
                ${cls.restriction === "water" ? `<span class="cwf-pill cwf-warn">Boat required</span>` : ""}
                ${cls.restriction === "block" ? `<span class="cwf-pill cwf-warn">Impassable</span>` : ""}
                ${cls.river && cls.terrainKey !== "water" ? `<span class="cwf-pill"><i class="fa-solid fa-water"></i> River</span>` : ""}
-               ${cls.infrastructure ? `<span class="cwf-pill"><i class="fa-solid fa-road"></i> Road</span>` : ""}`
+               ${cls.infrastructure ? `<span class="cwf-pill"><i class="fa-solid fa-road"></i> Road</span>` : ""}
+               ${Hex.terrainPenalty(cls) > 0 ? `<span class="cwf-pill cwf-warn"><i class="fa-solid fa-person-hiking"></i> Slow −${Hex.terrainPenalty(cls)}</span>` : ""}`
             : `<span class="cwf-pill cwf-muted">No hex tile under the active token</span>`;
 
         // Guided course planner (GM). Idle → "Plan a route"; plotting → pace/boat
