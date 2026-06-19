@@ -228,6 +228,7 @@
 .cwf-night { display: flex; flex-direction: column; gap: 1px; margin: 4px 0; font-size: 11px; }
 .cwf-night-h { color: #9a9a9a; padding: 1px 4px; border-radius: 4px; }
 .cwf-night-h.hit { color: #fff; background: color-mix(in srgb, var(--cwf-severe) 70%, transparent); font-weight: 600; }
+.cwf-night-sec { margin: 7px 0 3px; padding-top: 6px; border-top: 1px solid var(--cwf-line); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--cwf-coral); font-weight: 700; }
 
 /* chat */
 .cwf-chat { line-height: 1.4; }
@@ -237,6 +238,9 @@
 /* ---- cinematic phase transitions (letterboxed title card) ---------------- */
 .cwf-cine { position: fixed; inset: 0; z-index: 95; pointer-events: none; display: flex; align-items: center; justify-content: center; font-family: "Signika", sans-serif; }
 .cwf-cine.cwf-cine-out { animation: cwf-cine-fade .6s ease forwards; }
+/* full-screen blur behind the title so the live map (and any weather/time change) sits softened */
+.cwf-cine-blur { position: absolute; inset: 0; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); background: rgba(8,8,12,.32); animation: cwf-cine-blur-in .5s ease both; }
+@keyframes cwf-cine-blur-in { from { opacity: 0; } to { opacity: 1; } }
 .cwf-cine-bar { position: absolute; left: 0; right: 0; height: 19vh; background: linear-gradient(180deg, rgba(8,8,10,.96), rgba(8,8,10,.82)); }
 .cwf-cine-top { top: 0; border-bottom: 2px solid var(--cwf-cine-accent, #bda9e8); box-shadow: 0 14px 40px rgba(0,0,0,.55); animation: cwf-cine-top .55s cubic-bezier(.2,.8,.2,1) both; }
 .cwf-cine-bot { bottom: 0; background: linear-gradient(0deg, rgba(8,8,10,.96), rgba(8,8,10,.82)); border-top: 2px solid var(--cwf-cine-accent, #bda9e8); box-shadow: 0 -14px 40px rgba(0,0,0,.55); animation: cwf-cine-bot .55s cubic-bezier(.2,.8,.2,1) both; }
@@ -249,3 +253,25 @@
 @keyframes cwf-cine-bot { from { transform: translateY(100%); } to { transform: translateY(0); } }
 @keyframes cwf-cine-rise { to { opacity: 1; transform: scale(1) translateY(0); } }
 @keyframes cwf-cine-fade { to { opacity: 0; } }
+
+/* ---- compact controls + per-character readout --------------------------- */
+/* tiny inline icon button (less prominent than cwf-mini) — e.g. set party marker */
+.cwf-tiny { width: 18px; height: 16px; padding: 0; border: none; background: none; color: var(--cwf-muted); cursor: pointer; font-size: 11px; }
+.cwf-tiny:hover { color: var(--cwf-accent); }
+.cwf-tiny.cwf-inline { margin-left: 5px; vertical-align: middle; }
+
+/* always-visible region danger control */
+.cwf-danger-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.cwf-danger-l { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--cwf-muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.cwf-danger-l i { color: var(--cwf-hard); }
+.cwf-seg-mini { flex: 1; gap: 3px; }
+.cwf-seg-mini .cwf-seg { height: 20px; font-size: 11px; border-radius: 6px; }
+
+/* per-character readout — exhaustion / rations / water */
+.cwf-pm { display: grid; grid-template-columns: 1fr 30px 30px 30px; gap: 4px; align-items: center; font-size: 11.5px; padding: 1px 2px; }
+.cwf-pm-h { color: var(--cwf-muted); border-bottom: 1px solid var(--cwf-line); padding-bottom: 3px; margin-bottom: 1px; }
+.cwf-pm-h i { font-size: 10px; color: var(--cwf-accent); }
+.cwf-pm-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cwf-pm-v { text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
+.cwf-pm-v.warn { color: var(--cwf-hard); }
+.cwf-pm-v.low { color: var(--cwf-severe); }

@@ -430,6 +430,9 @@ const Store = (() => {
         // Rest & D&D Beyond re-sync.
         g.register(MOD, "longRestAtDawn", { name: "Long rest at dawn", hint: "When the night resolves to dawn, run a dnd5e long rest for the party (HP, spell slots, hit dice). Exhaustion stays under Wayfarer's watch rules.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "resyncAtDawn", { name: "Offer DDB re-sync at dawn", hint: "After the dawn long rest, prompt to re-sync the party's sheets from D&D Beyond (you confirm each time). Off = use the Re-sync button when you're ready.", scope: "world", config: true, type: Boolean, default: false });
+        // Universal cinematic delay — how long phase cinematics hold, and the pause
+        // between a transition resolving and the next one. "A couple of seconds."
+        g.register(MOD, "universalDelay", { name: "Cinematic hold (seconds)", hint: "How long phase cinematics stay up, and the pause the module sits in a beat before moving on. Higher = more time to read/narrate. Default 2.5.", scope: "world", config: true, type: Number, default: 2.5, range: { min: 0.5, max: 8, step: 0.5 } });
         // Movement penalties for rugged terrain (separate from the biome DC).
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
@@ -884,6 +887,17 @@ const Party = (() => {
         for (const a of members()) { rations += countItems(a, RATION_RE); water += countItems(a, WATER_RE); }
         return { rations, water };
     }
+    // Per-member breakdown (own exhaustion / rations / water on the sheet) + the
+    // shared GROUP stash, for the HUD's individual readout.
+    function breakdown() {
+        const g = groupActor();
+        const rows = members().map(a => ({
+            id: a.id, name: a.name,
+            exh: a.system?.attributes?.exhaustion ?? 0,
+            rations: countItems(a, RATION_RE), water: countItems(a, WATER_RE)
+        }));
+        return { members: rows, stash: { rations: g ? countItems(g, RATION_RE) : 0, water: g ? countItems(g, WATER_RE) : 0 } };
+    }
 
     // Consume 1 ration + 1 waterskin-use per member. Per member the source order is
     // the shared GROUP stash first, then their own pack — so we know exactly WHO ate
@@ -917,7 +931,7 @@ const Party = (() => {
         await addItem(g, RATION_RE, "Rations", rations);
         await addItem(g, WATER_RE, "Waterskin", water);
     }
-    return { groupActor, members, size, supplies, countItems, consume, addToStash, RATION_RE, WATER_RE };
+    return { groupActor, members, size, supplies, breakdown, countItems, consume, addToStash, RATION_RE, WATER_RE };
 })();
 
 /* =========================================================================
@@ -996,13 +1010,21 @@ const MiniCal = (() => {
  * (Travel Turn → Encounter → Dusk/Camp → Night → Dawn). GM triggers broadcast to
  * the whole table over the module socket. Pure DOM/CSS, auto-dismisses.
  * ========================================================================= */
+// Universal delay (ms): cinematic hold + the "sit in the beat" pauses. One knob.
+function cwfDelayMs() { const v = Number(game.settings.get(MOD, "universalDelay")); return (Number.isFinite(v) ? v : 2.5) * 1000; }
+
+// While a travel sequence runs we advance the clock per hex; suppress the per-hex
+// weather/panel re-render thrash and refresh ONCE when it ends (covered by a cinematic).
+let cwfBusy = false;
+
 const Cinematic = (() => {
     const TONE = {
         travel:    { color: "#bda9e8", glow: "rgba(189,169,232,.5)" },
         encounter: { color: "#e0554d", glow: "rgba(224,85,77,.6)" },
         dusk:      { color: "#e0824d", glow: "rgba(224,130,77,.5)" },
         night:     { color: "#8e7bd0", glow: "rgba(142,123,208,.55)" },
-        dawn:      { color: "#ffd34d", glow: "rgba(255,211,77,.5)" }
+        dawn:      { color: "#ffd34d", glow: "rgba(255,211,77,.5)" },
+        weather:   { color: "#7bdcff", glow: "rgba(123,220,255,.5)" }
     };
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
     let el = null, timer = null;
@@ -1014,15 +1036,17 @@ const Cinematic = (() => {
         node.classList.add("cwf-cine-out");
         setTimeout(() => node.remove(), 650);
     }
-    function play({ icon = "fa-mountain-sun", title = "", subtitle = "", tone = "travel", hold = 1900 } = {}) {
+    function play({ icon = "fa-mountain-sun", title = "", subtitle = "", tone = "travel", hold = null } = {}) {
         try {
             clear();
+            const ms = hold ?? cwfDelayMs();   // universal delay drives the hold
             const t = TONE[tone] || TONE.travel;
             el = document.createElement("div");
             el.className = "cwf-cine";
             el.style.setProperty("--cwf-cine-accent", t.color);
             el.style.setProperty("--cwf-cine-glow", t.glow);
             el.innerHTML = `
+                <div class="cwf-cine-blur"></div>
                 <div class="cwf-cine-bar cwf-cine-top"></div>
                 <div class="cwf-cine-bar cwf-cine-bot"></div>
                 <div class="cwf-cine-mid">
@@ -1031,7 +1055,7 @@ const Cinematic = (() => {
                     ${subtitle ? `<div class="cwf-cine-sub">${esc(subtitle)}</div>` : ""}
                 </div>`;
             document.body.appendChild(el);
-            timer = setTimeout(fadeOut, 700 + Math.max(400, hold));
+            timer = setTimeout(fadeOut, 700 + Math.max(400, ms));
         } catch (e) { warn("cinematic failed", e); }
     }
     // GM fires these; mirror to every client so the table sees the same beat.
@@ -1139,30 +1163,46 @@ async function cwfHexEvent(cls, { scoutGood = false } = {}) {
 
 // Gradual hex-by-hex movement: animate into each hex, advance the clock for that
 // hex, roll a travel event, and HALT for the day on a real encounter. lostHours =
-// a "got lost" day that wandered without progress still spends that much time.
+// a "got lost" day that wandered without progress still spends that much time. The
+// clock/weather thrash is suppressed during the walk (cwfBusy) and refreshed once at
+// the end — any net weather shift is covered by a brief cinematic so it isn't jarring.
 async function cwfTravelMove(tok, path, { pace = "normal", boat = false, scoutGood = false, lostHours = 0 } = {}) {
     if (!tok) { CourseOverlay.clear(); return { halted: false }; }
-    if (!path?.length) {
-        if (lostHours > 0) await Store.advanceWorldTime(Math.round(lostHours));
-        CourseOverlay.clear();
-        return { halted: false };
-    }
-    const sp = Domain.PACE[pace]?.spaces ?? 2;
-    let acc = 0, halted = false, prev = Hex.offsetOf(tok.center);   // hex the party departs from
-    for (const off of path) {
-        const c = canvas.grid.getCenterPoint(off);
-        try { await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true }); }
-        catch (e) { warn("token move failed", e); break; }
-        await new Promise(r => setTimeout(r, 600));   // slow enough to narrate to
-        const cls = Hex.classifyAt(off);
-        acc += sp > 0 ? (Hex.stepCost(off, cls, { boat }, prev) / sp) * 12 : 0;   // accumulate fractional hours (infra connectivity from prev hex)
-        prev = off;
-        const whole = Math.floor(acc); if (whole >= 1) { acc -= whole; await Store.advanceWorldTime(whole); }
-        const ev = await cwfHexEvent(cls, { scoutGood });
-        if (ev?.halt) { if (ev.hours) await Store.advanceWorldTime(ev.hours); halted = true; break; }
-    }
-    if (!halted && acc >= 0.5) await Store.advanceWorldTime(Math.round(acc));   // trailing partial hour
-    CourseOverlay.clear();
+    const wxBefore = MiniCal.key();
+    cwfBusy = true;
+    let halted = false;
+    try {
+        if (!path?.length) {
+            if (lostHours > 0) await Store.advanceWorldTime(Math.round(lostHours));
+        } else {
+            const sp = Domain.PACE[pace]?.spaces ?? 2;
+            let acc = 0, prev = Hex.offsetOf(tok.center);   // hex the party departs from
+            for (const off of path) {
+                const c = canvas.grid.getCenterPoint(off);
+                try { await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true }); }
+                catch (e) { warn("token move failed", e); break; }
+                await new Promise(r => setTimeout(r, 600));   // slow enough to narrate to
+                const cls = Hex.classifyAt(off);
+                acc += sp > 0 ? (Hex.stepCost(off, cls, { boat }, prev) / sp) * 12 : 0;   // fractional hours (infra connectivity from prev hex)
+                prev = off;
+                const whole = Math.floor(acc); if (whole >= 1) { acc -= whole; await Store.advanceWorldTime(whole); }
+                const ev = await cwfHexEvent(cls, { scoutGood });
+                if (ev?.halt) { if (ev.hours) await Store.advanceWorldTime(ev.hours); halted = true; break; }
+            }
+            if (!halted && acc >= 0.5) await Store.advanceWorldTime(Math.round(acc));   // trailing partial hour
+        }
+        // Read the new weather silently (render still suppressed); cover a shift with a cinematic.
+        await MiniCal.refresh();
+        const wxAfter = MiniCal.key();
+        if (game.user.isGM && wxAfter && wxBefore && wxAfter !== wxBefore) {
+            const wl = Domain.WEATHER[wxAfter] || Domain.WEATHER.clear;
+            const here = Hex.classifyAt(Hex.offsetOf(tok.center));
+            Cinematic.broadcast({ icon: wl.icon || "fa-cloud", title: MiniCal.label() || wl.label || "Weather", subtitle: `${here?.label || "the wilds"} · ${pace} pace`, tone: "weather" });
+            await new Promise(r => setTimeout(r, cwfDelayMs()));   // sit in the beat while it changes behind the blur
+        }
+    } catch (e) { warn("travel move failed", e); }
+    finally { cwfBusy = false; CourseOverlay.clear(); }
+    WayfarerPanel.renderExternal(); BiomeBadge.update();
     return { halted };
 }
 
@@ -1289,7 +1329,8 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
         if (blocked) note += `🚱 went without — no rest recovery `;
         if (note) rows.push(`<div class="cwf-night-h ${(blocked || (isWatcher && watchLevels > 1)) ? "hit" : ""}">${esc(a.name)} · ${note.trim()} · exh ${lvl}</div>`);
     }
-    if (rows.length) ChatMessage.create({ content: cwfCardShell("fa-bed", "Rest & Provisions", `<div class="cwf-night">${rows.join("")}</div>`, { sub: cwfWatchRestLabel(n) }) });
+    // Return the rows so the caller can fold them into the Night Watch card (one card).
+    return { html: rows.length ? `<div class="cwf-night">${rows.join("")}</div>` : "", label: cwfWatchRestLabel(n) };
 }
 
 // ---- rest (HP / spell slots / hit dice) — dnd5e does the recovery; Wayfarer keeps
@@ -2483,15 +2524,16 @@ const Camp = (() => {
             : `⚔ <b>${encounters} encounter${encounters === 1 ? "" : "s"}</b> in the night.`;
         body += cwfRow("Result", resultText);
         if (encounters > 0) { try { body += cwfRow("Encounter", await cwfEncounterText(cls, { when: "night", surprised: !firstWatcher })); } catch (e) { warn("night encounter text failed", e); } }
-        ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "" }) });
-        // Resolve the long rest now the watch is known: hunger, thirst, and the
-        // watch-aware recovery (how many kept watch sets how well everyone rests).
-        await cwfCampSurvival(mealResult, { foraged: mealForaged, watchers });
+        // Resolve hunger / thirst / watch toll now the watch is known, and FOLD it into
+        // this same Night Watch card rather than posting a second one.
+        const survival = await cwfCampSurvival(mealResult, { foraged: mealForaged, watchers });
         mealResult = null;
+        if (survival?.html) body += `<div class="cwf-night-sec">Rest &amp; provisions${survival.label ? ` · ${survival.label}` : ""}</div>${survival.html}`;
+        ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "" }) });
 
         const prev = Store.sceneState().day || 1, nextDay = prev + 1;
         await Store.setSceneState({ day: nextDay, foraged: false, shortRest: false });
-        await new Promise(r => setTimeout(r, 2600));   // let the night beat play before dawn breaks
+        await new Promise(r => setTimeout(r, cwfDelayMs()));   // sit in the night beat before dawn breaks
         Cinematic.broadcast({ icon: "fa-sun", title: "Dawn", subtitle: `Day ${nextDay}${encounters ? " · a restless night" : " · all is quiet"}`, tone: "dawn" });
         try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(1, Number(game.settings.get(MOD, "wakeHour")) || 6); else await Store.advanceWorldTime(N); }
         catch (e) { warn("advance to dawn failed", e); }
@@ -2798,7 +2840,9 @@ const WayfarerPanel = (() => {
         const tok = Travel.token || Canvasry.activeToken();   // pin to the plot token while plotting
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
         const sup = Party.supplies();
+        const bd = Party.breakdown();
         const size = Party.size();
+        const dangerNow = Camp.dangerScore();
         const w = Domain.WEATHER[effectiveWeather()] || Domain.WEATHER.clear;
         const site = Canvasry.augurSiteUnder(tok);
         const dis = isGM ? "" : "disabled";
@@ -2871,8 +2915,9 @@ const WayfarerPanel = (() => {
             </div>
             <div class="cwf-body" ${collapsedRef ? 'style="display:none"' : ""}>
                 <div class="cwf-section">
-                    <div class="cwf-label">Current hex ${isGM ? `<button class="cwf-mini cwf-inline" data-action="set-party" title="Set the selected token as the party marker"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}</div>
+                    <div class="cwf-label">Current hex ${isGM ? `<button class="cwf-tiny cwf-inline" data-action="set-party" title="Set the selected token as the party marker"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}</div>
                     <div class="cwf-here">${here}</div>
+                    ${isGM ? `<div class="cwf-danger-row"><span class="cwf-danger-l" title="Region danger — drives day & night encounters"><i class="fa-solid fa-skull"></i> Danger</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${dangerNow === n ? "on" : ""}" data-action="camp-danger" data-n="${n}" title="Set region danger ${n}">${n}</button>`).join("")}</div></div>` : ""}
                 </div>
 
                 ${Camp.active ? campCard(dis, cls) : Turn.active ? turnCard(dis) : travelSection}
@@ -2883,9 +2928,15 @@ const WayfarerPanel = (() => {
                 </div>
 
                 <div class="cwf-section">
-                    <div class="cwf-label">Party supplies <span class="cwf-muted2">${size} member${size === 1 ? "" : "s"} · sheets + stash</span>${isGM ? `<button class="cwf-mini cwf-inline" data-action="haul" title="Add a forager haul to the party stash"><i class="fa-solid fa-plus"></i></button>` : ""}</div>
-                    <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-drumstick-bite"></i> Rations</span><span class="cwf-step-v">${sup.rations}</span></div>
-                    <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-bottle-water"></i> Waterskins</span><span class="cwf-step-v">${sup.water}</span></div>
+                    <div class="cwf-label">Party <span class="cwf-muted2">${size} member${size === 1 ? "" : "s"} · per character</span></div>
+                    <div class="cwf-pm cwf-pm-h"><span class="cwf-pm-n"></span><span class="cwf-pm-v" title="Exhaustion"><i class="fa-solid fa-face-dizzy"></i></span><span class="cwf-pm-v" title="Rations"><i class="fa-solid fa-drumstick-bite"></i></span><span class="cwf-pm-v" title="Waterskins"><i class="fa-solid fa-bottle-water"></i></span></div>
+                    ${bd.members.map(m => `<div class="cwf-pm"><span class="cwf-pm-n">${esc(m.name)}</span><span class="cwf-pm-v ${m.exh > 0 ? "warn" : ""}">${m.exh}</span><span class="cwf-pm-v ${m.rations <= 0 ? "low" : ""}">${m.rations}</span><span class="cwf-pm-v ${m.water <= 0 ? "low" : ""}">${m.water}</span></div>`).join("") || `<div class="cwf-muted2">No party members found.</div>`}
+                </div>
+
+                <div class="cwf-section">
+                    <div class="cwf-label">Shared stash <span class="cwf-muted2">group inventory</span>${isGM ? `<button class="cwf-mini cwf-inline" data-action="haul" title="Add a forager haul to the party stash"><i class="fa-solid fa-plus"></i></button>` : ""}</div>
+                    <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-drumstick-bite"></i> Rations</span><span class="cwf-step-v">${bd.stash.rations}</span></div>
+                    <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-bottle-water"></i> Waterskins</span><span class="cwf-step-v">${bd.stash.water}</span></div>
                 </div>
 
                 ${isGM ? `<div class="cwf-section">
@@ -2913,6 +2964,7 @@ const WayfarerPanel = (() => {
     // Hook-driven re-render that won't rebuild while the user is mid-interaction
     // with a control (an innerHTML rebuild would close an open <select>/input).
     function renderExternal() {
+        if (cwfBusy) return;   // a travel sequence is running — it refreshes once when it ends
         const a = document.activeElement;
         if (root && a && root.contains(a) && (a.tagName === "SELECT" || a.tagName === "INPUT")) return;
         render();
@@ -3001,7 +3053,7 @@ Hooks.on("canvasReady", () => { Canvasry.invalidateTileIndex(); Music.reset(); M
 for (const h of ["createTile", "updateTile", "deleteTile", "createDrawing", "updateDrawing", "deleteDrawing"])
     Hooks.on(h, () => { try { Canvasry.invalidateTileIndex(); if (Travel.plotting) Travel.refresh?.(); } catch { /* noop */ } });
 // Mini Calendar updates weather as in-game time passes — re-read it.
-Hooks.on("updateWorldTime", () => MiniCal.refresh());
+Hooks.on("updateWorldTime", () => { if (!cwfBusy) MiniCal.refresh(); });
 // D&D Beyond rolls (via ddb-roll-cards v4.78+) auto-fill the claimed role slot.
 Hooks.on("ddb-roll-cards.roll", (payload) => { try { Turn.ingestRoll(payload); } catch (e) { warn("ddb roll ingest failed", e); } });
 // Work WITH the native dnd5e rest: when Wayfarer has flagged a member (long watch, or
