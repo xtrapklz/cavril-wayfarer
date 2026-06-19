@@ -565,6 +565,7 @@ const Canvasry = (() => {
         // River / coast feature tiles overlaid on this hex (separate documents).
         const river = hits.some(h => h.kind === "feature" && (h.hx?.type === "river" || /baumgart_rivers/i.test(h.src)));
         const coast = hits.some(h => h.kind === "feature" && (h.hx?.type === "coast" || /baumgart_coasts/i.test(h.src)));
+        const road = hits.some(h => h.hx?.type === "road" || /\b(road|path|trail|highway)\b/i.test(h.src) || /hex[_ ]?road/i.test(h.src));
 
         // Choose the hex's terrain tile (ignore pure feature tiles for that).
         const pool = hits.filter(h => h.kind !== "feature");
@@ -604,7 +605,8 @@ const Canvasry = (() => {
         }
 
         // Overlay features onto the result.
-        if (river) cls.river = true;          // river → boat travels it at ×2
+        if (river) cls.river = true;          // river → +1 reach/tile (+2 with a boat)
+        if (road) cls.infrastructure = true;  // road → +1 reach/tile (+2 with a cart)
         cls.coast = coast;
         cls.signature = [anchor?.src, cls.dc, cls.restriction, river ? "r" : "", coast ? "c" : ""].join("|");
         return cls;
@@ -990,8 +992,8 @@ const BiomeBadge = (() => {
             : cls.restriction === "water" ? `<span class="cwf-restr">Boat required</span>`
             : cls.restriction === "block" ? `<span class="cwf-restr">Impassable</span>` : "";
         const dc = cls.dc != null ? `DC ${cls.dc}` : "—";
-        const infra = cls.infrastructure ? `<i class="fa-solid fa-road" title="Road — pace ×2"></i>` : "";
-        const river = (cls.river && cls.terrainKey !== "water") ? `<i class="fa-solid fa-water" title="River — boat travels ×2"></i>` : "";
+        const infra = cls.infrastructure ? `<i class="fa-solid fa-road" title="Road — +1 reach per tile (+2 with a cart)"></i>` : "";
+        const river = (cls.river && cls.terrainKey !== "water") ? `<i class="fa-solid fa-water" title="River — +1 reach per tile (+2 with a boat)"></i>` : "";
         const detail = cls.detail ? `<span class="cwf-detail">${cls.detail}</span>` : "";
         return `
             <div class="cwf-badge-row cwf-main">
@@ -1064,57 +1066,96 @@ const Hex = (() => {
         return true;
     }
 
-    // BFS reachable hexes within `budget` steps. Map(key -> {off, dist, cls}); excludes start.
+    // Does a hex carry a river and/or road? (feature tiles, filename, or a
+    // world-flagged road drawing). Drives the movement-cost bonus.
+    function featuresAt(off) {
+        const c = centerOf(off);
+        if (!c) return { river: false, road: false };
+        let river = false, road = false;
+        const within = (b) => b && c.x >= b.x && c.x <= b.x + b.width && c.y >= b.y && c.y <= b.y + b.height;
+        for (const t of (canvas?.tiles?.placeables ?? [])) {
+            const doc = t.document, src = doc?.texture?.src || "", hx = doc?.flags?.hexlands;
+            const isRiver = hx?.type === "river" || /baumgart_rivers/i.test(src) || /hex[_ ]?river|\briver\b/i.test(src);
+            const isRoad = hx?.type === "road" || /\b(road|path|trail|highway)\b/i.test(src) || /hex[_ ]?road/i.test(src);
+            if ((isRiver || isRoad) && within(t.bounds)) { if (isRiver) river = true; if (isRoad) road = true; }
+        }
+        for (const d of (canvas?.drawings?.placeables ?? [])) {
+            if (d.document?.flags?.world?.isRoad && within(d.bounds)) road = true;
+        }
+        return { river, road };
+    }
+
+    // Movement cost to ENTER a hex. Normal = 1 space; a river/road tile costs 1/2
+    // (cover 2 hexes per space → +1 reach/tile), and 1/3 with a boat/cart (+2/tile).
+    // So Fast (3 spaces) along an all-river+boat route reaches 3×3 = 9 hexes.
+    function stepCost(off, { boat = false } = {}) {
+        const f = featuresAt(off);
+        const m = (f.river || f.road) ? (boat ? 3 : 2) : 1;
+        return 1 / m;
+    }
+
+    // Pop the lowest-cost frontier entry (small N → linear scan is fine).
+    const popMin = (pq) => { let bi = 0; for (let i = 1; i < pq.length; i++) if (pq[i].c < pq[bi].c) bi = i; return pq.splice(bi, 1)[0]; };
+    const EPS = 1e-9;
+
+    // Reachable hexes within `budget` movement points (Dijkstra over stepCost).
+    // Map(key -> {off, cost, cls}); excludes start.
     function reachable(start, budget, opts = {}) {
         const out = new Map();
-        if (!start || budget < 1) return out;
-        const seen = new Set([key(start)]);
-        let frontier = [start];
-        for (let d = 1; d <= budget && frontier.length; d++) {
-            const next = [];
-            for (const cur of frontier) {
-                for (const nb of neighbors(cur)) {
-                    const k = key(nb);
-                    if (seen.has(k)) continue;
-                    seen.add(k);
-                    const cls = classifyAt(nb);
-                    if (!passable(cls, opts)) continue;
-                    out.set(k, { off: nb, dist: d, cls });
-                    next.push(nb);
+        if (!start || budget <= 0) return out;
+        const best = new Map([[key(start), 0]]);
+        const pq = [{ off: start, c: 0 }];
+        while (pq.length) {
+            const cur = popMin(pq);
+            if (cur.c > (best.get(key(cur.off)) ?? Infinity) + EPS) continue;
+            for (const nb of neighbors(cur.off)) {
+                const cls = classifyAt(nb);
+                if (!passable(cls, opts)) continue;
+                const nc = cur.c + stepCost(nb, opts);
+                if (nc > budget + EPS) continue;
+                const k = key(nb);
+                if (nc + EPS < (best.get(k) ?? Infinity)) {
+                    best.set(k, nc);
+                    out.set(k, { off: nb, cost: nc, cls });
+                    pq.push({ off: nb, c: nc });
                 }
             }
-            frontier = next;
         }
         return out;
     }
 
-    // Shortest passable route start→dest (offsets, excluding start, including dest), or [].
+    // Least-cost route start→dest within `budget` (Dijkstra). Offsets excluding
+    // start, including dest, or [].
     function route(start, dest, budget, opts = {}) {
         if (!start || !dest) return [];
         const sK = key(start), dK = key(dest);
         if (sK === dK) return [];
-        const prev = new Map([[sK, null]]);
-        let frontier = [start];
-        for (let d = 1; d <= budget && frontier.length; d++) {
-            const next = [];
-            for (const cur of frontier) {
-                for (const nb of neighbors(cur)) {
-                    const k = key(nb);
-                    if (prev.has(k)) continue;
-                    if (!passable(classifyAt(nb), opts)) continue;
-                    prev.set(k, cur);
-                    if (k === dK) {
-                        const path = []; let p = nb;
-                        while (p && key(p) !== sK) { path.unshift(p); p = prev.get(key(p)); }
-                        return path;
-                    }
-                    next.push(nb);
+        const best = new Map([[sK, 0]]), prev = new Map([[sK, null]]);
+        const pq = [{ off: start, c: 0 }];
+        while (pq.length) {
+            const cur = popMin(pq);
+            if (key(cur.off) === dK) break;
+            if (cur.c > (best.get(key(cur.off)) ?? Infinity) + EPS) continue;
+            for (const nb of neighbors(cur.off)) {
+                const cls = classifyAt(nb);
+                if (!passable(cls, opts)) continue;
+                const nc = cur.c + stepCost(nb, opts);
+                if (nc > budget + EPS) continue;
+                const k = key(nb);
+                if (nc + EPS < (best.get(k) ?? Infinity)) {
+                    best.set(k, nc); prev.set(k, cur.off);
+                    pq.push({ off: nb, c: nc });
                 }
             }
-            frontier = next;
         }
-        return [];
+        if (!prev.has(dK)) return [];
+        const path = []; let p = dest;
+        while (p && key(p) !== sK) { path.unshift(p); p = prev.get(key(p)); }
+        return path;
     }
+
+    // Total movement cost of a route (spaces consumed).
+    const pathCost = (routeArr, opts = {}) => (routeArr || []).reduce((c, off) => c + stepCost(off, opts), 0);
 
     // The two hexes flanking the destination (for "Lost Left/Right"): neighbours
     // of the penultimate route hex that also touch the destination. [0]=left, [1]=right.
@@ -1127,7 +1168,7 @@ const Hex = (() => {
         return neighbors(prev).filter(n => destNbs.has(key(n)) && key(n) !== key(dest));
     }
 
-    return { key, offsetOf, centerOf, neighbors, classifyAt, passable, reachable, route, flank };
+    return { key, offsetOf, centerOf, neighbors, classifyAt, passable, featuresAt, stepCost, reachable, route, pathCost, flank };
 })();
 
 /* =========================================================================
@@ -1196,7 +1237,12 @@ const CourseOverlay = (() => {
 const Travel = (() => {
     let plotting = false, dest = null, routeArr = [], reachMap = null, boat = false, pace = "normal", shortRest = false;
 
-    const budget = () => Math.max(0, (({ slow: 1, normal: 2, fast: 3 }[pace] ?? 2)) * (boat ? 2 : 1) - (shortRest ? 1 : 0));
+    // Movement points for the day. Boat/Cart no longer doubles everything — it only
+    // cheapens river/road tiles (Hex.stepCost). Short Rest spends 1 space.
+    const paceSpaces = () => ({ slow: 1, normal: 2, fast: 3 }[pace] ?? 2);
+    const budget = () => Math.max(0, paceSpaces() - (shortRest ? 1 : 0));
+    // A travel turn is a 12h day; time passed = fraction of the day's spaces spent.
+    const travelHours = (path) => { const sp = paceSpaces(); return sp > 0 ? Math.round((Hex.pathCost(path, { boat }) / sp) * 12) : 0; };
 
     function startToken() { return Canvasry.activeToken(); }
 
@@ -1248,7 +1294,7 @@ const Travel = (() => {
             catch (e) { warn("token move failed", e); break; }
             await new Promise(r => setTimeout(r, 160));
         }
-        await Store.advanceWorldTime(steps.length * Domain.hoursPerHex(pace, boat));
+        await Store.advanceWorldTime(travelHours(steps));
         dest = null; routeArr = []; reachMap = null;
         WayfarerPanel.render(); BiomeBadge.update();
     }
@@ -1476,7 +1522,8 @@ const Turn = (() => {
             }
         }
         await applyMovement(navEffect);
-        const hrs = route.length * Domain.hoursPerHex(pace, boat);
+        const sp = Domain.PACE[pace]?.spaces ?? 2;
+        const hrs = Math.round((Hex.pathCost(route, { boat }) / sp) * 12);
         await Store.advanceWorldTime(hrs);
 
         // Styled per-role card — each role's roller / skill / total / outcome / result distinct.
@@ -1772,7 +1819,8 @@ const WayfarerPanel = (() => {
                ${cls.restriction === "noFast" ? `<span class="cwf-pill cwf-warn">No Fast Pace</span>` : ""}
                ${cls.restriction === "water" ? `<span class="cwf-pill cwf-warn">Boat required</span>` : ""}
                ${cls.restriction === "block" ? `<span class="cwf-pill cwf-warn">Impassable</span>` : ""}
-               ${cls.river && cls.terrainKey !== "water" ? `<span class="cwf-pill"><i class="fa-solid fa-water"></i> River</span>` : ""}`
+               ${cls.river && cls.terrainKey !== "water" ? `<span class="cwf-pill"><i class="fa-solid fa-water"></i> River</span>` : ""}
+               ${cls.infrastructure ? `<span class="cwf-pill"><i class="fa-solid fa-road"></i> Road</span>` : ""}`
             : `<span class="cwf-pill cwf-muted">No hex tile under the active token</span>`;
 
         // Guided course planner (GM). Idle → "Plan a route"; plotting → pace/boat
@@ -1793,7 +1841,7 @@ const WayfarerPanel = (() => {
                     : `<div class="cwf-muted2">Click a glowing hex to set your destination.</div>`;
                 travelSection = `
                 <div class="cwf-section cwf-travel">
-                    <div class="cwf-label">Plot course <span class="cwf-muted2">reach ${Travel.budget} hex${Travel.budget === 1 ? "" : "es"} · click a glowing one</span></div>
+                    <div class="cwf-label">Plot course <span class="cwf-muted2">${Travel.reach?.size ?? 0} hex${(Travel.reach?.size ?? 0) === 1 ? "" : "es"} reachable · click one</span></div>
                     <div class="cwf-seg-row">${tpace}</div>
                     <div class="cwf-toggles">
                         <button class="cwf-toggle ${Travel.boat ? "on" : ""}" data-action="travel-boat" title="Boat on a river / cart on a road doubles your reach"><i class="fa-solid fa-sailboat"></i> Boat / Cart</button>
