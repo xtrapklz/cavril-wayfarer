@@ -395,6 +395,14 @@ const Store = (() => {
         g.register(MOD, "tableIds", { scope: "world", config: false, type: Object, default: {} });
         // Remembered role assignments (actor + skill per role), pre-filled each turn.
         g.register(MOD, "lastRoles", { scope: "world", config: false, type: Object, default: {} });
+        // Night camp / watch / danger.
+        g.register(MOD, "dangerDefault", { name: "Default danger level", hint: "Base night-encounter danger (0-5) for new scenes. Adjustable per scene in the Camp panel.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 5, step: 1 } });
+        g.register(MOD, "nightHours", { name: "Night length (hours)", hint: "How many hourly encounter checks the night runs (watches split this evenly).", scope: "world", config: true, type: Number, default: 8 });
+        g.register(MOD, "campHour", { name: "Bed-down hour (0-23)", hint: "Hour the party turns in when you Make Camp.", scope: "world", config: true, type: Number, default: 21 });
+        g.register(MOD, "wakeHour", { name: "Wake hour (0-23)", hint: "Hour the party rises at dawn after the night resolves.", scope: "world", config: true, type: Number, default: 6 });
+        g.register(MOD, "biomeDangerJSON", { name: "Biome danger modifier (advanced)", hint: 'Optional JSON of biome → night danger (0-2), e.g. {"volcanic":2,"jungle":1}. Blank uses defaults.', scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "campMapJSON", { name: "Biome → camp ambience (advanced)", hint: 'Optional JSON of biome → Maestro arrangement for camp. Blank = "campVista" for all.', scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "lastWatch", { scope: "world", config: false, type: Array, default: [] });
         // Movement penalties for rugged terrain (separate from the biome DC).
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
@@ -915,7 +923,63 @@ const Music = (() => {
             else await globalThis.Maestro.stop("environment");
         } catch (e) { warn("maestro environment switch failed", e); }
     }
-    return { active, update, arrangementFor, reset: () => { _last = null; }, DEFAULTS };
+    // Camp ambience: play a camp arrangement (default "campVista"), biome-overridable.
+    async function camp(cls) {
+        if (!game.user.isGM || !game.settings.get(MOD, "musicEnabled") || !active()) return;
+        let m = {};
+        const raw = game.settings.get(MOD, "campMapJSON");
+        if (raw && String(raw).trim()) { try { m = JSON.parse(raw) || {}; } catch (e) { warn("campMapJSON invalid", e); } }
+        const key = cls?.terrainKey === "water" ? "water" : (cls?.biome || cls?.terrainKey);
+        const arr = m[key] || "campVista";
+        try { await globalThis.Maestro.play("emberEnvironment", { channel: "environment", arrangementId: arr }); _last = "camp:" + arr; }
+        catch (e) { warn("maestro camp ambience failed", e); }
+    }
+    return { active, update, camp, arrangementFor, reset: () => { _last = null; }, DEFAULTS };
+})();
+
+/* =========================================================================
+ * DANGER — night-encounter odds. x/20 per night hour = danger score (0-5) +
+ * biome modifier (0-2) + hostile proximity (0-2), minus the on-watch member's
+ * highest ability modifier during their shift.
+ * ========================================================================= */
+const Danger = (() => {
+    const DEF_BIOME = { volcanic: 2, tainted: 2, void: 2, frozen: 2, jungle: 1, wasteland: 1, swamp: 1, desert: 1, tundra: 1, boreal: 0, savanna: 0, temperate: 0, water: 0 };
+    const DEF_ELEV = { high: 2, swamp: 1, medium: 1, flat: 0, water: 0 };
+    function biomeMap() {
+        const raw = game.settings.get(MOD, "biomeDangerJSON");
+        if (raw && String(raw).trim()) { try { const p = JSON.parse(raw); if (p && typeof p === "object") return { ...DEF_BIOME, ...p }; } catch (e) { warn("biomeDangerJSON invalid", e); } }
+        return DEF_BIOME;
+    }
+    // Biome danger 0-2 = max of the biome map and the elevation map.
+    function biomeMod(cls) {
+        if (!cls) return 0;
+        const b = biomeMap()[cls.biome] ?? 0;
+        const e = DEF_ELEV[cls.elevation] ?? 0;
+        return Math.max(0, Math.min(2, Math.max(b, e)));
+    }
+    // Hostile proximity 0-2: +2 within 1 hex, +1 within 2, +0 at 3+ / none.
+    function hostileMod(token) {
+        if (!token) return 0;
+        const c = token.center, gs = canvas?.dimensions?.size || 100;
+        let minH = Infinity;
+        for (const t of (canvas?.tokens?.placeables ?? [])) {
+            if (t === token || t.document?.disposition !== CONST.TOKEN_DISPOSITIONS.HOSTILE) continue;
+            minH = Math.min(minH, Math.hypot(t.center.x - c.x, t.center.y - c.y) / gs);
+        }
+        if (minH <= 1.5) return 2;
+        if (minH <= 2.5) return 1;
+        return 0;
+    }
+    function highestMod(actor) {
+        const ab = actor?.system?.abilities;
+        if (!ab) return 0;
+        return Math.max(0, ...Object.values(ab).map(a => a?.mod ?? 0));
+    }
+    // x/20 numerator for one hour. The on-watch member's highest mod reduces the danger score.
+    function hourlyX(danger, biomeM, hostileM, watcherMod = 0) {
+        return Math.max(0, Math.min(20, Math.max(0, (danger | 0) - watcherMod) + biomeM + hostileM));
+    }
+    return { biomeMod, hostileMod, highestMod, hourlyX };
 })();
 
 /* =========================================================================
@@ -1619,6 +1683,90 @@ const Turn = (() => {
 })();
 
 /* =========================================================================
+ * CAMP — night workflow: bed down → camp ambience → assign watches → resolve
+ * the night's hourly encounter checks → wake at dawn.
+ * ========================================================================= */
+const Camp = (() => {
+    let active = false, supplyNote = "", watchers = [];   // watchers = ordered actorIds
+
+    const nightHours = () => Math.max(1, Number(game.settings.get(MOD, "nightHours")) || 8);
+    const dangerScore = () => Store.sceneState().danger ?? (Number(game.settings.get(MOD, "dangerDefault")) || 0);
+
+    function begin(note = "") {
+        if (!game.user.isGM) return;
+        active = true; supplyNote = note;
+        const members = new Set(Party.members().map(a => a.id));
+        watchers = (game.settings.get(MOD, "lastWatch") || []).filter(id => members.has(id));
+        advanceToNight();
+        const tok = Canvasry.activeToken();
+        Music.camp(tok ? Canvasry.biomeForToken(tok) : null);
+        WayfarerPanel.render();
+    }
+    async function advanceToNight() {
+        const hour = Number(game.settings.get(MOD, "campHour")) || 21;
+        try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(0, hour); else await Store.advanceWorldTime(3); }
+        catch (e) { warn("advance to night failed", e); }
+    }
+    function setDanger(n) { Store.setSceneState({ danger: Math.max(0, Math.min(5, n | 0)) }); WayfarerPanel.render(); }
+    function toggleWatcher(id) {
+        const i = watchers.indexOf(id);
+        if (i >= 0) watchers.splice(i, 1); else watchers.push(id);
+        game.settings.set(MOD, "lastWatch", watchers.slice()).catch(() => {});
+        WayfarerPanel.render();
+    }
+    // Which watcher (actorId) covers night-hour h (0-based)? null if no watch.
+    function watcherForHour(h) {
+        if (!watchers.length) return null;
+        const per = nightHours() / watchers.length;
+        return watchers[Math.min(watchers.length - 1, Math.floor(h / per))];
+    }
+    const shiftHours = () => watchers.length ? Math.round(nightHours() / watchers.length) : 0;
+
+    async function resolveNight() {
+        if (!game.user.isGM) return;
+        const tok = Canvasry.activeToken();
+        const cls = tok ? Canvasry.biomeForToken(tok) : null;
+        const danger = dangerScore(), biomeM = Danger.biomeMod(cls), hostileM = Danger.hostileMod(tok);
+        const N = nightHours();
+        const lines = []; let encounters = 0;
+        for (let h = 0; h < N; h++) {
+            const wid = watcherForHour(h);
+            const watcher = wid ? game.actors.get(wid) : null;
+            const wmod = watcher ? Danger.highestMod(watcher) : 0;
+            const x = Danger.hourlyX(danger, biomeM, hostileM, wmod);
+            let roll = 0; try { roll = (await new Roll("1d20").evaluate()).total; } catch { roll = Math.ceil(Math.random() * 20); }
+            const hit = roll <= x && x > 0;
+            if (hit) encounters++;
+            lines.push(`<div class="cwf-night-h ${hit ? "hit" : ""}">Hr ${h + 1} · ${watcher ? esc(watcher.name) : "<em>unwatched</em>"} · ${x}/20 · 🎲${roll}${hit ? " · ⚔" : ""}</div>`);
+        }
+        const sched = watchers.length
+            ? watchers.map(id => { const a = game.actors.get(id); return `${esc(a?.name || "?")} (−${Danger.highestMod(a)})`; }).join(" → ")
+            : "no watch — unguarded all night";
+        let body = "";
+        if (supplyNote) body += cwfRow("Supplies", supplyNote);
+        body += cwfRow("Danger", `${danger} + biome ${biomeM} + hostiles ${hostileM}`);
+        body += cwfRow("Watch", sched + (watchers.length ? ` · ~${shiftHours()}h each` : ""));
+        body += `<div class="cwf-night">${lines.join("")}</div>`;
+        body += cwfRow("Result", encounters ? `<b>${encounters} encounter${encounters === 1 ? "" : "s"}</b> in the night.` : "A quiet night.");
+        ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "" }) });
+
+        const prev = Store.sceneState().day || 1;
+        await Store.setSceneState({ day: prev + 1, foraged: false, shortRest: false });
+        try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(1, Number(game.settings.get(MOD, "wakeHour")) || 6); else await Store.advanceWorldTime(N); }
+        catch (e) { warn("advance to dawn failed", e); }
+        active = false;
+        WayfarerPanel.render(); BiomeBadge.update();
+    }
+    function cancel() { active = false; WayfarerPanel.render(); }
+    const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
+
+    return {
+        begin, setDanger, toggleWatcher, resolveNight, cancel, watcherForHour, shiftHours, dangerScore, nightHours,
+        get active() { return active; }, get watchers() { return watchers; }
+    };
+})();
+
+/* =========================================================================
  * UI — WayfarerPanel (day / weather / pace / supplies / actions)
  * ========================================================================= */
 const WayfarerPanel = (() => {
@@ -1706,6 +1854,10 @@ const WayfarerPanel = (() => {
                 case "turn-roll": await Turn.roll(btn.dataset.role); break;
                 case "turn-resolve": await Turn.resolve(); break;
                 case "turn-end": Turn.end(); break;
+                case "camp-danger": Camp.setDanger(Number(btn.dataset.n)); break;
+                case "camp-watch": Camp.toggleWatcher(btn.dataset.id); break;
+                case "camp-resolve": await Camp.resolveNight(); break;
+                case "camp-cancel": Camp.cancel(); break;
             }
         } catch (e) { warn("panel action failed", action, e); }
         render();
@@ -1742,22 +1894,16 @@ const WayfarerPanel = (() => {
 
     async function makeCamp() {
         const st = Store.sceneState();
-        // Consume 1 ration + 1 waterskin-use per member: GROUP stash first, then one
-        // unit from each individual (waterskins lose a use, not the whole item).
-        const consumed = st.foraged ? null : await Party.consume();
-        const sup = Party.supplies();
-        let body = "";
-        if (st.foraged) {
-            body += cwfRow("Supplies", "The Forager fed the party — nothing consumed.");
-        } else {
-            body += cwfRow("Consumed", `${consumed.rations} 🍖 ration${consumed.rations === 1 ? "" : "s"} · ${consumed.water} 💧 waterskin use${consumed.water === 1 ? "" : "s"}`);
-            if (consumed.rationsShort || consumed.waterShort) body += cwfRow("Short", `⚠ ${consumed.rationsShort}🍖 / ${consumed.waterShort}💧 unmet — those members go hungry/thirsty`);
-            body += cwfRow("Remaining", `${sup.rations} 🍖 · ${sup.water} 💧`);
+        // Consume 1 ration + 1 waterskin-use per member (group stash first, then one
+        // per individual; waterskins lose a use, not the whole item), then bed down
+        // into the night/watch flow.
+        let note = "The Forager fed the party — nothing consumed.";
+        if (!st.foraged) {
+            const c = await Party.consume();
+            const sup = Party.supplies();
+            note = `Ate ${c.rations}🍖 / ${c.water}💧${c.rationsShort || c.waterShort ? ` (⚠ ${c.rationsShort}🍖/${c.waterShort}💧 short)` : ""} · ${sup.rations}🍖 / ${sup.water}💧 left`;
         }
-        body += cwfRow("Night", `<em>Set the watch, resolve any night events, then advance to morning.</em>`);
-        await Store.setSceneState({ foraged: false, shortRest: false });   // the day advances at dawn
-        const footer = `<button class="cwf-card-btn" data-cwf="dawn"><i class="fa-solid fa-sun"></i> Advance to morning</button>`;
-        ChatMessage.create({ content: cwfCardShell("fa-campground", "Make Camp — Long Rest", body, { footerHTML: footer }) });
+        Camp.begin(note);
     }
 
     async function enterSite() {
@@ -1820,6 +1966,35 @@ const WayfarerPanel = (() => {
                 <div class="cwf-label">Travel Turn · <b>DC ${dc}</b> <span class="cwf-muted2">${govLabel} · ${Turn.route.length} hex${Turn.route.length === 1 ? "" : "es"}</span></div>
                 <div class="cwf-roles">${cards}</div>
                 <div class="cwf-actions">${footer}</div>
+            </div>`;
+    }
+
+    // The night camp card: danger dial + watch order + resolve.
+    function campCard(dis, cls) {
+        const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
+        const danger = Camp.dangerScore();
+        const biomeM = Danger.biomeMod(cls), hostileM = Danger.hostileMod(Canvasry.activeToken());
+        const base = Math.max(0, danger) + biomeM + hostileM;
+        const dial = [0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${danger === n ? "on" : ""}" data-action="camp-danger" data-n="${n}" ${dis}>${n}</button>`).join("");
+        const members = Party.members();
+        const watch = Camp.watchers;
+        const chips = members.map(a => {
+            const i = watch.indexOf(a.id);
+            const on = i >= 0;
+            return `<button class="cwf-toggle ${on ? "on" : ""}" data-action="camp-watch" data-id="${a.id}" ${dis} title="Highest mod −${Danger.highestMod(a)}">${on ? `${i + 1}. ` : ""}${esc(a.name)} <span class="cwf-rr-sk">−${Danger.highestMod(a)}</span></button>`;
+        }).join("");
+        const watchNote = watch.length ? `${watch.length} on watch · ~${Camp.shiftHours()}h each` : "no watch — unguarded";
+        return `
+            <div class="cwf-section cwf-turn">
+                <div class="cwf-label">Camp · Night <span class="cwf-muted2">${esc(cls?.label || "")} · base <b>${base}</b>/20 per hr</span></div>
+                <div class="cwf-card-row"><span class="cwf-card-l">Danger</span><span class="cwf-card-v">score ${danger} + biome ${biomeM} + hostiles ${hostileM}</span></div>
+                <div class="cwf-seg-row">${dial}</div>
+                <div class="cwf-label" style="margin-top:6px">Watch order <span class="cwf-muted2">${watchNote}</span></div>
+                <div class="cwf-toggles cwf-watch">${chips || `<span class="cwf-muted2">No party members found.</span>`}</div>
+                <div class="cwf-actions">
+                    <button class="cwf-btn" data-action="camp-cancel" ${dis}><i class="fa-solid fa-xmark"></i> Cancel</button>
+                    <button class="cwf-btn cwf-primary" data-action="camp-resolve" ${dis}><i class="fa-solid fa-moon"></i> Resolve night → dawn</button>
+                </div>
             </div>`;
     }
 
@@ -1899,7 +2074,7 @@ const WayfarerPanel = (() => {
                     <div class="cwf-here">${here}</div>
                 </div>
 
-                ${Turn.active ? turnCard(dis) : travelSection}
+                ${Camp.active ? campCard(dis, cls) : Turn.active ? turnCard(dis) : travelSection}
 
                 <div class="cwf-section">
                     <div class="cwf-label">Weather <span class="cwf-wx-note">${w.note}</span></div>
@@ -1921,7 +2096,7 @@ const WayfarerPanel = (() => {
                 </div>` : ""}
 
                 ${isGM
-                    ? `<div class="cwf-actions"><button class="cwf-btn cwf-primary" data-action="camp"><i class="fa-solid fa-campground"></i> Make Camp</button></div>`
+                    ? (Camp.active || Turn.active ? "" : `<div class="cwf-actions"><button class="cwf-btn cwf-primary" data-action="camp"><i class="fa-solid fa-campground"></i> Make Camp</button></div>`)
                     : `<div class="cwf-readonly">Read-only — your GM controls travel state.</div>`}
             </div>`;
     }
@@ -1998,7 +2173,7 @@ Hooks.once("ready", () => {
         debugBadge: () => BiomeBadge.diagnose(),
         planRoute: () => Travel.startPlot(),
         createTables: () => Tables.ensureAll(),
-        Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, _installed: true
+        Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, _installed: true
     };
     HexData.load().then(() => BiomeBadge.update());  // baumgart fallback index (hexlands)
     registerWayfarerToolbar();                        // Augur Tools group (preferred)
