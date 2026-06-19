@@ -423,6 +423,10 @@ const Store = (() => {
         g.register(MOD, "starveExhaustion", { name: "Starvation & thirst exhaustion", hint: "Going without food or water at camp exhausts the members who went short (5e survival). Eating + drinking is also what lets a long rest ease exhaustion.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "foodGraceDays", { name: "Days without food before hunger", hint: "Base days a member can go unfed before exhaustion (5e: this + their CON modifier, minimum 1). Water has no grace.", scope: "world", config: true, type: Number, default: 3 });
         g.register(MOD, "thirstDC", { name: "Thirst save DC", hint: "CON save DC a member rolls on a night with no water (fail = +1 exhaustion).", scope: "world", config: true, type: Number, default: 15 });
+        // Watch ↔ rest: the number on watch sets how well the party recovers.
+        g.register(MOD, "watchRest", { name: "Watches affect rest", hint: "How many keep watch sets the rest quality: nobody = deep sleep (best recovery, but unguarded); 1 = up all night (gains exhaustion); 2 = broken rest (no recovery); 3+ = normal. Off = a fed+watered member always recovers the normal amount.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "restNoWatch", { name: "Recovery with NO watch", hint: "Exhaustion levels each fed+watered member recovers on an unguarded night (everyone sleeps deep). Default 2.", scope: "world", config: true, type: Number, default: 2, range: { min: 0, max: 6, step: 1 } });
+        g.register(MOD, "watchSoloPenalty", { name: "Lone-watcher exhaustion", hint: "Exhaustion a single all-night watcher gains for taking the whole watch alone. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 6, step: 1 } });
         // Movement penalties for rugged terrain (separate from the biome DC).
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
@@ -1183,19 +1187,47 @@ async function cwfForcedMarch(pace) {
     ChatMessage.create({ content: cwfCardShell("fa-person-running", "Forced March", `<div class="cwf-night">${rows.join("")}</div>`, { sub: `${pace} pace · DC ${dc}` }) });
 }
 
-// Camp = a long rest. Resolve the 5e survival model per member: food has a
-// 3 + CON-mod day grace before hunger exhausts; water bites the first dry night
-// (CON save); and a member who ate AND drank eases a level of exhaustion (whatever
-// its source — pace or starvation), while one who went short does not recover.
-// `consumeResult` is Party.consume()'s perMember breakdown; foraged → all provided.
-async function cwfCampSurvival(consumeResult, { foraged = false } = {}) {
-    if (!game.user.isGM || !game.settings.get(MOD, "starveExhaustion")) return;
+// How many on watch sets the rest quality. Returns the levels recovered (positive)
+// or gained (negative) for a member, before the food gate. Resolved at the END of
+// the night (resolveNight) when the watch is actually known.
+//   0 watchers  → deep, undisturbed sleep → +restNoWatch (but the night was unguarded)
+//   1 watcher   → that watcher is up all night → −watchSoloPenalty (gains exhaustion)
+//   2 watchers  → broken rest for the watchers → 0
+//   3+ watchers / any non-watcher → normal recovery (longRestRelief)
+function cwfWatchDelta(isWatcher, n) {
+    const relief = Math.max(0, Number(game.settings.get(MOD, "longRestRelief")) || 0);
+    if (!game.settings.get(MOD, "watchRest")) return relief;
+    if (n === 0) return Math.max(0, Number(game.settings.get(MOD, "restNoWatch")) || 0);
+    if (isWatcher && n === 1) return -Math.max(0, Number(game.settings.get(MOD, "watchSoloPenalty")) || 0);
+    if (isWatcher && n === 2) return 0;
+    return relief;   // 3+ on watch, or anyone who slept the night through
+}
+// One-line description of the rest the current watch buys (for the camp UI).
+function cwfWatchRestLabel(n) {
+    if (!game.settings.get(MOD, "watchRest")) return "";
+    const r = Math.max(0, Number(game.settings.get(MOD, "restNoWatch")) || 0);
+    const s = Math.max(0, Number(game.settings.get(MOD, "watchSoloPenalty")) || 0);
+    if (n === 0) return `deep rest · +${r} recovery, but unguarded`;
+    if (n === 1) return `lone watch · the watcher gains +${s} exhaustion`;
+    if (n === 2) return `split watch · watchers don't recover`;
+    return `shared watch · normal rest`;
+}
+
+// Camp = a long rest, resolved at dawn. Per member: the 5e survival model (food has
+// a 3 + CON-mod day grace; water bites the first dry night via a CON save) plus the
+// watch-aware recovery above. Recovery (and the no-watch bonus) needs food AND drink;
+// the lone-watcher penalty applies regardless. `consumeResult` = Party.consume()'s
+// perMember breakdown; foraged → all provided; watchers = ordered actorIds on watch.
+async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] } = {}) {
+    if (!game.user.isGM) return;
+    const starve = !!game.settings.get(MOD, "starveExhaustion");
     const mem = Party.members();
     if (!mem.length) return;
     const byId = new Map((consumeResult?.perMember || []).map(p => [p.id, p]));
     const graceBase = Math.max(0, Number(game.settings.get(MOD, "foodGraceDays")) || 0);
     const thirstDC = Math.max(1, Number(game.settings.get(MOD, "thirstDC")) || 15);
-    const relief = Math.max(0, Number(game.settings.get(MOD, "longRestRelief")) || 0);
+    const watchSet = new Set(watchers || []);
+    const n = watchSet.size;
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
     const rows = [];
     for (const a of mem) {
@@ -1205,26 +1237,32 @@ async function cwfCampSurvival(consumeResult, { foraged = false } = {}) {
         const grace = Math.max(1, graceBase + conMod);
         let lvl = a.system?.attributes?.exhaustion ?? 0;
         let note = "";
-        // Food — grace of 3 + CON mod days, then one level per unfed day.
-        let days = Number(a.getFlag?.(MOD, "daysNoFood")) || 0;
-        if (fed) days = 0;
-        else { days += 1; if (days > grace) { lvl = Math.min(6, lvl + 1); note += `🍖 hunger +1 (${days}d) `; } else note += `🍖 hungry ${days}/${grace}d `; }
-        try { await a.setFlag?.(MOD, "daysNoFood", days); } catch { /* noop */ }
-        // Water — no grace; a dry night calls for a CON save.
-        if (!watered) {
-            const con = a.system?.abilities?.con || {};
-            const bonus = Number.isFinite(con.save) ? con.save : (con.mod ?? 0);
-            const f = `1d20 ${bonus >= 0 ? "+" : "-"} ${Math.abs(bonus)}`;
-            let total = 0; try { total = (await new Roll(f).evaluate()).total; } catch { total = Math.ceil(Math.random() * 20) + bonus; }
-            if (total < thirstDC) { lvl = Math.min(6, lvl + 1); note += `💧 thirst +1 (CON ${total} vs ${thirstDC}) `; } else note += `💧 parched, saved ${total} `;
+        if (starve) {
+            // Food — grace of 3 + CON mod days, then one level per unfed day.
+            let days = Number(a.getFlag?.(MOD, "daysNoFood")) || 0;
+            if (fed) days = 0;
+            else { days += 1; if (days > grace) { lvl = Math.min(6, lvl + 1); note += `🍖 hunger +1 (${days}d) `; } else note += `🍖 hungry ${days}/${grace}d `; }
+            try { await a.setFlag?.(MOD, "daysNoFood", days); } catch { /* noop */ }
+            // Water — no grace; a dry night calls for a CON save.
+            if (!watered) {
+                const con = a.system?.abilities?.con || {};
+                const bonus = Number.isFinite(con.save) ? con.save : (con.mod ?? 0);
+                const f = `1d20 ${bonus >= 0 ? "+" : "-"} ${Math.abs(bonus)}`;
+                let total = 0; try { total = (await new Roll(f).evaluate()).total; } catch { total = Math.ceil(Math.random() * 20) + bonus; }
+                if (total < thirstDC) { lvl = Math.min(6, lvl + 1); note += `💧 thirst +1 (CON ${total} vs ${thirstDC}) `; } else note += `💧 parched, saved ${total} `;
+            }
         }
-        // Recovery — a real long rest needs food AND drink.
-        if (fed && watered && relief > 0 && lvl > 0) { lvl = Math.max(0, lvl - relief); note += `😴 rested −${relief} `; }
+        // Watch-aware rest. Recovery needs food+drink; the sleepless penalty doesn't.
+        const isWatcher = watchSet.has(a.id);
+        const delta = cwfWatchDelta(isWatcher, n);
+        if (delta > 0) { if (fed && watered && lvl > 0) { const eased = Math.min(lvl, delta); lvl -= eased; note += `😴 rested −${eased} `; } else if (isWatcher) note += `🛡 watched `; }
+        else if (delta < 0) { lvl = Math.min(6, lvl - delta); note += `🌙 sleepless +${-delta} `; }
+        else if (isWatcher && lvl > 0) note += `🛡 watch · no recovery `;
         const cur = a.system?.attributes?.exhaustion ?? 0;
         if (lvl !== cur) { try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { warn("camp exhaustion update failed", e); } }
-        if (note) rows.push(`<div class="cwf-night-h ${(!fed || !watered) ? "hit" : ""}">${esc(a.name)} · ${note.trim()} · exh ${lvl}</div>`);
+        if (note) rows.push(`<div class="cwf-night-h ${(!fed || !watered || delta < 0) ? "hit" : ""}">${esc(a.name)} · ${note.trim()} · exh ${lvl}</div>`);
     }
-    if (rows.length) ChatMessage.create({ content: cwfCardShell("fa-bed", "Rest & Provisions", `<div class="cwf-night">${rows.join("")}</div>`) });
+    if (rows.length) ChatMessage.create({ content: cwfCardShell("fa-bed", "Rest & Provisions", `<div class="cwf-night">${rows.join("")}</div>`, { sub: cwfWatchRestLabel(n) }) });
 }
 
 /* =========================================================================
@@ -2223,13 +2261,14 @@ const Turn = (() => {
  * ========================================================================= */
 const Camp = (() => {
     let active = false, supplyNote = "", watchers = [];   // watchers = ordered actorIds
+    let mealResult = null, mealForaged = false;           // carried from Make Camp → resolved at dawn
 
     const nightHours = () => Math.max(1, Number(game.settings.get(MOD, "nightHours")) || 8);
     const dangerScore = () => Store.sceneState().danger ?? (Number(game.settings.get(MOD, "dangerDefault")) || 0);
 
-    function begin(note = "") {
+    function begin(note = "", consumeResult = null, foraged = false) {
         if (!game.user.isGM) return;
-        active = true; supplyNote = note;
+        active = true; supplyNote = note; mealResult = consumeResult; mealForaged = !!foraged;
         const members = new Set(Party.members().map(a => a.id));
         watchers = (game.settings.get(MOD, "lastWatch") || []).filter(id => members.has(id));
         advanceToNight();
@@ -2291,6 +2330,10 @@ const Camp = (() => {
         body += cwfRow("Result", resultText);
         if (encounters > 0) { try { body += cwfRow("Encounter", await cwfEncounterText(cls, { when: "night", surprised: !firstWatcher })); } catch (e) { warn("night encounter text failed", e); } }
         ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "" }) });
+        // Resolve the long rest now the watch is known: hunger, thirst, and the
+        // watch-aware recovery (how many kept watch sets how well everyone rests).
+        await cwfCampSurvival(mealResult, { foraged: mealForaged, watchers });
+        mealResult = null;
 
         const prev = Store.sceneState().day || 1, nextDay = prev + 1;
         await Store.setSceneState({ day: nextDay, foraged: false, shortRest: false });
@@ -2482,10 +2525,9 @@ const WayfarerPanel = (() => {
             const c = consumeResult, sup = Party.supplies();
             note = `Ate ${c.rations}🍖 / ${c.water}💧${c.rationsShort || c.waterShort ? ` (⚠ ${c.rationsShort}🍖/${c.waterShort}💧 short)` : ""} · ${sup.rations}🍖 / ${sup.water}💧 left`;
         }
-        // Resolve hunger / thirst / recovery for this long rest (Forager success
-        // feeds everyone, so the whole party counts as fed + watered).
-        await cwfCampSurvival(consumeResult, { foraged: !!st.foraged });
-        Camp.begin(note);
+        // The meal is eaten now, but hunger/thirst/recovery resolve at dawn in
+        // resolveNight — once the watch order (which sets rest quality) is known.
+        Camp.begin(note, consumeResult, !!st.foraged);
     }
 
     async function enterSite() {
@@ -2567,7 +2609,10 @@ const WayfarerPanel = (() => {
             const on = i >= 0;
             return `<button class="cwf-toggle ${on ? "on" : ""}" data-action="camp-watch" data-id="${a.id}" ${dis} title="Highest mod −${Danger.highestMod(a)}">${on ? `${i + 1}. ` : ""}${esc(a.name)} <span class="cwf-rr-sk">−${Danger.highestMod(a)}</span></button>`;
         }).join("");
-        const watchNote = watch.length ? `${watch.length} on watch · ~${Camp.shiftHours()}h each` : "no watch — unguarded";
+        const rl = cwfWatchRestLabel(watch.length);
+        const watchNote = watch.length
+            ? `${watch.length} on watch · ~${Camp.shiftHours()}h each${rl ? ` · ${rl}` : ""}`
+            : (rl || "no watch — unguarded");
         return `
             <div class="cwf-section cwf-turn">
                 <div class="cwf-label">Camp · Night <span class="cwf-muted2">${esc(cls?.label || "")} · base <b>${base}</b>/${Danger.scale()} per hr</span></div>
