@@ -648,6 +648,24 @@ const Canvasry = (() => {
         return { river, road };
     }
 
+    // Accumulated hexlands river EDGE mask for a hex offset (OR of every river tile's
+    // flags.hexlands.riverMask — a 6-bit code, one bit per hex edge). `masked` is true
+    // only if at least one river tile carried a mask (hexlands-painted); legacy river
+    // art without masks reports river:true, masked:false so callers can fall back.
+    function riverMaskAt(off) {
+        if (!off) return { mask: 0, masked: false, river: false };
+        const idx = getTileIndex();
+        const hits = idx.byHex.get(`${off.i},${off.j}`) || [];
+        let mask = 0, masked = false, river = false;
+        for (const h of hits) {
+            if (!h.isRiver) continue;
+            river = true;
+            const rm = h.hx?.riverMask;
+            if (Number.isInteger(rm)) { mask |= rm; masked = true; }
+        }
+        return { mask, masked, river };
+    }
+
     // Most authoritative {biome,elevation,vegetation,name} for a tile: flags →
     // baumgart index → (hexlands tile w/o tags) filename inference. Returns null
     // for non-hexlands tiles so they fall through to the Primus keyword parser.
@@ -779,7 +797,7 @@ const Canvasry = (() => {
         return best;
     }
 
-    return { screen, biomeTilesUnder, tileFeaturesAt, invalidateTileIndex, tileIndexVersion, biomeForToken, biomeForPoint, activeToken, setPartyToken, augurSiteUnder };
+    return { screen, biomeTilesUnder, tileFeaturesAt, riverMaskAt, invalidateTileIndex, tileIndexVersion, biomeForToken, biomeForPoint, activeToken, setPartyToken, augurSiteUnder };
 })();
 
 /* =========================================================================
@@ -1125,14 +1143,15 @@ async function cwfTravelMove(tok, path, { pace = "normal", boat = false, scoutGo
         return { halted: false };
     }
     const sp = Domain.PACE[pace]?.spaces ?? 2;
-    let acc = 0, halted = false;
+    let acc = 0, halted = false, prev = Hex.offsetOf(tok.center);   // hex the party departs from
     for (const off of path) {
         const c = canvas.grid.getCenterPoint(off);
         try { await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true }); }
         catch (e) { warn("token move failed", e); break; }
         await new Promise(r => setTimeout(r, 600));   // slow enough to narrate to
         const cls = Hex.classifyAt(off);
-        acc += sp > 0 ? (Hex.stepCost(off, cls, { boat }) / sp) * 12 : 0;   // accumulate fractional hours
+        acc += sp > 0 ? (Hex.stepCost(off, cls, { boat }, prev) / sp) * 12 : 0;   // accumulate fractional hours (infra connectivity from prev hex)
+        prev = off;
         const whole = Math.floor(acc); if (whole >= 1) { acc -= whole; await Store.advanceWorldTime(whole); }
         const ev = await cwfHexEvent(cls, { scoutGood });
         if (ev?.halt) { if (ev.hours) await Store.advanceWorldTime(ev.hours); halted = true; break; }
@@ -1586,13 +1605,42 @@ const Hex = (() => {
         return 0;
     }
 
-    // Movement cost to ENTER a hex: (1 base + terrain penalty) ÷ road/river
-    // multiplier. Normal flat = 1; hills +1, mountains +2; a river/road tile is ½
-    // (⅓ with boat/cart) — and that division also eases a road/pass or river that
-    // cuts through rough terrain. Fast (3) along an all-river+boat route → 9 hexes.
-    function stepCost(off, cls, { boat = false } = {}) {
+    // River EDGE connectivity (hexlands convention). riverMask is a 6-bit edge code;
+    // the edge from A→B is `riverEdgeBit(A,B)`, and the same physical edge is the
+    // RECIPROCAL bit on B. A river is continuous across A↔B only if A's mask has that
+    // edge AND B's mask has the reciprocal — so a river that loops out through a
+    // neighbouring hex does NOT shortcut between the two hexes it re-touches.
+    const RIVER_RECIP = { 0: 3, 1: 4, 2: 5, 3: 0, 4: 1, 5: 2 };
+    function riverEdgeBit(fromOff, toOff) {
+        const isOdd = Math.abs(fromOff.i % 2) === 1;
+        const offs = isOdd
+            ? [[0, -1, 0], [1, 0, 1], [1, 1, 2], [0, 1, 3], [-1, 1, 4], [-1, 0, 5]]
+            : [[0, -1, 0], [1, -1, 1], [1, 0, 2], [0, 1, 3], [-1, 0, 4], [-1, -1, 5]];
+        for (const [di, dj, bit] of offs) if (fromOff.i + di === toOff.i && fromOff.j + dj === toOff.j) return bit;
+        return -1;
+    }
+    function riverConnects(fromOff, toOff) {
+        if (!fromOff || !toOff) return false;
+        const a = Canvasry.riverMaskAt(fromOff), b = Canvasry.riverMaskAt(toOff);
+        if (!a.river || !b.river) return false;          // a river must be in both hexes
+        if (!a.masked || !b.masked) return true;          // legacy art w/o masks → don't penalise
+        const bit = riverEdgeBit(fromOff, toOff);
+        if (bit < 0) return false;
+        return !!(a.mask & (1 << bit)) && !!(b.mask & (1 << RIVER_RECIP[bit]));
+    }
+
+    // Movement cost to ENTER a hex (from `fromOff`, if known): (1 base + terrain
+    // penalty) ÷ infra multiplier. Normal flat = 1; hills +1, mountains +2. A road
+    // or river HALVES it (⅓ with boat/cart) only when the infrastructure is
+    // CONTINUOUS across the edge being crossed — a road in both hexes, or a river
+    // whose channel actually connects them (riverConnects). Without `fromOff` (e.g.
+    // a standalone estimate) the hex's own feature is enough. Fast (3) along a
+    // connected all-river+boat route → 9 hexes.
+    function stepCost(off, cls, { boat = false } = {}, fromOff = null) {
         const f = featuresAt(off);
-        const m = (f.river || f.road) ? (boat ? 3 : 2) : 1;
+        const roadConn = f.road && (fromOff ? featuresAt(fromOff).road : true);
+        const riverConn = f.river && (fromOff ? riverConnects(fromOff, off) : true);
+        const m = (roadConn || riverConn) ? (boat ? 3 : 2) : 1;
         return (1 + terrainPenalty(cls)) / m;
     }
 
@@ -1613,7 +1661,7 @@ const Hex = (() => {
             for (const nb of neighbors(cur.off)) {
                 const cls = classifyAt(nb);
                 if (!passable(cls, opts)) continue;
-                const nc = cur.c + stepCost(nb, cls, opts);
+                const nc = cur.c + stepCost(nb, cls, opts, cur.off);
                 if (nc > budget + EPS) continue;
                 const k = key(nb);
                 if (nc + EPS < (best.get(k) ?? Infinity)) {
@@ -1641,7 +1689,7 @@ const Hex = (() => {
             for (const nb of neighbors(cur.off)) {
                 const cls = classifyAt(nb);
                 if (!passable(cls, opts)) continue;
-                const nc = cur.c + stepCost(nb, cls, opts);
+                const nc = cur.c + stepCost(nb, cls, opts, cur.off);
                 if (nc > budget + EPS) continue;
                 const k = key(nb);
                 if (nc + EPS < (best.get(k) ?? Infinity)) {
@@ -1656,8 +1704,14 @@ const Hex = (() => {
         return path;
     }
 
-    // Total movement cost of a route (spaces consumed).
-    const pathCost = (routeArr, opts = {}) => (routeArr || []).reduce((c, off) => c + stepCost(off, classifyAt(off), opts), 0);
+    // Total movement cost of a route (spaces consumed). `startOff` is the hex the
+    // route departs FROM (the token's hex) so the first step's infra connectivity is
+    // judged correctly; each subsequent step is judged from the previous hex.
+    const pathCost = (routeArr, opts = {}, startOff = null) => {
+        let c = 0, prev = startOff;
+        for (const off of (routeArr || [])) { c += stepCost(off, classifyAt(off), opts, prev); prev = off; }
+        return c;
+    };
 
     // The two hexes flanking the destination (for "Lost Left/Right"): neighbours
     // of the penultimate route hex that also touch the destination. [0]=left, [1]=right.
@@ -1670,7 +1724,7 @@ const Hex = (() => {
         return neighbors(prev).filter(n => destNbs.has(key(n)) && key(n) !== key(dest));
     }
 
-    return { key, offsetOf, centerOf, neighbors, classifyAt, passable, featuresAt, terrainPenalty, stepCost, reachable, route, pathCost, flank };
+    return { key, offsetOf, centerOf, neighbors, classifyAt, passable, featuresAt, riverConnects, riverEdgeBit, terrainPenalty, stepCost, reachable, route, pathCost, flank };
 })();
 
 /* =========================================================================
@@ -1784,7 +1838,7 @@ const Travel = (() => {
             if (Hex.key(wp) === Hex.key(a)) continue;
             const leg = Hex.route(a, wp, total - spent, { boat });
             if (!leg.length) break;
-            full.push(...leg); spent += Hex.pathCost(leg, { boat }); a = wp; kept.push(wp);
+            full.push(...leg); spent += Hex.pathCost(leg, { boat }, a); a = wp; kept.push(wp);
         }
         if (kept.length !== waypoints.length) waypoints = kept;
         routeArr = full; anchor = a;
@@ -2216,7 +2270,7 @@ const Turn = (() => {
         if (!tok || !route.length) { CourseOverlay.clear(); return { halted: false }; }
         const sp = Domain.PACE[pace]?.spaces ?? 2;
         let path = route, lostHours = 0;
-        if (effect === "dead") { path = []; lostHours = sp > 0 ? Math.round((Hex.pathCost(route, { boat }) / sp) * 12) : 0; }  // wandered all day, no progress
+        if (effect === "dead") { path = []; lostHours = sp > 0 ? Math.round((Hex.pathCost(route, { boat }, Hex.offsetOf(tok.center)) / sp) * 12) : 0; }  // wandered all day, no progress
         else if (effect === "left" || effect === "right") {
             const flanks = Hex.flank(route, Hex.offsetOf(tok.center));
             const target = effect === "left" ? (flanks[0] || flanks[1]) : (flanks[1] || flanks[0]);
