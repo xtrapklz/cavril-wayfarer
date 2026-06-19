@@ -225,3 +225,19 @@
 .cwf-chat { line-height: 1.4; }
 .cwf-dialog label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0; }
 .cwf-dialog input { width: 90px; }
+
+/* ---- cinematic phase transitions (letterboxed title card) ---------------- */
+.cwf-cine { position: fixed; inset: 0; z-index: 95; pointer-events: none; display: flex; align-items: center; justify-content: center; font-family: "Signika", sans-serif; }
+.cwf-cine.cwf-cine-out { animation: cwf-cine-fade .6s ease forwards; }
+.cwf-cine-bar { position: absolute; left: 0; right: 0; height: 19vh; background: linear-gradient(180deg, rgba(8,8,10,.96), rgba(8,8,10,.82)); }
+.cwf-cine-top { top: 0; border-bottom: 2px solid var(--cwf-cine-accent, #bda9e8); box-shadow: 0 14px 40px rgba(0,0,0,.55); animation: cwf-cine-top .55s cubic-bezier(.2,.8,.2,1) both; }
+.cwf-cine-bot { bottom: 0; background: linear-gradient(0deg, rgba(8,8,10,.96), rgba(8,8,10,.82)); border-top: 2px solid var(--cwf-cine-accent, #bda9e8); box-shadow: 0 -14px 40px rgba(0,0,0,.55); animation: cwf-cine-bot .55s cubic-bezier(.2,.8,.2,1) both; }
+.cwf-cine-mid { position: relative; text-align: center; color: #f4f2ea; opacity: 0; transform: scale(.92) translateY(10px); animation: cwf-cine-rise .65s ease-out .32s forwards; padding: 0 24px; }
+.cwf-cine-mid::before { content: ""; position: absolute; inset: -40px -80px; background: radial-gradient(ellipse at center, rgba(8,8,12,.6), transparent 72%); z-index: -1; }
+.cwf-cine-icon { font-size: 48px; color: var(--cwf-cine-accent, #bda9e8); filter: drop-shadow(0 0 16px var(--cwf-cine-glow, rgba(189,169,232,.5))); display: block; margin-bottom: 12px; }
+.cwf-cine-title { font-size: 40px; font-weight: 700; letter-spacing: .07em; text-shadow: 0 0 20px var(--cwf-cine-glow, rgba(189,169,232,.5)), 0 2px 8px rgba(0,0,0,.7); }
+.cwf-cine-sub { margin-top: 8px; font-size: 15px; color: #c7c2d6; letter-spacing: .18em; text-transform: uppercase; }
+@keyframes cwf-cine-top { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+@keyframes cwf-cine-bot { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes cwf-cine-rise { to { opacity: 1; transform: scale(1) translateY(0); } }
+@keyframes cwf-cine-fade { to { opacity: 0; } }

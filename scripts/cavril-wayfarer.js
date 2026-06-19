@@ -960,6 +960,57 @@ const MiniCal = (() => {
     };
 })();
 
+/* =========================================================================
+ * CINEMATIC — full-screen letterboxed title card for phase transitions
+ * (Travel Turn → Encounter → Dusk/Camp → Night → Dawn). GM triggers broadcast to
+ * the whole table over the module socket. Pure DOM/CSS, auto-dismisses.
+ * ========================================================================= */
+const Cinematic = (() => {
+    const TONE = {
+        travel:    { color: "#bda9e8", glow: "rgba(189,169,232,.5)" },
+        encounter: { color: "#e0554d", glow: "rgba(224,85,77,.6)" },
+        dusk:      { color: "#e0824d", glow: "rgba(224,130,77,.5)" },
+        night:     { color: "#8e7bd0", glow: "rgba(142,123,208,.55)" },
+        dawn:      { color: "#ffd34d", glow: "rgba(255,211,77,.5)" }
+    };
+    const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
+    let el = null, timer = null;
+    function clear() { if (timer) { clearTimeout(timer); timer = null; } if (el) { el.remove(); el = null; } }
+    function fadeOut() {
+        if (!el) return;
+        const node = el; el = null;
+        if (timer) { clearTimeout(timer); timer = null; }
+        node.classList.add("cwf-cine-out");
+        setTimeout(() => node.remove(), 650);
+    }
+    function play({ icon = "fa-mountain-sun", title = "", subtitle = "", tone = "travel", hold = 1900 } = {}) {
+        try {
+            clear();
+            const t = TONE[tone] || TONE.travel;
+            el = document.createElement("div");
+            el.className = "cwf-cine";
+            el.style.setProperty("--cwf-cine-accent", t.color);
+            el.style.setProperty("--cwf-cine-glow", t.glow);
+            el.innerHTML = `
+                <div class="cwf-cine-bar cwf-cine-top"></div>
+                <div class="cwf-cine-bar cwf-cine-bot"></div>
+                <div class="cwf-cine-mid">
+                    <i class="fa-solid ${icon} cwf-cine-icon"></i>
+                    <div class="cwf-cine-title">${esc(title)}</div>
+                    ${subtitle ? `<div class="cwf-cine-sub">${esc(subtitle)}</div>` : ""}
+                </div>`;
+            document.body.appendChild(el);
+            timer = setTimeout(fadeOut, 700 + Math.max(400, hold));
+        } catch (e) { warn("cinematic failed", e); }
+    }
+    // GM fires these; mirror to every client so the table sees the same beat.
+    function broadcast(spec) {
+        try { game.socket?.emit(`module.${MOD}`, { type: "cinematic", spec }); } catch (e) { warn("cinematic broadcast failed", e); }
+        play(spec);
+    }
+    return { play, broadcast, clear };
+})();
+
 // Advance the clock from camp to the next dawn (becomes the Camp Turn workflow).
 async function advanceToDawn() {
     if (!game.user.isGM) return;
@@ -971,6 +1022,7 @@ async function advanceToDawn() {
         if (mc?.setTime) await mc.setTime(1, "dawn");   // tomorrow's dawn
         else await Store.advanceWorldTime(8);
     } catch (e) { warn("advance to dawn failed", e); await Store.advanceWorldTime(8); }
+    Cinematic.broadcast({ icon: "fa-sun", title: "Dawn", subtitle: `Day ${nextDay}`, tone: "dawn" });
     ChatMessage.create({ content: cwfCardShell("fa-sun", `Dawn — Day ${nextDay}`, cwfRow("Morning", "The watch ends and a new day begins.")) });
 }
 
@@ -1010,6 +1062,7 @@ async function cwfTravelEncounter(routeArr, { scoutMod = 0, surprised = true } =
         let roll = 0; try { roll = (await new Roll(`1d${scale}`).evaluate()).total; } catch { roll = Math.ceil(Math.random() * scale); }
         if (roll <= x) {
             const text = await cwfEncounterText(cls, { when: "day", surprised });
+            Cinematic.broadcast({ icon: "fa-dragon", title: "Encounter!", subtitle: surprised ? "The party is caught unawares" : (cls?.label || "Wilderness"), tone: "encounter" });
             const tag = surprised ? `<span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : `<span class="cwf-tier-badge cwf-tier-success">Forewarned</span>`;
             const body = `<div class="cwf-rr"><div class="cwf-rr-top"><i class="fa-solid fa-dragon"></i> <span class="cwf-rr-role">Encounter</span> ${tag}</div><div class="cwf-rr-b">${text}</div></div>`;
             ChatMessage.create({ content: cwfCardShell("fa-dragon", "Travel Encounter", body, { sub: `${cls?.label || "Wilderness"} · ${x}/${scale}` }) });
@@ -1841,6 +1894,7 @@ const Turn = (() => {
         route = r.slice();
         governing = Travel.governing();
         pace = Travel.pace || "normal"; boat = Travel.boat;
+        Cinematic.broadcast({ icon: "fa-compass", title: "Travel Turn", subtitle: governing?.label ? `${governing.label} · DC ${governing.dc ?? "?"}` : `${route.length} hex${route.length === 1 ? "" : "es"}`, tone: "travel" });
         // Pre-fill from the last remembered assignments (editable per turn).
         const saved = game.settings.get(MOD, "lastRoles") || {};
         const present = new Set(Party.members().map(a => a.id));
@@ -2033,7 +2087,9 @@ const Camp = (() => {
         watchers = (game.settings.get(MOD, "lastWatch") || []).filter(id => members.has(id));
         advanceToNight();
         const tok = Canvasry.activeToken();
-        Music.camp(tok ? Canvasry.biomeForToken(tok) : null);
+        const cls = tok ? Canvasry.biomeForToken(tok) : null;
+        Music.camp(cls);
+        Cinematic.broadcast({ icon: "fa-campground", title: "Make Camp", subtitle: `${cls?.label || "Wilderness"} · dusk`, tone: "dusk" });
         WayfarerPanel.render();
     }
     async function advanceToNight() {
@@ -2060,6 +2116,7 @@ const Camp = (() => {
         if (!game.user.isGM) return;
         const tok = Canvasry.activeToken();
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
+        Cinematic.broadcast({ icon: "fa-moon", title: "The Night Watch", subtitle: cls?.label || "", tone: "night" });
         const danger = dangerScore(), biomeM = Danger.biomeMod(cls), hostileM = Danger.hostileMod(tok);
         const N = nightHours(), scale = Danger.scale(), oneOnly = !!game.settings.get(MOD, "oneEncounterPerNight");
         const lines = []; let encounters = 0, firstHour = 0, firstWatcher = null;
@@ -2088,8 +2145,10 @@ const Camp = (() => {
         if (encounters > 0) { try { body += cwfRow("Encounter", await cwfEncounterText(cls, { when: "night", surprised: !firstWatcher })); } catch (e) { warn("night encounter text failed", e); } }
         ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "" }) });
 
-        const prev = Store.sceneState().day || 1;
-        await Store.setSceneState({ day: prev + 1, foraged: false, shortRest: false });
+        const prev = Store.sceneState().day || 1, nextDay = prev + 1;
+        await Store.setSceneState({ day: nextDay, foraged: false, shortRest: false });
+        await new Promise(r => setTimeout(r, 2600));   // let the night beat play before dawn breaks
+        Cinematic.broadcast({ icon: "fa-sun", title: "Dawn", subtitle: `Day ${nextDay}${encounters ? " · a restless night" : " · all is quiet"}`, tone: "dawn" });
         try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(1, Number(game.settings.get(MOD, "wakeHour")) || 6); else await Store.advanceWorldTime(N); }
         catch (e) { warn("advance to dawn failed", e); }
         active = false;
@@ -2264,6 +2323,7 @@ const WayfarerPanel = (() => {
     }
 
     async function makeCamp() {
+        if (Turn.active) Turn.end();   // close out a resolved travel turn before bedding down
         const st = Store.sceneState();
         // Consume 1 ration + 1 waterskin-use per member (group stash first, then one
         // per individual; waterskins lose a use, not the whole item), then bed down
@@ -2332,7 +2392,8 @@ const WayfarerPanel = (() => {
         }).join("");
 
         const footer = Turn.step === "resolved"
-            ? `<button class="cwf-btn cwf-primary" data-action="turn-end" ${dis}><i class="fa-solid fa-flag-checkered"></i> New turn</button>`
+            ? `<button class="cwf-btn" data-action="turn-end" ${dis}><i class="fa-solid fa-route"></i> New turn</button>
+               <button class="cwf-btn cwf-primary" data-action="camp" ${dis}><i class="fa-solid fa-campground"></i> Make camp</button>`
             : `<button class="cwf-btn" data-action="turn-end" ${dis}><i class="fa-solid fa-xmark"></i> Cancel</button>
                <button class="cwf-btn cwf-primary" data-action="turn-resolve" ${dis || (Turn.allRolled() ? "" : "disabled")}><i class="fa-solid fa-gavel"></i> Resolve turn</button>`;
 
@@ -2557,8 +2618,11 @@ Hooks.once("ready", () => {
         debugBadge: () => BiomeBadge.diagnose(),
         planRoute: () => Travel.startPlot(),
         createTables: () => Tables.ensureAll(),
-        Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, _installed: true
+        Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, _installed: true
     };
+    // Phase-transition cinematics broadcast from the GM → every client plays them.
+    try { game.socket?.on(`module.${MOD}`, (msg) => { if (msg?.type === "cinematic") Cinematic.play(msg.spec || {}); }); }
+    catch (e) { warn("socket listener failed", e); }
     HexData.load().then(() => BiomeBadge.update());  // baumgart fallback index (hexlands)
     registerWayfarerToolbar();                        // Augur Tools group (preferred)
     MiniCal.refresh();                                // read live weather from Mini Calendar
