@@ -707,13 +707,16 @@ const Canvasry = (() => {
     // (scene flag) → the controlled token → this user's PC → a lone player
     // character token on the scene (the usual hexcrawl party marker).
     function activeToken() {
+        // The CONTROLLED token wins — the HUD is contextual to whatever the GM has
+        // selected. Falls back to the designated party marker (scene flag) when
+        // nothing is selected, then this user's PC, then a lone player token.
+        const ctrl = canvas?.tokens?.controlled?.[0];
+        if (ctrl) return ctrl;
         const pid = canvas?.scene?.getFlag?.(MOD, "partyToken");
         if (pid) {
             const pt = canvas?.tokens?.get?.(pid);
             if (pt) return pt;
         }
-        const ctrl = canvas?.tokens?.controlled?.[0];
-        if (ctrl) return ctrl;
         const ch = game.user?.character;
         if (ch) {
             const tok = canvas?.tokens?.placeables?.find(t => t.actor?.id === ch.id);
@@ -1399,13 +1402,29 @@ const CourseOverlay = (() => {
         } catch { /* noop */ }
     }
 
-    function draw(reachMap, routeArr) {
+    // Draw a ring outline at a hex centre (always on the PIXI overlay so it sits
+    // on top of the highlight fills) — used to mark committed waypoints/anchor.
+    function ring(off, color, r = 0.30) {
+        try {
+            if (!gfx) { gfx = new PIXI.Graphics(); (canvas.interface || canvas.stage).addChild(gfx); }
+            const c = canvas.grid.getCenterPoint(off);
+            gfx.lineStyle(3, color, 0.95).drawCircle(c.x, c.y, (canvas.grid.size || 100) * r);
+        } catch { /* noop */ }
+    }
+
+    // reachMap = hexes selectable from the current anchor (the glowing RANGE);
+    // routeArr = the committed course; opts.waypoints = picked stops; opts.anchor
+    // = where the next leg starts. Range is drawn vivid so "where can I go" reads
+    // at a glance; route is solid green; waypoints get gold rings (remembered).
+    function draw(reachMap, routeArr, opts = {}) {
         clear();
         const routeKeys = new Set((routeArr || []).map(Hex.key));
         for (const { off } of (reachMap?.values?.() ?? [])) {
-            if (!routeKeys.has(Hex.key(off))) mark(off, 0x7bdcff, 0.10);
+            if (!routeKeys.has(Hex.key(off))) mark(off, 0x6fd0ff, 0.22); // selectable range — clearly visible
         }
-        for (const off of (routeArr || [])) mark(off, 0x5fd08a, 0.28);
+        for (const off of (routeArr || [])) mark(off, 0x5fd08a, 0.42);    // committed route
+        for (const wp of (opts.waypoints || [])) ring(wp, 0xffd34d);      // remembered waypoints (gold)
+        if (opts.anchor) ring(opts.anchor, 0x6fd0ff, 0.34);               // next-leg start
     }
 
     function start(pickCb) {
@@ -1430,7 +1449,14 @@ const CourseOverlay = (() => {
  * TRAVEL — guided course planning + party-token movement (Phase 1).
  * ========================================================================= */
 const Travel = (() => {
-    let plotting = false, dest = null, routeArr = [], reachMap = null, boat = false, pace = "normal", shortRest = false;
+    // waypoints = the stops the GM has clicked, in order. The route is the
+    // concatenation of least-cost legs start→wp1→wp2…; committed legs are LOCKED
+    // (picking a hex farther out adds a leg, it never re-paths what's behind).
+    // anchor = where the next leg starts (last waypoint, else start). plotTok is
+    // captured at startPlot so a stray canvas click that deselects the token can't
+    // swap which token we're routing mid-plot.
+    let plotting = false, waypoints = [], routeArr = [], reachMap = null, anchor = null,
+        boat = false, pace = "normal", shortRest = false, plotTok = null;
 
     // Movement points for the day. Boat/Cart no longer doubles everything — it only
     // cheapens river/road tiles (Hex.stepCost). Short Rest spends 1 space.
@@ -1439,31 +1465,52 @@ const Travel = (() => {
     // A travel turn is a 12h day; time passed = fraction of the day's spaces spent.
     const travelHours = (path) => { const sp = paceSpaces(); return sp > 0 ? Math.round((Hex.pathCost(path, { boat }) / sp) * 12) : 0; };
 
-    function startToken() { return Canvasry.activeToken(); }
+    function startToken() { return (plotting && plotTok) ? plotTok : Canvasry.activeToken(); }
 
     function recompute() {
         const tok = startToken();
-        if (!tok) { reachMap = null; routeArr = []; return; }
+        if (!tok) { reachMap = null; routeArr = []; anchor = null; CourseOverlay.draw(null, [], {}); return; }
         const start = Hex.offsetOf(tok.center);
-        reachMap = Hex.reachable(start, budget(), { boat });
-        routeArr = dest ? Hex.route(start, dest, budget(), { boat }) : [];
-        CourseOverlay.draw(reachMap, routeArr);
+        const total = budget();
+        // Walk the committed waypoints leg by leg, locking each least-cost path and
+        // spending its cost; drop any tail that no longer fits the day's budget
+        // (e.g. after switching to a slower pace or adding a Short Rest).
+        let a = start, spent = 0; const full = [], kept = [];
+        for (const wp of waypoints) {
+            if (Hex.key(wp) === Hex.key(a)) continue;
+            const leg = Hex.route(a, wp, total - spent, { boat });
+            if (!leg.length) break;
+            full.push(...leg); spent += Hex.pathCost(leg, { boat }); a = wp; kept.push(wp);
+        }
+        if (kept.length !== waypoints.length) waypoints = kept;
+        routeArr = full; anchor = a;
+        // Range = what's reachable from the anchor with the budget still in hand.
+        reachMap = Hex.reachable(a, Math.max(0, total - spent), { boat });
+        CourseOverlay.draw(reachMap, routeArr, { anchor: a, start, waypoints: kept });
     }
 
     function startPlot() {
-        const tok = startToken();
-        if (!tok) { ui.notifications?.warn(`${TITLE}: set a party token first (⌖ in Current hex).`); return; }
+        const tok = Canvasry.activeToken();
+        if (!tok) { ui.notifications?.warn(`${TITLE}: select a token to travel with (or set a party marker with ⌖).`); return; }
+        plotTok = tok;
         pace = Store.sceneState().pace || "normal";
-        plotting = true; dest = null; routeArr = []; shortRest = false;
+        plotting = true; waypoints = []; routeArr = []; anchor = null; shortRest = false;
         CourseOverlay.start(onPick);
         recompute();
         WayfarerPanel.render();
     }
     function onPick(off) {
-        if (!plotting || !reachMap || !off) return;
-        if (!reachMap.has(Hex.key(off))) return;   // ignore clicks outside reach
-        dest = off; recompute(); WayfarerPanel.render();
+        if (!plotting || !off) return;
+        const k = Hex.key(off);
+        // Click an already-committed waypoint → truncate the course to end there
+        // (retract), keeping every earlier leg intact.
+        const idx = waypoints.findIndex(w => Hex.key(w) === k);
+        if (idx >= 0) { waypoints = waypoints.slice(0, idx + 1); recompute(); WayfarerPanel.render(); return; }
+        // Otherwise it must be a hex in the current selectable range → add a leg.
+        if (!reachMap || !reachMap.has(k)) return;
+        waypoints.push(off); recompute(); WayfarerPanel.render();
     }
+    function undo() { if (plotting && waypoints.length) { waypoints.pop(); recompute(); WayfarerPanel.render(); } }
     async function setPace(p) { pace = p; await Store.setSceneState({ pace: p }); recompute(); WayfarerPanel.render(); }
     function setBoat(b) { boat = !!b; recompute(); WayfarerPanel.render(); }
     function setShortRest(b) { shortRest = !!b; recompute(); WayfarerPanel.render(); }
@@ -1490,17 +1537,19 @@ const Travel = (() => {
             await new Promise(r => setTimeout(r, 160));
         }
         await Store.advanceWorldTime(travelHours(steps));
-        dest = null; routeArr = []; reachMap = null;
+        waypoints = []; routeArr = []; reachMap = null; anchor = null; plotTok = null;
         WayfarerPanel.render(); BiomeBadge.update();
     }
-    function cancel() { plotting = false; dest = null; routeArr = []; reachMap = null; CourseOverlay.stop(); WayfarerPanel.render(); }
+    function cancel() { plotting = false; waypoints = []; routeArr = []; reachMap = null; anchor = null; plotTok = null; CourseOverlay.stop(); WayfarerPanel.render(); }
 
     return {
-        startPlot, onPick, setPace, setBoat, setShortRest, confirmMove, cancel, governing,
+        startPlot, onPick, undo, setPace, setBoat, setShortRest, confirmMove, cancel, governing,
         refresh: () => { if (plotting) recompute(); },
+        redraw: () => { if (plotting) CourseOverlay.draw(reachMap, routeArr, { anchor, waypoints }); },
         get plotting() { return plotting; }, get pace() { return pace; }, get boat() { return boat; },
         get shortRest() { return shortRest; }, get budget() { return budget(); },
-        get route() { return routeArr; }, get reach() { return reachMap; }, get hasDest() { return !!dest; }
+        get route() { return routeArr; }, get reach() { return reachMap; }, get hasDest() { return waypoints.length > 0; },
+        get waypointCount() { return waypoints.length; }, get token() { return (plotting && plotTok) ? plotTok : null; }
     };
 })();
 
@@ -1960,8 +2009,9 @@ const WayfarerPanel = (() => {
                 case "travel-boat": Travel.setBoat(!Travel.boat); break;
                 case "travel-short": Travel.setShortRest(!Travel.shortRest); break;
                 case "travel-move": await Travel.confirmMove(); break;
+                case "travel-undo": Travel.undo(); break;
                 case "travel-cancel": Travel.cancel(); break;
-                case "turn-begin": Turn.begin(); break;
+                case "turn-begin": Turn.begin(); if (Turn.active) Travel.cancel(); break;
                 case "turn-roll": await Turn.roll(btn.dataset.role); break;
                 case "turn-resolve": await Turn.resolve(); break;
                 case "turn-end": Turn.end(); break;
@@ -2116,7 +2166,7 @@ const WayfarerPanel = (() => {
     function _render() {
         const isGM = game.user.isGM;
         const st = Store.sceneState();
-        const tok = Canvasry.activeToken();
+        const tok = Travel.token || Canvasry.activeToken();   // pin to the plot token while plotting
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
         const sup = Party.supplies();
         const size = Party.size();
@@ -2139,7 +2189,11 @@ const WayfarerPanel = (() => {
         let travelSection = "";
         if (isGM) {
             if (!Travel.plotting) {
-                travelSection = `<div class="cwf-section"><button class="cwf-btn cwf-primary cwf-plan" data-action="plan-route"><i class="fa-solid fa-route"></i> Plan a route</button></div>`;
+                // Idle = the day's two choices: travel on, or bed down for the night.
+                travelSection = `<div class="cwf-section cwf-daychoice">
+                    <button class="cwf-btn cwf-primary cwf-plan" data-action="plan-route"><i class="fa-solid fa-route"></i> Plan a route</button>
+                    <button class="cwf-btn" data-action="camp" title="Bed down — camp ambience, watch order, then resolve the night to dawn"><i class="fa-solid fa-campground"></i> Make camp</button>
+                </div>`;
             } else {
                 const gov = Travel.governing();
                 const n = Travel.route.length;
@@ -2147,12 +2201,17 @@ const WayfarerPanel = (() => {
                     const off = (k === "fast" && gov && Domain.fastProhibited(gov));
                     return `<button class="cwf-seg ${Travel.pace === k ? "on" : ""}" data-action="travel-pace" data-pace="${k}" ${off ? "disabled" : ""} title="${Domain.PACE[k].note}">${Domain.PACE[k].label}</button>`;
                 }).join("");
+                const wps = Travel.waypointCount;
+                const reach = Travel.reach?.size ?? 0;
                 const summary = n
-                    ? `<div class="cwf-route">${gov ? `<span class="cwf-pill" data-tier="${Domain.tier(gov)}"><i class="fa-solid ${gov.icon}"></i> ${gov.label} · DC ${gov.dc ?? "?"}</span>` : ""}<span class="cwf-pill cwf-muted">${n} hex${n === 1 ? "" : "es"}${gov && Domain.fastProhibited(gov) ? " · No Fast" : ""}</span></div>`
-                    : `<div class="cwf-muted2">Click a glowing hex to set your destination.</div>`;
+                    ? `<div class="cwf-route">${gov ? `<span class="cwf-pill" data-tier="${Domain.tier(gov)}"><i class="fa-solid ${gov.icon}"></i> ${gov.label} · DC ${gov.dc ?? "?"}</span>` : ""}<span class="cwf-pill cwf-muted">${n} hex${n === 1 ? "" : "es"}${wps > 1 ? ` · ${wps} stops` : ""}${gov && Domain.fastProhibited(gov) ? " · No Fast" : ""}</span></div>`
+                    : `<div class="cwf-muted2">Click a glowing hex to chart your course — each click adds a stop.</div>`;
+                const hint = reach > 0
+                    ? `${reach} hex${reach === 1 ? "" : "es"} in range · click to extend`
+                    : (n ? "all movement spent · Undo a stop or move out" : "no hexes in range");
                 travelSection = `
                 <div class="cwf-section cwf-travel">
-                    <div class="cwf-label">Plot course <span class="cwf-muted2">${Travel.reach?.size ?? 0} hex${(Travel.reach?.size ?? 0) === 1 ? "" : "es"} reachable · click one</span></div>
+                    <div class="cwf-label">Plot course <span class="cwf-muted2">${hint}</span></div>
                     <div class="cwf-seg-row">${tpace}</div>
                     <div class="cwf-toggles">
                         <button class="cwf-toggle ${Travel.boat ? "on" : ""}" data-action="travel-boat" title="Boat on a river / cart on a road doubles your reach"><i class="fa-solid fa-sailboat"></i> Boat / Cart</button>
@@ -2161,6 +2220,7 @@ const WayfarerPanel = (() => {
                     ${summary}
                     <div class="cwf-actions">
                         <button class="cwf-btn" data-action="travel-cancel"><i class="fa-solid fa-xmark"></i> Cancel</button>
+                        <button class="cwf-btn" data-action="travel-undo" ${wps ? "" : "disabled"} title="Remove the last stop"><i class="fa-solid fa-rotate-left"></i> Undo</button>
                         <button class="cwf-btn" data-action="travel-move" ${n ? "" : "disabled"} title="Skip the checks and just move the party"><i class="fa-solid fa-shoe-prints"></i> Move only</button>
                         <button class="cwf-btn cwf-primary" data-action="turn-begin" ${n ? "" : "disabled"}><i class="fa-solid fa-flag"></i> Begin turn</button>
                     </div>
@@ -2206,9 +2266,7 @@ const WayfarerPanel = (() => {
                     </div>
                 </div>` : ""}
 
-                ${isGM
-                    ? (Camp.active || Turn.active ? "" : `<div class="cwf-actions"><button class="cwf-btn cwf-primary" data-action="camp"><i class="fa-solid fa-campground"></i> Make Camp</button></div>`)
-                    : `<div class="cwf-readonly">Read-only — your GM controls travel state.</div>`}
+                ${isGM ? "" : `<div class="cwf-readonly">Read-only — your GM controls travel state.</div>`}
             </div>`;
     }
 
@@ -2322,7 +2380,7 @@ Hooks.on("updateToken", (doc, change = {}) => {
         WayfarerPanel.renderExternal();
     }
 });
-Hooks.on("canvasPan", () => { BiomeBadge.reposition(); if (Travel.plotting) CourseOverlay.draw(Travel.reach, Travel.route); });
+Hooks.on("canvasPan", () => { BiomeBadge.reposition(); Travel.redraw(); });
 Hooks.on("canvasTearDown", () => { try { Travel.cancel(); } catch { /* noop */ } BiomeBadge.destroy(); });
 
 // Re-render open UI when scene travel-state changes (weather/day/pace/etc).

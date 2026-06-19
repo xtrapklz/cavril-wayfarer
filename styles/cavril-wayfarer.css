@@ -105,6 +105,9 @@
 
 /* travel / course planner */
 .cwf-plan { width: 100%; }
+.cwf-daychoice { flex-direction: row; }
+.cwf-daychoice .cwf-plan { width: auto; flex: 2; }
+.cwf-daychoice .cwf-btn { flex: 1; height: 34px; }
 .cwf-travel { border: 1px solid var(--cwf-accent); border-radius: 10px; padding: 8px; background: rgba(189,169,232,.05); }
 .cwf-route { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 2px; }
 
@@ -169,8 +172,9 @@
 .cwf-step-v { min-width: 32px; text-align: center; font-weight: 700; }
 
 /* actions */
-.cwf-actions { display: flex; gap: 5px; }
-.cwf-btn { flex: 1; height: 30px; border-radius: 8px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-text); cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.cwf-actions { display: flex; gap: 5px; flex-wrap: wrap; }
+.cwf-actions .cwf-btn { min-width: 78px; }
+.cwf-btn { flex: 1; height: 30px; border-radius: 8px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-text); cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-size: 12px; }
 .cwf-btn:hover:not(:disabled) { border-color: var(--cwf-accent); }
 .cwf-btn:disabled { opacity: .5; cursor: default; }
 .cwf-primary { background: color-mix(in srgb, var(--cwf-hard) 24%, var(--cwf-bg2)); border-color: var(--cwf-hard); }
