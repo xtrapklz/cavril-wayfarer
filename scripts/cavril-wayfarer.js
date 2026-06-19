@@ -393,6 +393,8 @@ const Store = (() => {
         g.register(MOD, S.pool, { scope: "world", config: false, type: Object, default: { rations: 0, water: 0, hitDice: 0 } });
         // Cached RollTable ids for the starter travel tables (created on demand).
         g.register(MOD, "tableIds", { scope: "world", config: false, type: Object, default: {} });
+        // Remembered role assignments (actor + skill per role), pre-filled each turn.
+        g.register(MOD, "lastRoles", { scope: "world", config: false, type: Object, default: {} });
         // Cavril: Maestro biome → environment soundscape.
         g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Optional JSON mapping hexlands biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay","desert":"goldenFlatsDay"}. Blank uses sensible defaults. "" = silence for that biome.', scope: "world", config: true, type: String, default: "" });
@@ -1192,9 +1194,9 @@ const CourseOverlay = (() => {
  * TRAVEL — guided course planning + party-token movement (Phase 1).
  * ========================================================================= */
 const Travel = (() => {
-    let plotting = false, dest = null, routeArr = [], reachMap = null, boat = false, pace = "normal";
+    let plotting = false, dest = null, routeArr = [], reachMap = null, boat = false, pace = "normal", shortRest = false;
 
-    const budget = () => (({ slow: 1, normal: 2, fast: 3 }[pace] ?? 2)) * (boat ? 2 : 1);
+    const budget = () => Math.max(0, (({ slow: 1, normal: 2, fast: 3 }[pace] ?? 2)) * (boat ? 2 : 1) - (shortRest ? 1 : 0));
 
     function startToken() { return Canvasry.activeToken(); }
 
@@ -1211,7 +1213,7 @@ const Travel = (() => {
         const tok = startToken();
         if (!tok) { ui.notifications?.warn(`${TITLE}: set a party token first (⌖ in Current hex).`); return; }
         pace = Store.sceneState().pace || "normal";
-        plotting = true; dest = null; routeArr = [];
+        plotting = true; dest = null; routeArr = []; shortRest = false;
         CourseOverlay.start(onPick);
         recompute();
         WayfarerPanel.render();
@@ -1223,6 +1225,7 @@ const Travel = (() => {
     }
     async function setPace(p) { pace = p; await Store.setSceneState({ pace: p }); recompute(); WayfarerPanel.render(); }
     function setBoat(b) { boat = !!b; recompute(); WayfarerPanel.render(); }
+    function setShortRest(b) { shortRest = !!b; recompute(); WayfarerPanel.render(); }
 
     // Worst (highest-DC) biome along the route governs the day's DC + restriction.
     function governing() {
@@ -1252,8 +1255,9 @@ const Travel = (() => {
     function cancel() { plotting = false; dest = null; routeArr = []; reachMap = null; CourseOverlay.stop(); WayfarerPanel.render(); }
 
     return {
-        startPlot, onPick, setPace, setBoat, confirmMove, cancel, governing,
+        startPlot, onPick, setPace, setBoat, setShortRest, confirmMove, cancel, governing,
         get plotting() { return plotting; }, get pace() { return pace; }, get boat() { return boat; },
+        get shortRest() { return shortRest; }, get budget() { return budget(); },
         get route() { return routeArr; }, get reach() { return reachMap; }, get hasDest() { return !!dest; }
     };
 })();
@@ -1378,7 +1382,15 @@ const Turn = (() => {
         route = r.slice();
         governing = Travel.governing();
         pace = Travel.pace || "normal"; boat = Travel.boat;
-        for (const k of Object.keys(roles)) { roles[k] = newSlot(); roles[k].skillId = ROLE_SKILLS[k][0]; }
+        // Pre-fill from the last remembered assignments (editable per turn).
+        const saved = game.settings.get(MOD, "lastRoles") || {};
+        const present = new Set(Party.members().map(a => a.id));
+        for (const k of Object.keys(roles)) {
+            roles[k] = newSlot();
+            roles[k].skillId = saved[k]?.skillId || ROLE_SKILLS[k][0];
+            const sid = saved[k]?.actorId;
+            if (sid && present.has(sid)) { const a = game.actors.get(sid); roles[k].actorId = a?.id || null; roles[k].actorName = a?.name || null; }
+        }
         Travel.cancel();                    // exit plotting state cleanly (also stops the overlay)
         CourseOverlay.draw(null, route);    // re-light the locked route during the check
         Tables.ensureAll();                 // make sure editable tables exist
@@ -1387,14 +1399,23 @@ const Turn = (() => {
 
     function partyMembers() { return Party.members(); }
 
+    // Remember who plays each role + their skill, so the next turn pre-fills.
+    function saveRoles() {
+        if (!game.user.isGM) return;
+        const out = {};
+        for (const k of Object.keys(roles)) out[k] = { actorId: roles[k].actorId, skillId: roles[k].skillId };
+        game.settings.set(MOD, "lastRoles", out).catch(e => warn("save roles failed", e));
+    }
+
     function claim(roleKey, actorId) {
         // A character holds only one role — release them elsewhere first.
         if (actorId) for (const k of Object.keys(roles)) if (k !== roleKey && roles[k].actorId === actorId) Object.assign(roles[k], { actorId: null, actorName: null, total: null, nat: null, outcome: null });
         const a = actorId ? game.actors.get(actorId) : null;
         Object.assign(roles[roleKey], { actorId: a?.id || null, actorName: a?.name || null, total: null, nat: null, outcome: null });
+        saveRoles();
         WayfarerPanel.render();
     }
-    function setSkill(roleKey, skillId) { roles[roleKey].skillId = skillId; WayfarerPanel.render(); }
+    function setSkill(roleKey, skillId) { roles[roleKey].skillId = skillId; saveRoles(); WayfarerPanel.render(); }
     function rollState(roleKey) { return Domain.rollState(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() }); }
 
     function natOf(roll) {
@@ -1596,41 +1617,28 @@ const WayfarerPanel = (() => {
             switch (action) {
                 case "close": close(); return;
                 case "collapse": collapsedRef = !collapsedRef; render(); return;
-                case "roll-role": return manualRoll(btn.dataset.role);
             }
             if (!isGM) return; // remaining actions mutate world/scene state
             switch (action) {
-                case "pace": await Store.setSceneState({ pace: btn.dataset.pace }); break;
-                case "weather": await Store.setSceneState({ weather: btn.dataset.weather }); break;
-                case "roll-weather": await Store.setSceneState({ weather: Domain.rollWeatherKey() }); break;
-                case "toggle-boat": await Store.setSceneState({ boat: !Store.sceneState().boat }); break;
-                case "toggle-short": await Store.setSceneState({ shortRest: !Store.sceneState().shortRest }); break;
-                case "toggle-forage": await Store.setSceneState({ foraged: !Store.sceneState().foraged }); break;
-                case "adj": await adjust(btn.dataset.target, Number(btn.dataset.delta)); break;
+                case "set-party": await Canvasry.setPartyToken(); break;
+                case "reset-journey": case "end-journey": await endJourney(); break;
                 case "haul": await foragerHaul(); break;
                 case "camp": await makeCamp(); break;
-                case "set-party": await Canvasry.setPartyToken(); break;
+                case "enter-site": await enterSite(); break;
                 case "plan-route": Travel.startPlot(); break;
                 case "travel-pace": await Travel.setPace(btn.dataset.pace); break;
                 case "travel-boat": Travel.setBoat(!Travel.boat); break;
+                case "travel-short": Travel.setShortRest(!Travel.shortRest); break;
                 case "travel-move": await Travel.confirmMove(); break;
                 case "travel-cancel": Travel.cancel(); break;
                 case "turn-begin": Turn.begin(); break;
                 case "turn-roll": await Turn.roll(btn.dataset.role); break;
                 case "turn-resolve": await Turn.resolve(); break;
                 case "turn-end": Turn.end(); break;
-                case "enter-site": await enterSite(); break;
             }
         } catch (e) { warn("panel action failed", action, e); }
         render();
         BiomeBadge.update();
-    }
-
-    async function adjust(target, delta) {
-        if (target === "rations" || target === "water" || target === "hitDice") {
-            const p = Store.pool();
-            await Store.setPool({ [target]: Math.max(0, (p[target] | 0) + delta) });
-        }
     }
 
     async function foragerHaul() {
@@ -1687,32 +1695,17 @@ const WayfarerPanel = (() => {
         if (site) await Augur.enterSite(site);
     }
 
+    // Reset the journey day counter (new leg between settlements / arrived at one).
+    async function endJourney() {
+        const prev = Store.sceneState().day || 1;
+        await Store.setSceneState({ day: 1, foraged: false, shortRest: false });
+        if (prev > 1) ChatMessage.create({ content: cwfCardShell("fa-flag-checkered", "Journey's End", cwfRow("Arrived", `The party reaches a settlement after ${prev - 1} day${prev - 1 === 1 ? "" : "s"} on the road — the journey counter resets. Restock supplies as needed.`)) });
+        else ui.notifications?.info(`${TITLE}: journey day counter reset.`);
+    }
+
     // Optional, fully manual one-click roll for the active token's actor.
     // Stays "passive": only fires when a user clicks it, and pre-applies the
     // pace/weather advantage state. Never invoked automatically.
-    async function manualRoll(roleKey) {
-        const role = Domain.ROLES.find(r => r.key === roleKey);
-        if (!role) return;
-        const tok = Canvasry.activeToken();
-        const actor = tok?.actor;
-        const cls = tok ? Canvasry.biomeForToken(tok) : null;
-        const rs = Domain.rollState(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() });
-        const dcTxt = cls?.dc != null ? ` vs DC ${cls.dc}` : "";
-        if (!actor?.rollSkill) {
-            ui.notifications?.info(`${role.name}: roll ${role.skill}${dcTxt}${rs.mode !== "normal" ? ` (${rs.mode})` : ""}.`);
-            return;
-        }
-        const opts = { advantage: rs.adv, disadvantage: rs.dis, flavor: `${role.name} — ${role.skill}${dcTxt}` };
-        try {
-            // dnd5e 3.x/4.x/5.x signatures differ; try the modern one then legacy.
-            try { await actor.rollSkill({ skill: role.skillId, ...opts }); }
-            catch { await actor.rollSkill(role.skillId, opts); }
-        } catch (e) {
-            warn("rollSkill failed", e);
-            ui.notifications?.info(`${role.name}: roll ${role.skill}${dcTxt}.`);
-        }
-    }
-
     // ---- render ------------------------------------------------------------
     // The active group-check card (claim → swap skill → roll → resolve).
     function turnCard(dis) {
@@ -1800,9 +1793,12 @@ const WayfarerPanel = (() => {
                     : `<div class="cwf-muted2">Click a glowing hex to set your destination.</div>`;
                 travelSection = `
                 <div class="cwf-section cwf-travel">
-                    <div class="cwf-label">Plot course <span class="cwf-muted2">reachable hexes are glowing</span></div>
+                    <div class="cwf-label">Plot course <span class="cwf-muted2">reach ${Travel.budget} hex${Travel.budget === 1 ? "" : "es"} · click a glowing one</span></div>
                     <div class="cwf-seg-row">${tpace}</div>
-                    <div class="cwf-toggles"><button class="cwf-toggle ${Travel.boat ? "on" : ""}" data-action="travel-boat" title="Boat on a river / cart on a road doubles your reach"><i class="fa-solid fa-sailboat"></i> Boat / Cart ×2</button></div>
+                    <div class="cwf-toggles">
+                        <button class="cwf-toggle ${Travel.boat ? "on" : ""}" data-action="travel-boat" title="Boat on a river / cart on a road doubles your reach"><i class="fa-solid fa-sailboat"></i> Boat / Cart</button>
+                        <button class="cwf-toggle ${Travel.shortRest ? "on" : ""}" data-action="travel-short" title="A Short Rest costs 1 Space of movement"><i class="fa-solid fa-mug-hot"></i> Short Rest</button>
+                    </div>
                     ${summary}
                     <div class="cwf-actions">
                         <button class="cwf-btn" data-action="travel-cancel"><i class="fa-solid fa-xmark"></i> Cancel</button>
@@ -1813,85 +1809,47 @@ const WayfarerPanel = (() => {
             }
         }
 
-        const paceBtns = Domain.PACE_ORDER.map(k => {
-            const p = Domain.PACE[k];
-            const off = (k === "fast" && Domain.fastProhibited(cls));
-            return `<button class="cwf-seg ${st.pace === k ? "on" : ""}" data-action="pace" data-pace="${k}" ${dis || (off ? "disabled" : "")} title="${p.note}">${p.label}</button>`;
-        }).join("");
-
-        const { n: spaceCount, infra } = Domain.spaces(st, cls);
-
-        const roleCards = Domain.ROLES.map(r => {
-            const rsx = Domain.rollState(r.key, { pace: st.pace, weather: effectiveWeather() });
-            const tag = rsx.mode === "advantage" ? `<span class="cwf-adv">ADV</span>` : rsx.mode === "disadvantage" ? `<span class="cwf-dis">DIS</span>` : "";
-            const dcTxt = cls?.dc != null ? `DC ${cls.dc}` : "—";
-            return `
-                <div class="cwf-role">
-                    <div class="cwf-role-h"><i class="fa-solid ${r.icon}"></i> <b>${r.name}</b> <span class="cwf-skill">${r.skill}</span> ${tag}</div>
-                    <div class="cwf-role-b"><span class="cwf-vs">${r.key === "forage" ? "Gather" : "vs"} ${r.key === "forage" ? "" : dcTxt}</span> ${r.blurb}
-                        <button class="cwf-mini" data-action="roll-role" data-role="${r.key}" title="Roll ${r.skill} for the active token (manual)"><i class="fa-solid fa-dice-d20"></i></button>
-                    </div>
-                </div>`;
-        }).join("");
-
-        const stepper = (label, target, val, icon) => `
-            <div class="cwf-supply">
-                <span class="cwf-supply-l"><i class="fa-solid ${icon}"></i> ${label}</span>
-                <span class="cwf-step">
-                    <button class="cwf-step-b" data-action="adj" data-target="${target}" data-delta="-1" ${dis}>−</button>
-                    <span class="cwf-step-v">${val}</span>
-                    <button class="cwf-step-b" data-action="adj" data-target="${target}" data-delta="1" ${dis}>+</button>
-                </span>
-            </div>`;
-
         root.dataset.collapsed = collapsedRef ? "1" : "0";
+        const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
         root.innerHTML = `
             <div class="cwf-head" data-drag>
                 <i class="fa-solid fa-mountain-sun"></i>
                 <span class="cwf-title">${TITLE}</span>
-                <span class="cwf-day">Day ${st.day}</span>
+                <span class="cwf-day" title="Days travelling this journey">Day ${st.day}</span>
+                ${isGM ? `<button class="cwf-icon" data-action="reset-journey" title="New journey — reset the day counter"><i class="fa-solid fa-rotate-left"></i></button>` : ""}
                 <button class="cwf-icon" data-action="collapse" title="Collapse/expand"><i class="fa-solid ${collapsedRef ? "fa-chevron-down" : "fa-chevron-up"}"></i></button>
                 <button class="cwf-icon" data-action="close" title="Close"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="cwf-body" ${collapsedRef ? 'style="display:none"' : ""}>
                 <div class="cwf-section">
-                    <div class="cwf-label">Current hex ${isGM ? `<button class="cwf-mini cwf-inline" data-action="set-party" title="Set the selected token as the party marker (the HUD then follows it)"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}</div>
+                    <div class="cwf-label">Current hex ${isGM ? `<button class="cwf-mini cwf-inline" data-action="set-party" title="Set the selected token as the party marker"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}</div>
                     <div class="cwf-here">${here}</div>
                 </div>
+
                 ${Turn.active ? turnCard(dis) : travelSection}
 
                 <div class="cwf-section">
                     <div class="cwf-label">Weather <span class="cwf-wx-note">${w.note}</span></div>
-                    <div class="cwf-wx-readonly"><span class="cwf-weather" style="--cwf-wx:${w.color}"><i class="fa-solid ${w.icon}"></i> ${MiniCal.label() || w.label}</span> <span class="cwf-muted2">${MiniCal.active() ? "via Mini Calendar" : "set by Mini Calendar"}</span></div>
+                    <div class="cwf-wx-readonly"><span class="cwf-weather" style="--cwf-wx:${w.color}"><i class="fa-solid ${w.icon}"></i> ${MiniCal.label() || w.label}</span> <span class="cwf-muted2">${MiniCal.active() ? "via Mini Calendar" : "—"}</span></div>
                 </div>
 
                 <div class="cwf-section">
-                    <div class="cwf-label">Pace → <b>${spaceCount}</b> Space${spaceCount === 1 ? "" : "s"} ${infra ? `<span class="cwf-x2">road/river ×2</span>` : ""}</div>
-                    <div class="cwf-seg-row">${paceBtns}</div>
-                    <div class="cwf-toggles">
-                        <button class="cwf-toggle ${st.boat ? "on" : ""}" data-action="toggle-boat" ${dis} title="Travelling by boat/cart on infrastructure"><i class="fa-solid fa-sailboat"></i> Boat/Cart</button>
-                        <button class="cwf-toggle ${st.shortRest ? "on" : ""}" data-action="toggle-short" ${dis} title="Short Rest costs 1 Space"><i class="fa-solid fa-campground"></i> Short Rest −1</button>
-                    </div>
-                </div>
-
-                ${Turn.active ? "" : `<div class="cwf-section">
-                    <div class="cwf-label">Roles <span class="cwf-muted2">(reference — use Plan a route for a full turn)</span></div>
-                    <div class="cwf-roles">${roleCards}</div>
-                </div>`}
-
-                <div class="cwf-section">
-                    <div class="cwf-label">Party supplies <span class="cwf-muted2">(${size} member${size === 1 ? "" : "s"} · summed from sheets + group stash)</span></div>
+                    <div class="cwf-label">Party supplies <span class="cwf-muted2">${size} member${size === 1 ? "" : "s"} · sheets + stash</span>${isGM ? `<button class="cwf-mini cwf-inline" data-action="haul" title="Add a forager haul to the party stash"><i class="fa-solid fa-plus"></i></button>` : ""}</div>
                     <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-drumstick-bite"></i> Rations</span><span class="cwf-step-v">${sup.rations}</span></div>
                     <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-bottle-water"></i> Waterskins</span><span class="cwf-step-v">${sup.water}</span></div>
                 </div>
 
-                <div class="cwf-actions">
-                    <button class="cwf-btn" data-action="toggle-forage" ${dis} title="Mark that the Forager fed the party (skips consumption at next camp)"><i class="fa-solid fa-seedling ${st.foraged ? "cwf-lit" : ""}"></i> Foraged ${st.foraged ? "✓" : ""}</button>
-                    <button class="cwf-btn" data-action="haul" ${dis}><i class="fa-solid fa-basket-shopping"></i> Haul +</button>
-                    <button class="cwf-btn cwf-primary" data-action="camp" ${dis}><i class="fa-solid fa-fire"></i> Make Camp</button>
-                </div>
-                ${site ? `<div class="cwf-site"><button class="cwf-btn cwf-site-btn" data-action="enter-site"><i class="fa-solid fa-dungeon"></i> Enter ${foundry.utils.escapeHTML?.(site.name) ?? site.name}</button></div>` : ""}
-                ${isGM ? "" : `<div class="cwf-readonly">Read-only — your GM controls travel state.</div>`}
+                ${site ? `<div class="cwf-section">
+                    <div class="cwf-label">Settlement</div>
+                    <div class="cwf-actions">
+                        <button class="cwf-btn cwf-site-btn" data-action="enter-site"><i class="fa-solid fa-dungeon"></i> Enter ${esc(site.name)}</button>
+                        ${isGM ? `<button class="cwf-btn" data-action="end-journey" title="Arrived — reset the journey day counter"><i class="fa-solid fa-flag-checkered"></i> End journey</button>` : ""}
+                    </div>
+                </div>` : ""}
+
+                ${isGM
+                    ? `<div class="cwf-actions"><button class="cwf-btn cwf-primary" data-action="camp"><i class="fa-solid fa-campground"></i> Make Camp</button></div>`
+                    : `<div class="cwf-readonly">Read-only — your GM controls travel state.</div>`}
             </div>`;
     }
 
