@@ -412,7 +412,11 @@ const Store = (() => {
         g.register(MOD, "forcedMarch", { name: "Forced march exhaustion", hint: "Pushing the pace risks a level of exhaustion (CON save). A long rest at dawn eases it.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "forcedMarchPace", { name: "Forced march triggers on", hint: "Which travel pace counts as forcing the march.", scope: "world", config: true, type: String, choices: { fast: "Fast pace only", normalFast: "Normal & Fast", all: "Any pace" }, default: "fast" });
         g.register(MOD, "forcedMarchDC", { name: "Forced march save DC", hint: "CON save DC each member rolls after a forced-march day (fail = +1 exhaustion).", scope: "world", config: true, type: Number, default: 10 });
-        g.register(MOD, "longRestRelief", { name: "Exhaustion eased per long rest", hint: "Levels of exhaustion removed from each member at dawn (a long rest). 0 = never auto-clear.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 6, step: 1 } });
+        g.register(MOD, "longRestRelief", { name: "Exhaustion eased per long rest", hint: "Levels of exhaustion removed at camp from each member who ate AND drank (a true long rest). 0 = never auto-clear.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 6, step: 1 } });
+        // Starvation & thirst → exhaustion (5e survival rules), resolved at camp.
+        g.register(MOD, "starveExhaustion", { name: "Starvation & thirst exhaustion", hint: "Going without food or water at camp exhausts the members who went short (5e survival). Eating + drinking is also what lets a long rest ease exhaustion.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "foodGraceDays", { name: "Days without food before hunger", hint: "Base days a member can go unfed before exhaustion (5e: this + their CON modifier, minimum 1). Water has no grace.", scope: "world", config: true, type: Number, default: 3 });
+        g.register(MOD, "thirstDC", { name: "Thirst save DC", hint: "CON save DC a member rolls on a night with no water (fail = +1 exhaustion).", scope: "world", config: true, type: Number, default: 15 });
         // Movement penalties for rugged terrain (separate from the biome DC).
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
@@ -850,19 +854,23 @@ const Party = (() => {
         return { rations, water };
     }
 
-    // Consume 1 ration + 1 waterskin-use per member. Order: the shared GROUP stash
-    // first, then ONE unit from each individual (spread — never all from one person).
+    // Consume 1 ration + 1 waterskin-use per member. Per member the source order is
+    // the shared GROUP stash first, then their own pack — so we know exactly WHO ate
+    // and drank (drives the survival/exhaustion model). Returns aggregate totals plus
+    // a perMember [{ id, name, food, water }] breakdown.
     async function consume() {
-        if (!game.user.isGM) return { rations: 0, water: 0, rationsShort: 0, waterShort: 0 };
-        const mem = members(), size = mem.length, g = groupActor();
-        const out = {};
-        for (const [re, key] of [[RATION_RE, "rations"], [WATER_RE, "water"]]) {
-            let need = size, took = 0;
-            if (g) { const t = await take(g, re, need); took += t; need -= t; }                 // group stash first
-            for (const m of mem) { if (need <= 0) break; const t = await take(m, re, 1); took += t; need -= t; }  // one per individual
-            out[key] = took; out[key + "Short"] = need;
+        if (!game.user.isGM) return { rations: 0, water: 0, rationsShort: 0, waterShort: 0, perMember: [] };
+        const mem = members(), g = groupActor();
+        let rations = 0, water = 0, rationsShort = 0, waterShort = 0;
+        const perMember = [];
+        for (const m of mem) {
+            const food = ((g && await take(g, RATION_RE, 1) > 0) || await take(m, RATION_RE, 1) > 0);
+            const wat  = ((g && await take(g, WATER_RE, 1) > 0) || await take(m, WATER_RE, 1) > 0);
+            food ? rations++ : rationsShort++;
+            wat ? water++ : waterShort++;
+            perMember.push({ id: m.id, name: m.name, food, water });
         }
-        return out;
+        return { rations, water, rationsShort, waterShort, perMember };
     }
     async function addItem(actor, re, defaultName, qty) {
         if (!actor || !qty || qty <= 0) return;
@@ -958,7 +966,6 @@ async function advanceToDawn() {
     const st = Store.sceneState();
     const nextDay = (st.day || 1) + 1;
     await Store.setSceneState({ day: nextDay, foraged: false, shortRest: false });
-    await cwfLongRestRelief();
     try {
         const mc = MiniCal.api?.();
         if (mc?.setTime) await mc.setTime(1, "dawn");   // tomorrow's dawn
@@ -1037,15 +1044,48 @@ async function cwfForcedMarch(pace) {
     ChatMessage.create({ content: cwfCardShell("fa-person-running", "Forced March", `<div class="cwf-night">${rows.join("")}</div>`, { sub: `${pace} pace · DC ${dc}` }) });
 }
 
-// A long rest at dawn eases the strain of the road.
-async function cwfLongRestRelief() {
-    if (!game.user.isGM) return;
-    const ease = Number(game.settings.get(MOD, "longRestRelief"));
-    if (!(ease > 0)) return;
-    for (const a of Party.members()) {
-        const lvl = a.system?.attributes?.exhaustion ?? 0;
-        if (lvl > 0) { try { await a.update({ "system.attributes.exhaustion": Math.max(0, lvl - ease) }); } catch (e) { warn("ease exhaustion failed", e); } }
+// Camp = a long rest. Resolve the 5e survival model per member: food has a
+// 3 + CON-mod day grace before hunger exhausts; water bites the first dry night
+// (CON save); and a member who ate AND drank eases a level of exhaustion (whatever
+// its source — pace or starvation), while one who went short does not recover.
+// `consumeResult` is Party.consume()'s perMember breakdown; foraged → all provided.
+async function cwfCampSurvival(consumeResult, { foraged = false } = {}) {
+    if (!game.user.isGM || !game.settings.get(MOD, "starveExhaustion")) return;
+    const mem = Party.members();
+    if (!mem.length) return;
+    const byId = new Map((consumeResult?.perMember || []).map(p => [p.id, p]));
+    const graceBase = Math.max(0, Number(game.settings.get(MOD, "foodGraceDays")) || 0);
+    const thirstDC = Math.max(1, Number(game.settings.get(MOD, "thirstDC")) || 15);
+    const relief = Math.max(0, Number(game.settings.get(MOD, "longRestRelief")) || 0);
+    const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
+    const rows = [];
+    for (const a of mem) {
+        const pm = byId.get(a.id);
+        const fed = foraged || !!pm?.food, watered = foraged || !!pm?.water;
+        const conMod = a.system?.abilities?.con?.mod ?? 0;
+        const grace = Math.max(1, graceBase + conMod);
+        let lvl = a.system?.attributes?.exhaustion ?? 0;
+        let note = "";
+        // Food — grace of 3 + CON mod days, then one level per unfed day.
+        let days = Number(a.getFlag?.(MOD, "daysNoFood")) || 0;
+        if (fed) days = 0;
+        else { days += 1; if (days > grace) { lvl = Math.min(6, lvl + 1); note += `🍖 hunger +1 (${days}d) `; } else note += `🍖 hungry ${days}/${grace}d `; }
+        try { await a.setFlag?.(MOD, "daysNoFood", days); } catch { /* noop */ }
+        // Water — no grace; a dry night calls for a CON save.
+        if (!watered) {
+            const con = a.system?.abilities?.con || {};
+            const bonus = Number.isFinite(con.save) ? con.save : (con.mod ?? 0);
+            const f = `1d20 ${bonus >= 0 ? "+" : "-"} ${Math.abs(bonus)}`;
+            let total = 0; try { total = (await new Roll(f).evaluate()).total; } catch { total = Math.ceil(Math.random() * 20) + bonus; }
+            if (total < thirstDC) { lvl = Math.min(6, lvl + 1); note += `💧 thirst +1 (CON ${total} vs ${thirstDC}) `; } else note += `💧 parched, saved ${total} `;
+        }
+        // Recovery — a real long rest needs food AND drink.
+        if (fed && watered && relief > 0 && lvl > 0) { lvl = Math.max(0, lvl - relief); note += `😴 rested −${relief} `; }
+        const cur = a.system?.attributes?.exhaustion ?? 0;
+        if (lvl !== cur) { try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { warn("camp exhaustion update failed", e); } }
+        if (note) rows.push(`<div class="cwf-night-h ${(!fed || !watered) ? "hit" : ""}">${esc(a.name)} · ${note.trim()} · exh ${lvl}</div>`);
     }
+    if (rows.length) ChatMessage.create({ content: cwfCardShell("fa-bed", "Rest & Provisions", `<div class="cwf-night">${rows.join("")}</div>`) });
 }
 
 /* =========================================================================
@@ -2050,7 +2090,6 @@ const Camp = (() => {
 
         const prev = Store.sceneState().day || 1;
         await Store.setSceneState({ day: prev + 1, foraged: false, shortRest: false });
-        await cwfLongRestRelief();   // the night's rest eases exhaustion
         try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(1, Number(game.settings.get(MOD, "wakeHour")) || 6); else await Store.advanceWorldTime(N); }
         catch (e) { warn("advance to dawn failed", e); }
         active = false;
@@ -2230,11 +2269,15 @@ const WayfarerPanel = (() => {
         // per individual; waterskins lose a use, not the whole item), then bed down
         // into the night/watch flow.
         let note = "The Forager fed the party — nothing consumed.";
+        let consumeResult = null;
         if (!st.foraged) {
-            const c = await Party.consume();
-            const sup = Party.supplies();
+            consumeResult = await Party.consume();
+            const c = consumeResult, sup = Party.supplies();
             note = `Ate ${c.rations}🍖 / ${c.water}💧${c.rationsShort || c.waterShort ? ` (⚠ ${c.rationsShort}🍖/${c.waterShort}💧 short)` : ""} · ${sup.rations}🍖 / ${sup.water}💧 left`;
         }
+        // Resolve hunger / thirst / recovery for this long rest (Forager success
+        // feeds everyone, so the whole party counts as fed + watered).
+        await cwfCampSurvival(consumeResult, { foraged: !!st.foraged });
         Camp.begin(note);
     }
 
