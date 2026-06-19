@@ -406,8 +406,14 @@ const Store = (() => {
         g.register(MOD, "biomeDangerJSON", { name: "Biome danger modifier (advanced)", hint: 'Optional JSON of biome → night danger (0-2), e.g. {"volcanic":2,"jungle":1}. Blank uses defaults.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "campMapJSON", { name: "Biome → camp ambience (advanced)", hint: 'Optional JSON of biome → Maestro arrangement for camp. Blank = "campVista" for all.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "lastWatch", { scope: "world", config: false, type: Array, default: [] });
-        // Daytime travel encounters (same Danger model + encounter scale as the night camp).
-        g.register(MOD, "dayEncounters", { name: "Daytime travel encounters", hint: "Roll an encounter check while travelling (per Travel Turn / Move). The Scout's success lowers the odds and prevents surprise. Uses the same Encounter die as the night.", scope: "world", config: true, type: Boolean, default: true });
+        // Per-hex travel events: a roll on every hex entered → mostly mundane flavor,
+        // a danger-scaled chance of a real event (combat/puzzle/site) that halts the day.
+        g.register(MOD, "travelEvents", { name: "Per-hex travel events", hint: "As the party crosses each hex, roll for an event — mostly mundane flavor, with a danger-scaled chance of a real encounter that halts the day. Whispered to the GM to narrate.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "eventScale", { name: "Travel event die (x/N per hex)", hint: "Denominator for the per-hex event check. x = scene Danger (0-5) + biome danger (0-2). Lower N = more events. Default 20.", scope: "world", config: true, type: Number, default: 20 });
+        g.register(MOD, "encounterHours", { name: "Hours an encounter costs", hint: "Default time a halting encounter adds to the clock (you can adjust in the moment). Default 1.", scope: "world", config: true, type: Number, default: 1 });
+        // Off by default → travel checks roll a single straight die. On → Slow gives
+        // advantage, Fast disadvantage, and weather can hamper a role.
+        g.register(MOD, "travelRollMods", { name: "Pace & weather affect rolls", hint: "When on, Slow pace gives advantage and Fast gives disadvantage on travel checks (and weather can impose disadvantage). Off = always a single straight roll.", scope: "world", config: true, type: Boolean, default: false });
         // Forced march → exhaustion. All tunable so you can balance it to taste.
         g.register(MOD, "forcedMarch", { name: "Forced march exhaustion", hint: "Pushing the pace risks a level of exhaustion (CON save). A long rest at dawn eases it.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "forcedMarchPace", { name: "Forced march triggers on", hint: "Which travel pace counts as forcing the march.", scope: "world", config: true, type: String, choices: { fast: "Fast pace only", normalFast: "Normal & Fast", all: "Any pace" }, default: "fast" });
@@ -1050,26 +1056,86 @@ async function cwfEncounterText(cls, { when = "day", surprised = false } = {}) {
     return await Tables.drawEncounter(biome, label);
 }
 
-// One daytime travel-encounter check along a route (Danger model, at most one).
-// The Scout's success reduces the odds (scoutMod) and prevents surprise.
-async function cwfTravelEncounter(routeArr, { scoutMod = 0, surprised = true } = {}) {
-    if (!game.user.isGM || !game.settings.get(MOD, "dayEncounters") || !routeArr?.length) return false;
-    const danger = cwfDangerScore(), scale = Danger.scale();
-    for (const off of routeArr) {
-        const cls = Hex.classifyAt(off);
-        const x = Danger.hourlyX(danger, Danger.biomeMod(cls), 0, scoutMod);
-        if (x <= 0) continue;
-        let roll = 0; try { roll = (await new Roll(`1d${scale}`).evaluate()).total; } catch { roll = Math.ceil(Math.random() * scale); }
-        if (roll <= x) {
-            const text = await cwfEncounterText(cls, { when: "day", surprised });
-            Cinematic.broadcast({ icon: "fa-dragon", title: "Encounter!", subtitle: surprised ? "The party is caught unawares" : (cls?.label || "Wilderness"), tone: "encounter" });
-            const tag = surprised ? `<span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : `<span class="cwf-tier-badge cwf-tier-success">Forewarned</span>`;
-            const body = `<div class="cwf-rr"><div class="cwf-rr-top"><i class="fa-solid fa-dragon"></i> <span class="cwf-rr-role">Encounter</span> ${tag}</div><div class="cwf-rr-b">${text}</div></div>`;
-            ChatMessage.create({ content: cwfCardShell("fa-dragon", "Travel Encounter", body, { sub: `${cls?.label || "Wilderness"} · ${x}/${scale}` }) });
-            return true;
-        }
+// Whisper a styled card to the GM(s) only — for results the GM narrates aloud.
+function cwfWhisper(icon, title, body, sub = "") {
+    try {
+        const gmIds = game.users.filter(u => u.isGM).map(u => u.id);
+        ChatMessage.create({ content: cwfCardShell(icon, title, body, { sub }), whisper: gmIds.length ? gmIds : undefined });
+    } catch (e) { warn("whisper failed", e); }
+}
+
+// Weighted category pick (selection only — not a game roll).
+function cwfWeightedPick(weights) {
+    const entries = Object.entries(weights).filter(([, w]) => w > 0);
+    const total = entries.reduce((a, [, w]) => a + w, 0);
+    if (total <= 0) return entries[0]?.[0] ?? null;
+    let r = Math.random() * total;
+    for (const [k, w] of entries) { if ((r -= w) < 0) return k; }
+    return entries[entries.length - 1][0];
+}
+
+// Resolve ONE hex's travel event. x = scene Danger (0-5) + biome danger (0-2),
+// −1 if the Scout succeeded. Mostly mundane flavor (continue); a danger-scaled
+// chance of a real event — narrative (continue) or combat/puzzle/site (HALT).
+// Returns null (keep moving) or { halt, hours, kind }. Whispers to the GM.
+async function cwfHexEvent(cls, { scoutGood = false } = {}) {
+    if (!game.user.isGM || !game.settings.get(MOD, "travelEvents")) return null;
+    const scale = Math.max(2, Number(game.settings.get(MOD, "eventScale")) || 20);
+    const biome = cls?.label || "Wilderness";
+    let x = cwfDangerScore() + Danger.biomeMod(cls);
+    if (scoutGood) x = Math.max(0, x - 1);
+    let roll = scale; try { roll = (await new Roll(`1d${scale}`).evaluate()).total; } catch { roll = Math.ceil(Math.random() * scale); }
+    // Common case — nothing of note. A mundane flavor beat; the party travels on.
+    if (x <= 0 || roll > x) {
+        cwfWhisper("fa-feather", "On the road", `<div class="cwf-rr-b">${await Tables.drawFlavor()}</div>`, biome);
+        return null;
     }
-    return false;
+    // A real event. Narrative is the most common (continue); combat scales with
+    // danger; puzzle and site are rare and halt the day.
+    const kind = cwfWeightedPick({ narrative: 5, combat: 3 + x, puzzle: 2, site: 1 });
+    if (kind === "narrative") {
+        cwfWhisper("fa-feather-pointed", "A turn in the road", `<div class="cwf-rr-b">${await Tables.drawEvent("narrative")}</div>`, biome);
+        return null;
+    }
+    const hours = Math.max(0, Number(game.settings.get(MOD, "encounterHours")) || 1);
+    const meta = ({
+        combat: { icon: "fa-dragon", label: "Encounter!" },
+        puzzle: { icon: "fa-puzzle-piece", label: "An Obstacle" },
+        site:   { icon: "fa-dungeon", label: "A Discovery" }
+    })[kind];
+    const text = kind === "combat" ? await cwfEncounterText(cls, { when: "day", surprised: !scoutGood }) : await Tables.drawEvent(kind);
+    Cinematic.broadcast({ icon: meta.icon, title: meta.label, subtitle: biome, tone: "encounter" });
+    const tag = (kind === "combat" && !scoutGood) ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
+    cwfWhisper(meta.icon, meta.label, `<div class="cwf-rr"><div class="cwf-rr-top"><i class="fa-solid ${meta.icon}"></i> <span class="cwf-rr-role">${meta.label}</span>${tag}</div><div class="cwf-rr-b">${text}</div></div>`, `${biome} · halts travel · +${hours}h`);
+    return { halt: true, hours, kind };
+}
+
+// Gradual hex-by-hex movement: animate into each hex, advance the clock for that
+// hex, roll a travel event, and HALT for the day on a real encounter. lostHours =
+// a "got lost" day that wandered without progress still spends that much time.
+async function cwfTravelMove(tok, path, { pace = "normal", boat = false, scoutGood = false, lostHours = 0 } = {}) {
+    if (!tok) { CourseOverlay.clear(); return { halted: false }; }
+    if (!path?.length) {
+        if (lostHours > 0) await Store.advanceWorldTime(Math.round(lostHours));
+        CourseOverlay.clear();
+        return { halted: false };
+    }
+    const sp = Domain.PACE[pace]?.spaces ?? 2;
+    let acc = 0, halted = false;
+    for (const off of path) {
+        const c = canvas.grid.getCenterPoint(off);
+        try { await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true }); }
+        catch (e) { warn("token move failed", e); break; }
+        await new Promise(r => setTimeout(r, 600));   // slow enough to narrate to
+        const cls = Hex.classifyAt(off);
+        acc += sp > 0 ? (Hex.stepCost(off, cls, { boat }) / sp) * 12 : 0;   // accumulate fractional hours
+        const whole = Math.floor(acc); if (whole >= 1) { acc -= whole; await Store.advanceWorldTime(whole); }
+        const ev = await cwfHexEvent(cls, { scoutGood });
+        if (ev?.halt) { if (ev.hours) await Store.advanceWorldTime(ev.hours); halted = true; break; }
+    }
+    if (!halted && acc >= 0.5) await Store.advanceWorldTime(Math.round(acc));   // trailing partial hour
+    CourseOverlay.clear();
+    return { halted };
 }
 
 // Forced march: a hard-pace travel day risks a level of exhaustion (CON save,
@@ -1682,10 +1748,10 @@ const Travel = (() => {
     function onPick(off) {
         if (!plotting || !off) return;
         const k = Hex.key(off);
-        // Click an already-committed waypoint → truncate the course to end there
-        // (retract), keeping every earlier leg intact.
+        // Click an already-committed waypoint → toggle it OFF, dropping it and every
+        // leg after it (so the first/only pick can be deselected to choose another).
         const idx = waypoints.findIndex(w => Hex.key(w) === k);
-        if (idx >= 0) { waypoints = waypoints.slice(0, idx + 1); recompute(); WayfarerPanel.render(); return; }
+        if (idx >= 0) { waypoints = waypoints.slice(0, idx); recompute(); WayfarerPanel.render(); return; }
         // Otherwise it must be a hex in the current selectable range → add a leg.
         if (!reachMap || !reachMap.has(k)) return;
         waypoints.push(off); recompute(); WayfarerPanel.render();
@@ -1710,15 +1776,10 @@ const Travel = (() => {
         if (!tok || !routeArr.length) return;
         const steps = routeArr.slice();
         plotting = false; CourseOverlay.stop();
-        for (const off of steps) {
-            const c = canvas.grid.getCenterPoint(off);
-            try { await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true }); }
-            catch (e) { warn("token move failed", e); break; }
-            await new Promise(r => setTimeout(r, 160));
-        }
-        await Store.advanceWorldTime(travelHours(steps));
         // Move-only skips the group check → no Scout, so the party travels unwarned.
-        await cwfTravelEncounter(steps, { scoutMod: 0, surprised: true });
+        // Gradual movement advances the clock + rolls a travel event each hex, and
+        // halts the day where an encounter strikes.
+        await cwfTravelMove(tok, steps, { pace, boat, scoutGood: false });
         await cwfForcedMarch(pace);
         waypoints = []; routeArr = []; reachMap = null; anchor = null; plotTok = null;
         WayfarerPanel.render(); BiomeBadge.update();
@@ -1855,7 +1916,77 @@ const Tables = (() => {
             return res?.results?.[0]?.text || fallback;
         } catch (e) { warn("encounter draw failed", e); return fallback; }
     }
-    return { ensureAll, draw, ensureEncounter, drawEncounter, DEFS, FOLDER };
+
+    // ---- mundane flavor + non-combat event seeds (generic, editable) -------
+    const FLAVOR_ENTRIES = [
+        "A hawk wheels overhead, then drops out of sight.",
+        "The wind shifts; you smell rain that never comes.",
+        "Old wheel-ruts cross your path and wander off.",
+        "A scatter of bones, picked clean, half-buried.",
+        "Birdsong falls silent a moment, then resumes.",
+        "You ford a cold, shallow stream.",
+        "A cairn of weathered stones marks something forgotten.",
+        "Movement on the horizon — gone when you look again.",
+        "The ground softens; the going slows for a stretch.",
+        "A cold campfire, no tracks leading away.",
+        "Wildflowers in unlikely profusion, then bare ground.",
+        "A carrion bird watches from a dead tree.",
+        "Faint woodsmoke on the breeze, its source unseen.",
+        "The path narrows between leaning rocks.",
+        "Day-old tracks of some large animal cross yours.",
+        "A standing stone, lichen-furred, leaning with age."
+    ];
+    const EVENT_SEEDS = {
+        narrative: [
+            "A lone traveler shares the road a while, then parts with a warning.",
+            "A roadside shrine to a local spirit, its offerings fresh.",
+            "A herd moves across the land ahead, parting around you.",
+            "Weather closes in, then breaks to reveal a long vista.",
+            "A border-marker of some unknown claim — someone rules here.",
+            "An abandoned wagon, cargo gone, story untold.",
+            "Distant horns or drums — a people you have not met.",
+            "A field of old battle, arms and armor rusting in the grass."
+        ],
+        puzzle: [
+            "A sealed door set into a hillside, its mechanism cold and clever.",
+            "A crossing with no ford — the way over is a riddle of stones.",
+            "Standing stones aligned to something; the pattern bars the way.",
+            "A chasm spanned by a bridge that won't bear a careless step.",
+            "An old warding glyph blocks the path, waiting to be unmade.",
+            "A gatehouse with no gate — only a question carved above it."
+        ],
+        site: [
+            "A cave mouth exhales cold air and older silence.",
+            "Ruins breach the surface; stairs descend into the dark.",
+            "A half-fallen watchtower, its cellars intact.",
+            "A barrow, capstone shifted — something went in, or out.",
+            "A sinkhole opens onto worked stone far below.",
+            "An overgrown keep, gates ajar, no banners flying."
+        ]
+    };
+    const TABLE_NAMES = { flavor: "Travel Flavor", narrative: "Travel — Narrative", puzzle: "Travel — Puzzle", site: "Travel — Site" };
+    async function ensureGeneric(key, entries) {
+        const cached = ids()?.travel?.[key];
+        if (cached) { const t = game.tables.get(cached); if (t) return t; }
+        if (!game.user.isGM) return null;
+        const map = ids(); map.travel ??= {};
+        let folder = game.folders?.find(f => f.type === "RollTable" && f.name === FOLDER);
+        try { if (!folder) folder = await Folder.create({ name: FOLDER, type: "RollTable" }); } catch { /* folder optional */ }
+        try {
+            const results = entries.map((t, i) => ({ type: CONST.TABLE_RESULT_TYPES?.TEXT ?? 0, text: t, weight: 1, range: [i + 1, i + 1] }));
+            const tbl = await RollTable.create({ name: TABLE_NAMES[key] || key, formula: `1d${entries.length}`, folder: folder?.id, results, replacement: true, displayRoll: true });
+            map.travel[key] = tbl.id; await game.settings.set(MOD, "tableIds", map); return tbl;
+        } catch (e) { warn(`could not create ${key} table`, e); return null; }
+    }
+    async function drawGeneric(key, entries) {
+        const fb = entries[0];
+        try { const t = await ensureGeneric(key, entries); if (!t) return fb; const res = await t.draw({ displayChat: false }); return res?.results?.[0]?.text || fb; }
+        catch (e) { warn("generic draw failed", e); return fb; }
+    }
+    const drawFlavor = () => drawGeneric("flavor", FLAVOR_ENTRIES);
+    const drawEvent = (kind) => drawGeneric(kind, EVENT_SEEDS[kind] || EVENT_SEEDS.narrative);
+
+    return { ensureAll, draw, ensureEncounter, drawEncounter, drawFlavor, drawEvent, DEFS, FOLDER };
 })();
 
 /* =========================================================================
@@ -1929,7 +2060,12 @@ const Turn = (() => {
         WayfarerPanel.render();
     }
     function setSkill(roleKey, skillId) { roles[roleKey].skillId = skillId; saveRoles(); WayfarerPanel.render(); }
-    function rollState(roleKey) { return Domain.rollState(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() }); }
+    function rollState(roleKey) {
+        // Off by default → clean single rolls. When on, Slow gives advantage, Fast
+        // disadvantage, and weather can hamper a role (the 5e-flavored mechanic).
+        if (!game.settings.get(MOD, "travelRollMods")) return { mode: "normal", adv: false, dis: false };
+        return Domain.rollState(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() });
+    }
 
     function natOf(roll) {
         try { const d = roll.dice?.find(x => x.faces === 20) || roll.dice?.[0]; return d?.results?.find(r => r.active)?.result ?? d?.total ?? null; }
@@ -1988,12 +2124,8 @@ const Turn = (() => {
                 }
             }
         }
-        await applyMovement(navEffect);
-        const sp = Domain.PACE[pace]?.spaces ?? 2;
-        const hrs = Math.round((Hex.pathCost(route, { boat }) / sp) * 12);
-        await Store.advanceWorldTime(hrs);
-
-        // Styled per-role card — each role's roller / skill / total / outcome / result distinct.
+        // Whisper the role outcomes to the GM FIRST so they can narrate them aloud
+        // while the token travels (players hear the story, not a spoiler card).
         let body = "";
         for (const [k, v] of claimedRoles()) {
             const sk = CONFIG.DND5E?.skills?.[v.skillId]?.label || v.skillId;
@@ -2004,40 +2136,35 @@ const Turn = (() => {
             </div>`;
         }
         if (!body) body = `<div class="cwf-card-row"><span class="cwf-card-v">No roles were claimed.</span></div>`;
-        const sub = `DC ${dc}${governing?.label ? ` · ${governing.label}` : ""}`;
-        const foot = `<span class="cwf-card-clock"><i class="fa-solid fa-clock"></i> ${hrs} ${hrs === 1 ? "hour" : "hours"} pass${navEffect === "dead" ? " — lost, 0 hexes" : ""}.</span>`;
-        ChatMessage.create({ content: cwfCardShell("fa-compass", "Travel Turn", body, { sub, footerHTML: foot }) });
+        cwfWhisper("fa-compass", "Travel Turn", body, `DC ${dc}${governing?.label ? ` · ${governing.label}` : ""}`);
 
-        // Daytime travel encounter — the Scout's success eases the odds and keeps
-        // the party from being Surprised (mirrors a night watcher reducing danger).
-        if (navEffect !== "dead") {
-            const sc = roles.scout, scActor = sc.actorId ? game.actors.get(sc.actorId) : null;
-            const scGood = sc.outcome === "success" || sc.outcome === "crit";
-            await cwfTravelEncounter(route, { scoutMod: (scActor && scGood) ? Danger.highestMod(scActor) : 0, surprised: !(scActor && scGood) });
-        }
+        // Scout success eases the per-hex event odds and keeps the party unsurprised.
+        const sc = roles.scout, scActor = sc.actorId ? game.actors.get(sc.actorId) : null;
+        const scoutGood = !!(scActor && (sc.outcome === "success" || sc.outcome === "crit"));
+
+        // Gradual movement: the clock + per-hex travel events advance as the token
+        // crosses each hex; a real encounter halts the day where it strikes.
+        await applyMovement(navEffect, scoutGood);
         await cwfForcedMarch(pace);
 
         step = "resolved";
         WayfarerPanel.render(); BiomeBadge.update();
     }
 
-    async function applyMovement(effect) {
+    // Compute the path from the Navigator's result, then hand off to the shared
+    // gradual-movement engine (per-hex time + travel events + halt-on-encounter).
+    async function applyMovement(effect, scoutGood = false) {
         const tok = turnTok || Canvasry.activeToken();
-        if (!tok || !route.length) { CourseOverlay.clear(); return; }
-        let path = route;
-        if (effect === "dead") path = [];                         // move 0
+        if (!tok || !route.length) { CourseOverlay.clear(); return { halted: false }; }
+        const sp = Domain.PACE[pace]?.spaces ?? 2;
+        let path = route, lostHours = 0;
+        if (effect === "dead") { path = []; lostHours = sp > 0 ? Math.round((Hex.pathCost(route, { boat }) / sp) * 12) : 0; }  // wandered all day, no progress
         else if (effect === "left" || effect === "right") {
             const flanks = Hex.flank(route, Hex.offsetOf(tok.center));
             const target = effect === "left" ? (flanks[0] || flanks[1]) : (flanks[1] || flanks[0]);
             path = target ? [target] : route;                     // drift one hex off-target
         }
-        for (const off of path) {
-            const c = canvas.grid.getCenterPoint(off);
-            try { await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true }); }
-            catch (e) { warn("token move failed", e); break; }
-            await new Promise(r => setTimeout(r, 160));
-        }
-        CourseOverlay.clear();
+        return await cwfTravelMove(tok, path, { pace, boat, scoutGood, lostHours });
     }
 
     function end() {
