@@ -1300,6 +1300,46 @@ async function cwfFinishTravel() {
     WayfarerPanel.renderExternal(); BiomeBadge.update();
 }
 
+// ---- INTERACTIVE CAMP CARD — set the danger, pick the watch, resolve the night, all
+// from chat, so the whole day↔night loop is operable without the HUD.
+let cwfCampMsgId = null;
+function cwfCampCardHTML() {
+    const tok = Canvasry.activeToken(), cls = tok ? Canvasry.biomeForToken(tok) : null;
+    const danger = Camp.dangerScore(), biomeM = Danger.biomeMod(cls), hostileM = Danger.hostileMod(tok);
+    const base = Math.max(0, danger) + biomeM + hostileM;
+    const dial = [0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-cardbtn ${danger === n ? "cwf-primary" : ""}" data-cwf="cdanger" data-n="${n}" style="min-width:0;padding:0 9px">${n}</button>`).join("");
+    const watch = Camp.watchers;
+    const chips = Party.members().map(a => {
+        const i = watch.indexOf(a.id), on = i >= 0;
+        return `<button class="cwf-cardbtn ${on ? "cwf-primary" : ""}" data-cwf="cwatch" data-id="${a.id}" style="min-width:0" title="Highest mod −${Danger.highestMod(a)}">${on ? `${i + 1}. ` : ""}${cwfEsc(a.name)} <span class="cwf-rr-sk">−${Danger.highestMod(a)}</span></button>`;
+    }).join("");
+    const rl = cwfWatchRestLabel(watch.length);
+    const watchNote = watch.length ? `${watch.length} on watch · ~${Camp.shiftHours()}h each${rl ? ` · ${rl}` : ""}` : (rl || "no watch — unguarded");
+    const body = `${Camp.supplyNote ? cwfRow("Supplies", cwfEsc(Camp.supplyNote)) : ""}
+        <div class="cwf-card-row"><span class="cwf-card-l">Danger</span><span class="cwf-card-v">${danger} + biome ${biomeM} + hostiles ${hostileM} = <b>${base}</b>/${Danger.scale()} per hr</span></div>
+        <div class="cwf-cardbtns">${dial}</div>
+        <div class="cwf-night-sec">Watch order · ${cwfEsc(watchNote)}</div>
+        <div class="cwf-cardbtns" style="flex-wrap:wrap">${chips || `<span class="cwf-muted2">No party members.</span>`}</div>`;
+    const foot = `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="ccancel"><i class="fa-solid fa-xmark"></i> Cancel</button><button class="cwf-cardbtn cwf-primary" data-cwf="cresolve"><i class="fa-solid fa-moon"></i> Resolve night → dawn</button></div>`;
+    return cwfCardShell("fa-campground", "Make Camp", body, { sub: cls?.label || "", footerHTML: foot });
+}
+async function cwfCampPost() {
+    if (!game.user.isGM) return;
+    const m = await ChatMessage.create({ content: cwfCampCardHTML(), whisper: cwfGmIds() }).catch(() => null);
+    cwfCampMsgId = m?.id || null;
+}
+async function cwfCampRefresh() {
+    if (!cwfCampMsgId) return;
+    const msg = game.messages.get(cwfCampMsgId);
+    if (msg) { try { await msg.update({ content: cwfCampCardHTML() }); } catch (e) { warn("camp card update failed", e); } }
+}
+async function cwfCampFinalize(note) {
+    if (!cwfCampMsgId) return;
+    const msg = game.messages.get(cwfCampMsgId);
+    if (msg) { try { await msg.update({ content: cwfCardShell("fa-campground", "Camp", `<div class="cwf-muted2">${note || "The night is resolved."}</div>`) }); } catch { /* noop */ } }
+    cwfCampMsgId = null;
+}
+
 // Ordered biome breakdown of a route (run-length encoded), so the GM can see why
 // the governing DC is what it is — the worst hex along the way drives it. Segments
 // matching govDc are flagged so the DC-driver stands out.
@@ -2598,6 +2638,7 @@ const Camp = (() => {
         Music.camp(cls);
         Cinematic.broadcast({ icon: "fa-campground", title: "Make Camp", subtitle: `${cls?.label || "Wilderness"} · dusk`, tone: "dusk" });
         WayfarerPanel.render();
+        cwfCampPost();   // interactive camp card in chat (watch + danger + resolve)
     }
     async function advanceToNight() {
         const hour = Number(game.settings.get(MOD, "campHour")) || 21;
@@ -2612,12 +2653,14 @@ const Camp = (() => {
             Cinematic.broadcast({ icon: up ? "fa-triangle-exclamation" : "fa-shield-halved", title: up ? "Danger Rises" : "Danger Eases", subtitle: `Region danger ${v}/5`, tone: up ? "encounter" : "weather" });
         }
         WayfarerPanel.render();
+        cwfCampRefresh();
     }
     function toggleWatcher(id) {
         const i = watchers.indexOf(id);
         if (i >= 0) watchers.splice(i, 1); else watchers.push(id);
         game.settings.set(MOD, "lastWatch", watchers.slice()).catch(() => {});
         WayfarerPanel.render();
+        cwfCampRefresh();
     }
     // Which watcher (actorId) covers night-hour h (0-based)? null if no watch.
     function watcherForHour(h) {
@@ -2675,15 +2718,16 @@ const Camp = (() => {
         // resolved above by the watch rules). Silent — the Dawn cinematic just played.
         if (game.settings.get(MOD, "longRestAtDawn")) await cwfPartyRest("long", { newDay: true, silent: true });
         active = false;
+        await cwfCampFinalize(`Resolved — dawn breaks on Day ${nextDay}.`);
         WayfarerPanel.render(); BiomeBadge.update();
         if (game.settings.get(MOD, "resyncAtDawn")) cwfResyncSheets();   // prompted; players' DDB edits → Foundry
     }
-    function cancel() { active = false; WayfarerPanel.render(); }
+    function cancel() { active = false; cwfCampFinalize("Camp struck — back on the road."); WayfarerPanel.render(); }
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
 
     return {
         begin, setDanger, toggleWatcher, resolveNight, cancel, watcherForHour, shiftHours, dangerScore, nightHours,
-        get active() { return active; }, get watchers() { return watchers; }
+        get active() { return active; }, get watchers() { return watchers; }, get supplyNote() { return supplyNote; }
     };
 })();
 
@@ -3229,6 +3273,10 @@ function wireCardButtons(root) {
                 if (act === "step") await cwfDoHexStep();
                 else if (act === "stop") await cwfFinishTravel();
                 else if (act === "camp") { cwfTrek = null; await WayfarerPanel.makeCamp(); }
+                else if (act === "cdanger") { Camp.setDanger(Number(el.dataset.n)); }   // setDanger refreshes the card
+                else if (act === "cwatch") { Camp.toggleWatcher(el.dataset.id); }
+                else if (act === "cresolve") { await Camp.resolveNight(); }
+                else if (act === "ccancel") { Camp.cancel(); }
             } catch (e) { warn("card button failed", e); }
         });
     });
