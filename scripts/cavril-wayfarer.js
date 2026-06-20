@@ -1255,6 +1255,10 @@ async function cwfDoHexStep() {
         } catch (e) { warn("step move failed", e); }
         finally { cwfMoving = false; }
     }
+    // Switch Maestro's ambience to THIS hex's biome every step (using the moving token's
+    // own hex, not whatever happens to be selected) + push the climate to the calendar.
+    Music.update(cls);
+    MiniCal.syncBiome(cls);
     const sp = Domain.PACE[t.pace]?.spaces ?? 2;
     t.acc += sp > 0 ? (Hex.stepCost(off, cls, { boat: t.boat }, t.prev) / sp) * 12 : 0;
     t.prev = off;
@@ -1803,13 +1807,13 @@ const BiomeBadge = (() => {
     }
 
     function update() {
-        if (!Store.badgeEnabled() || !canvas?.ready) { hide(); return; }
+        if (!canvas?.ready) { hide(); return; }
         const tok = Canvasry.activeToken();
-        if (!tok) { hide(); return; }
-        const cls = Canvasry.biomeForToken(tok);
-        if (!cls) { hide(); return; } // not standing on a biome tile → off the hexmap
-        Music.update(cls);            // cross-fade Maestro's environment to this biome (GM, deduped)
-        MiniCal.syncBiome(cls);       // set Mini Calendar's weather climate to this biome (GM, deduped)
+        const cls = tok ? Canvasry.biomeForToken(tok) : null;
+        // Ambience + calendar climate follow the biome REGARDLESS of whether the visual
+        // badge is shown (music shouldn't depend on the badge setting).
+        if (cls) { Music.update(cls); MiniCal.syncBiome(cls); }
+        if (!Store.badgeEnabled() || !cls) { hide(); return; }   // badge off, or off the hexmap
         const node = ensure();
         // Position: centred just above the token (CSS translateX -50%).
         const top = tok.center;
