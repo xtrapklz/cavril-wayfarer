@@ -2180,6 +2180,15 @@ const Travel = (() => {
         recompute();
         WayfarerPanel.render();
     }
+    // Selected a different token while plotting (e.g. you started on the wrong one) →
+    // re-anchor the course to it and recompute from scratch. Ignores deselects (so
+    // clicking an empty hex to add a waypoint doesn't reset).
+    function reanchor(tok) {
+        if (!plotting || !tok || tok === plotTok) return;
+        plotTok = tok; waypoints = []; routeArr = []; anchor = null;
+        recompute();
+        WayfarerPanel.render();
+    }
     function onPick(off) {
         if (!plotting || !off) return;
         const k = Hex.key(off);
@@ -2220,7 +2229,7 @@ const Travel = (() => {
     function cancel() { plotting = false; waypoints = []; routeArr = []; reachMap = null; anchor = null; plotTok = null; CourseOverlay.stop(); WayfarerPanel.render(); }
 
     return {
-        startPlot, onPick, undo, setPace, setBoat, setShortRest, confirmMove, cancel, governing,
+        startPlot, reanchor, onPick, undo, setPace, setBoat, setShortRest, confirmMove, cancel, governing,
         refresh: () => { if (plotting) recompute(); },
         redraw: () => { if (plotting) CourseOverlay.draw(reachMap, routeArr, { anchor, waypoints }); },
         get plotting() { return plotting; }, get pace() { return pace; }, get boat() { return boat; },
@@ -3287,7 +3296,13 @@ function wireCardButtons(root) {
 }
 Hooks.on("renderChatMessageHTML", (_m, html) => wireCardButtons(html));
 Hooks.on("renderChatMessage", (_m, html) => wireCardButtons(html?.[0] ?? html));
-Hooks.on("controlToken", () => { BiomeBadge.update(); WayfarerPanel.renderExternal(); });
+Hooks.on("controlToken", (token, controlled) => {
+    BiomeBadge.update(); WayfarerPanel.renderExternal();
+    // Mid-plot, SELECTING a different token re-anchors the course to it (fixes "started
+    // on the wrong token"). Deselects (controlled=false, e.g. clicking an empty hex to
+    // add a waypoint) are ignored so they don't reset the route.
+    if (controlled && token && Travel.plotting && token !== Travel.token) Travel.reanchor(token);
+});
 // Lock the designated party token to Wayfarer-only movement (optional). A manual drag
 // of it is reverted; Wayfarer's own moves (cwfMoving) pass through.
 Hooks.on("preUpdateToken", (doc, change) => {
