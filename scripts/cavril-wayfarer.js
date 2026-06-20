@@ -931,7 +931,25 @@ const Party = (() => {
         await addItem(g, RATION_RE, "Rations", rations);
         await addItem(g, WATER_RE, "Waterskin", water);
     }
-    return { groupActor, members, size, supplies, breakdown, countItems, consume, addToStash, RATION_RE, WATER_RE };
+    // Nudge the shared stash up/down by one (the HUD steppers).
+    async function adjustStash(type, delta) {
+        if (!game.user.isGM || !delta) return;
+        const g = groupActor();
+        if (!g) { ui.notifications?.warn(`${TITLE}: no party group actor to hold supplies.`); return; }
+        const re = type === "water" ? WATER_RE : RATION_RE;
+        if (delta > 0) await addItem(g, re, type === "water" ? "Waterskin" : "Rations", delta);
+        else await take(g, re, -delta);
+    }
+    // Set a member's OWN ration/water count to a value (the HUD per-character edit).
+    async function setMemberSupply(actorId, type, value) {
+        if (!game.user.isGM) return;
+        const a = game.actors.get(actorId); if (!a) return;
+        const re = type === "water" ? WATER_RE : RATION_RE;
+        const delta = Math.max(0, Math.round(value)) - countItems(a, re);
+        if (delta > 0) await addItem(a, re, type === "water" ? "Waterskin" : "Rations", delta);
+        else if (delta < 0) await take(a, re, -delta);
+    }
+    return { groupActor, members, size, supplies, breakdown, countItems, consume, addToStash, adjustStash, setMemberSupply, RATION_RE, WATER_RE };
 })();
 
 /* =========================================================================
@@ -1165,6 +1183,21 @@ function cwfClockLabel() {
     try { const secs = game.time?.worldTime ?? 0; const h = (Math.floor(secs / 3600) % 24 + 24) % 24, m = (Math.floor(secs / 60) % 60 + 60) % 60; return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; }
     catch { return ""; }
 }
+// Coarse time-of-day phase (for the "every time change gets a cinematic" rule).
+function cwfTimeOfDay() {
+    const h = (Math.floor((game.time?.worldTime ?? 0) / 3600) % 24 + 24) % 24;
+    if (h >= 5 && h < 12) return { key: "morning", label: "Morning", icon: "fa-sun", tone: "dawn" };
+    if (h >= 12 && h < 17) return { key: "afternoon", label: "Afternoon", icon: "fa-sun", tone: "weather" };
+    if (h >= 17 && h < 21) return { key: "evening", label: "Evening", icon: "fa-cloud-sun", tone: "dusk" };
+    return { key: "night", label: "Night", icon: "fa-moon", tone: "night" };
+}
+// A travel-log line that links back to its hex — click pings/pans the map there so the
+// GM can retrace the party's steps. Records biome · weather · time at that hex.
+function cwfHexLineHTML(off, idx, biome, weatherLabel, content, hit) {
+    let x = 0, y = 0; try { const c = canvas.grid.getCenterPoint(off); x = Math.round(c.x); y = Math.round(c.y); } catch { /* noop */ }
+    const wx = weatherLabel ? ` · ${cwfEsc(weatherLabel)}` : "";
+    return `<div class="cwf-night-h ${hit ? "hit" : ""} cwf-hexline" data-cwf="ping" data-x="${x}" data-y="${y}" title="Click to ping this hex on the map"><span class="cwf-rr-sk">Hex ${idx} · ${biome}${wx} · ${cwfClockLabel()}</span> ${content}</div>`;
+}
 function cwfTrekCardHTML() {
     const t = cwfTrek; if (!t) return "";
     const log = t.lines.length
@@ -1184,7 +1217,7 @@ async function cwfTrekRefresh() {
 async function cwfStartTravel(tok, route, { pace = "normal", boat = false, scoutGood = false, lostHours = 0, header = "", title = "Travel", icon = "fa-person-walking-arrow-right", sub = "" } = {}) {
     if (!game.user.isGM || !tok) return;
     try { CourseOverlay.stop(); } catch { /* noop */ }
-    cwfTrek = { tokId: tok.id, route: (route || []).slice(), idx: 0, pace, boat, scoutGood, acc: 0, prev: Hex.offsetOf(tok.center), lines: [], header, title, icon, sub, halted: false, done: false, lostHours, marchHTML: "", marchSub: "" };
+    cwfTrek = { tokId: tok.id, route: (route || []).slice(), idx: 0, pace, boat, scoutGood, acc: 0, prev: Hex.offsetOf(tok.center), lines: [], header, title, icon, sub, halted: false, done: false, lostHours, marchHTML: "", marchSub: "", tod: cwfTimeOfDay().key };
     const msg = await ChatMessage.create({ content: cwfTrekCardHTML(), whisper: cwfGmIds() }).catch(() => null);
     cwfTrek.msgId = msg?.id;
     if (!cwfTrek.route.length) {   // a "got lost" day — no hexes, just spend the time
@@ -1206,25 +1239,31 @@ async function cwfDoHexStep() {
     t.prev = off;
     const whole = Math.floor(t.acc); if (whole >= 1) { t.acc -= whole; await Store.advanceWorldTime(whole); }
     t.idx++;
-    // weather — manual step, so update freely and announce a change in-card + a beat.
-    const wxBefore = MiniCal.key();
+    // Cover BOTH a weather shift and a time-of-day change with a brief cinematic +
+    // an in-card line, consistently (manual stepping → no thrash). Record the weather.
+    const todBefore = t.tod, wxBefore = MiniCal.key();
     try { await MiniCal.refresh(); } catch { /* noop */ }
-    const wxAfter = MiniCal.key();
-    if (wxAfter && wxBefore && wxAfter !== wxBefore) {
+    const wxAfter = MiniCal.key(), tod = cwfTimeOfDay();
+    t.tod = tod.key;
+    const weatherLabel = MiniCal.label() || Domain.WEATHER[wxAfter]?.label || "";
+    if (todBefore && tod.key !== todBefore) {
+        t.lines.push(`<div class="cwf-night-h"><i class="fa-solid ${tod.icon}"></i> ${tod.label} settles over the ${cwfEsc(biome.toLowerCase())}.</div>`);
+        Cinematic.broadcast({ icon: tod.icon, title: tod.label, subtitle: `${biome}${weatherLabel ? ` · ${weatherLabel}` : ""}`, tone: tod.tone });
+    } else if (wxAfter && wxBefore && wxAfter !== wxBefore) {
         const wl = Domain.WEATHER[wxAfter] || Domain.WEATHER.clear;
-        t.lines.push(`<div class="cwf-night-h"><i class="fa-solid ${wl.icon}"></i> The weather turns — ${cwfEsc(MiniCal.label() || wl.label)}.</div>`);
-        Cinematic.broadcast({ icon: wl.icon || "fa-cloud", title: MiniCal.label() || wl.label || "Weather", subtitle: `${biome} · ${t.pace} pace`, tone: "weather" });
+        t.lines.push(`<div class="cwf-night-h"><i class="fa-solid ${wl.icon}"></i> The weather turns — ${cwfEsc(weatherLabel)}.</div>`);
+        Cinematic.broadcast({ icon: wl.icon || "fa-cloud", title: weatherLabel || wl.label || "Weather", subtitle: `${biome} · ${t.pace} pace`, tone: "weather" });
     }
-    // hex event
+    // hex event → one clickable line that pings the hex (biome · weather · time recorded).
     const ev = await cwfHexEvent(cls, { scoutGood: t.scoutGood });
     if (ev?.halt) {
         if (ev.hours) await Store.advanceWorldTime(ev.hours);
-        t.lines.push(`<div class="cwf-night-h hit"><i class="fa-solid ${ev.icon}"></i> <b>${ev.label}</b>${ev.tag || ""} · ${biome} · +${ev.hours}h<br>${ev.line}</div>`);
+        t.lines.push(cwfHexLineHTML(off, t.idx, biome, weatherLabel, `<i class="fa-solid ${ev.icon}"></i> <b>${ev.label}</b>${ev.tag || ""} · +${ev.hours}h<br>${ev.line}`, true));
         t.halted = true;
         if (ev.cinematic) Cinematic.broadcast(ev.cinematic);
         await cwfFinishTravel();
     } else {
-        t.lines.push(`<div class="cwf-night-h"><span class="cwf-rr-sk">Hex ${t.idx} · ${biome} · ${cwfClockLabel()}</span> — ${ev?.line || "the way is clear."}</div>`);
+        t.lines.push(cwfHexLineHTML(off, t.idx, biome, weatherLabel, `— ${ev?.line || "the way is clear."}`, false));
         if (t.idx >= t.route.length) await cwfFinishTravel();
         else await cwfTrekRefresh();
     }
@@ -1435,6 +1474,29 @@ async function cwfConfirm(title, content) {
         if (DialogV2?.confirm) return await DialogV2.confirm({ window: { title }, content: `<p>${content}</p>`, modal: true });
         return await Dialog.confirm({ title, content: `<p>${content}</p>` });
     } catch { return false; }
+}
+
+// Small number prompt → returns the entered number or null.
+async function cwfPromptNumber(title, current = 0) {
+    const content = `<div class="cwf-dialog"><label>${cwfEsc(title)} <input type="number" name="v" value="${current}"></label></div>`;
+    const DialogV2 = foundry.applications?.api?.DialogV2;
+    try {
+        if (DialogV2?.prompt) { const r = await DialogV2.prompt({ window: { title }, content, ok: { label: "Set", callback: (_e, b) => Number(b.form.v.value) } }).catch(() => null); return Number.isFinite(r) ? r : null; }
+    } catch { /* fall through */ }
+    return await new Promise(res => { try { new Dialog({ title, content, buttons: { ok: { label: "Set", callback: (h) => res(Number(h[0].querySelector('[name=v]').value)) }, cancel: { label: "Cancel", callback: () => res(null) } }, default: "ok", close: () => res(null) }).render(true); } catch { res(null); } });
+}
+
+// Manually edit a party member's exhaustion / rations / waterskins from the HUD.
+async function cwfEditMember(actorId, field) {
+    if (!game.user.isGM) return;
+    const a = game.actors.get(actorId); if (!a) return;
+    const cur = field === "exh" ? (a.system?.attributes?.exhaustion ?? 0) : Party.countItems(a, field === "water" ? Party.WATER_RE : Party.RATION_RE);
+    const label = field === "exh" ? "exhaustion (0–6)" : field === "water" ? "waterskins" : "rations";
+    const v = await cwfPromptNumber(`Set ${a.name}'s ${label}`, cur);
+    if (v == null || !Number.isFinite(v)) return;
+    if (field === "exh") { try { await a.update({ "system.attributes.exhaustion": Math.max(0, Math.min(6, Math.round(v))) }); } catch (e) { warn("set exhaustion failed", e); } }
+    else await Party.setMemberSupply(actorId, field, v);
+    WayfarerPanel.render();
 }
 
 // Prompted re-sync of every DDB-linked party member via ddb-importer (DDB → Foundry,
@@ -2653,6 +2715,8 @@ const WayfarerPanel = (() => {
                 case "reset-journey": case "end-journey": await endJourney(); break;
                 case "haul": await foragerHaul(); break;
                 case "restock": await restockSupplies(); break;
+                case "stash": await Party.adjustStash(btn.dataset.t === "water" ? "water" : "ration", Number(btn.dataset.d)); break;
+                case "edit-member": await cwfEditMember(btn.dataset.id, btn.dataset.field); break;
                 case "rest-short": await cwfPartyRest("short"); break;
                 case "rest-long": await cwfPartyRest("long", { newDay: true }); break;
                 case "resync": await cwfResyncSheets(); break;
@@ -2866,6 +2930,9 @@ const WayfarerPanel = (() => {
         const bd = Party.breakdown();
         const size = Party.size();
         const dangerNow = Camp.dangerScore();
+        const stepper = (t, val) => isGM
+            ? `<span class="cwf-stepper"><button class="cwf-step-btn" data-action="stash" data-t="${t}" data-d="-1" title="−1">−</button><span class="cwf-step-v">${val}</span><button class="cwf-step-btn" data-action="stash" data-t="${t}" data-d="1" title="+1">+</button></span>`
+            : `<span class="cwf-step-v">${val}</span>`;
         const w = Domain.WEATHER[effectiveWeather()] || Domain.WEATHER.clear;
         const site = Canvasry.augurSiteUnder(tok);
         const dis = isGM ? "" : "disabled";
@@ -2938,7 +3005,7 @@ const WayfarerPanel = (() => {
             </div>
             <div class="cwf-body" ${collapsedRef ? 'style="display:none"' : ""}>
                 <div class="cwf-section">
-                    <div class="cwf-label">Current hex ${isGM ? `<button class="cwf-tiny cwf-inline" data-action="set-party" title="Set the selected token as the party marker"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}</div>
+                    <div class="cwf-label">${isGM ? `<button class="cwf-tiny" data-action="set-party" title="Set the selected token as the party marker" style="margin-right:5px"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}Current hex</div>
                     <div class="cwf-here">${here}</div>
                     ${isGM ? `<div class="cwf-danger-row"><span class="cwf-danger-l" title="Region danger — drives day & night encounters"><i class="fa-solid fa-skull"></i> Danger</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${dangerNow === n ? "on" : ""}" data-action="camp-danger" data-n="${n}" title="Set region danger ${n}">${n}</button>`).join("")}</div></div>` : ""}
                 </div>
@@ -2953,21 +3020,26 @@ const WayfarerPanel = (() => {
                 <div class="cwf-section">
                     <div class="cwf-label">Party <span class="cwf-muted2">${size} member${size === 1 ? "" : "s"} · per character</span></div>
                     <div class="cwf-pm cwf-pm-h"><span class="cwf-pm-n"></span><span class="cwf-pm-v" title="Exhaustion"><i class="fa-solid fa-face-dizzy"></i></span><span class="cwf-pm-v" title="Rations"><i class="fa-solid fa-drumstick-bite"></i></span><span class="cwf-pm-v" title="Waterskins"><i class="fa-solid fa-bottle-water"></i></span></div>
-                    ${bd.members.map(m => `<div class="cwf-pm"><span class="cwf-pm-n">${esc(m.name)}</span><span class="cwf-pm-v ${m.exh > 0 ? "warn" : ""}">${m.exh}</span><span class="cwf-pm-v ${m.rations <= 0 ? "low" : ""}">${m.rations}</span><span class="cwf-pm-v ${m.water <= 0 ? "low" : ""}">${m.water}</span></div>`).join("") || `<div class="cwf-muted2">No party members found.</div>`}
+                    ${bd.members.map(m => {
+                        const cell = (field, val, cls2) => isGM
+                            ? `<button class="cwf-pm-v ${cls2}" data-action="edit-member" data-id="${m.id}" data-field="${field}" title="Click to set ${esc(m.name)}'s ${field === "exh" ? "exhaustion" : field === "water" ? "waterskins" : "rations"}">${val}</button>`
+                            : `<span class="cwf-pm-v ${cls2}">${val}</span>`;
+                        return `<div class="cwf-pm"><span class="cwf-pm-n">${esc(m.name)}</span>${cell("exh", m.exh, m.exh > 0 ? "warn" : "")}${cell("rations", m.rations, m.rations <= 0 ? "low" : "")}${cell("water", m.water, m.water <= 0 ? "low" : "")}</div>`;
+                    }).join("") || `<div class="cwf-muted2">No party members found.</div>`}
                 </div>
 
                 <div class="cwf-section">
-                    <div class="cwf-label">Shared stash <span class="cwf-muted2">group inventory</span>${isGM ? `<button class="cwf-mini cwf-inline" data-action="haul" title="Add a forager haul to the party stash"><i class="fa-solid fa-plus"></i></button>` : ""}</div>
-                    <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-drumstick-bite"></i> Rations</span><span class="cwf-step-v">${bd.stash.rations}</span></div>
-                    <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-bottle-water"></i> Waterskins</span><span class="cwf-step-v">${bd.stash.water}</span></div>
+                    <div class="cwf-label">Shared stash <span class="cwf-muted2">group inventory</span></div>
+                    <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-drumstick-bite"></i> Rations</span>${stepper("ration", bd.stash.rations)}</div>
+                    <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-bottle-water"></i> Waterskins</span>${stepper("water", bd.stash.water)}</div>
                 </div>
 
                 ${isGM ? `<div class="cwf-section">
-                    <div class="cwf-label">Rest <span class="cwf-muted2">recovery whispered to you</span></div>
+                    <div class="cwf-label">Rest &amp; sync</div>
                     <div class="cwf-actions">
-                        <button class="cwf-btn" data-action="rest-short" title="Short rest — auto-spend hit dice, recover short-rest features"><i class="fa-solid fa-mug-hot"></i> Short rest</button>
-                        <button class="cwf-btn" data-action="rest-long" title="Long rest — HP, spell slots, hit dice (exhaustion stays on the watch rules)"><i class="fa-solid fa-bed"></i> Long rest</button>
-                        <button class="cwf-btn" data-action="resync" title="Pull the party's latest sheets from D&D Beyond (confirms first)"><i class="fa-solid fa-arrows-rotate"></i> Re-sync</button>
+                        <button class="cwf-btn" data-action="rest-short" title="Short rest — auto-spend hit dice, recover short-rest features"><i class="fa-solid fa-mug-hot"></i></button>
+                        <button class="cwf-btn" data-action="rest-long" title="Long rest — HP, spell slots, hit dice"><i class="fa-solid fa-bed"></i></button>
+                        <button class="cwf-btn" data-action="resync" title="Re-sync sheets from D&D Beyond (confirms first)"><i class="fa-solid fa-arrows-rotate"></i></button>
                     </div>
                 </div>` : ""}
 
@@ -3098,6 +3170,11 @@ function wireCardButtons(root) {
             ev.preventDefault();
             const act = el.dataset.cwf;
             try {
+                if (act === "ping") {   // retrace steps — pan + ping the hex this line refers to
+                    const x = Number(el.dataset.x), y = Number(el.dataset.y);
+                    if (Number.isFinite(x) && Number.isFinite(y)) { try { await canvas.animatePan({ x, y, duration: 350 }); } catch { /* noop */ } try { canvas.ping?.({ x, y }); } catch { /* noop */ } }
+                    return;
+                }
                 if (act === "dawn") { advanceToDawn(); return; }
                 if (!game.user.isGM) return;
                 if (act === "step") await cwfDoHexStep();

@@ -194,7 +194,7 @@
 
 /* chat cards (DDB Roll Cards style) */
 .cwf-card { border: 1px solid rgba(0,0,0,.45); border-radius: 8px; overflow: hidden; background: #17181c; color: #f4f4f4; font-family: "Signika", sans-serif; }
-.cwf-card-hd { display: flex; align-items: center; gap: 7px; padding: 7px 10px; background: linear-gradient(90deg, #222226, #34343a); font-weight: 700; letter-spacing: .04em; font-size: 13px; }
+.cwf-card-hd { display: flex; align-items: center; gap: 7px; padding: 7px 10px; background: linear-gradient(90deg, #222226, #34343a); font-family: 'Modesto Condensed', 'Signika', serif; font-weight: 700; letter-spacing: .04em; font-size: 14px; }
 .cwf-card-hd > i { color: var(--cwf-accent); }
 .cwf-card-sub { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--cwf-coral); letter-spacing: .04em; }
 .cwf-card-bd { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
@@ -256,7 +256,7 @@
 .cwf-cine-mid { position: relative; text-align: center; color: #f4f2ea; opacity: 0; transform: scale(.92) translateY(10px); animation: cwf-cine-rise .65s ease-out .32s forwards; padding: 0 24px; }
 .cwf-cine-mid::before { content: ""; position: absolute; inset: -40px -80px; background: radial-gradient(ellipse at center, rgba(8,8,12,.6), transparent 72%); z-index: -1; }
 .cwf-cine-icon { font-size: 48px; color: var(--cwf-cine-accent, #bda9e8); filter: drop-shadow(0 0 16px var(--cwf-cine-glow, rgba(189,169,232,.5))); display: block; margin-bottom: 12px; }
-.cwf-cine-title { font-size: 40px; font-weight: 700; letter-spacing: .07em; text-shadow: 0 0 20px var(--cwf-cine-glow, rgba(189,169,232,.5)), 0 2px 8px rgba(0,0,0,.7); }
+.cwf-cine-title { font-family: 'Modesto Condensed', 'Signika', serif; font-size: 42px; font-weight: 700; letter-spacing: .06em; text-shadow: 0 0 20px var(--cwf-cine-glow, rgba(189,169,232,.5)), 0 2px 8px rgba(0,0,0,.7); }
 .cwf-cine-sub { margin-top: 8px; font-size: 15px; color: #c7c2d6; letter-spacing: .18em; text-transform: uppercase; }
 @keyframes cwf-cine-top { from { transform: translateY(-100%); } to { transform: translateY(0); } }
 @keyframes cwf-cine-bot { from { transform: translateY(100%); } to { transform: translateY(0); } }
@@ -284,3 +284,15 @@
 .cwf-pm-v { text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
 .cwf-pm-v.warn { color: var(--cwf-hard); }
 .cwf-pm-v.low { color: var(--cwf-severe); }
+/* editable per-character value cells (GM) */
+button.cwf-pm-v { border: none; background: none; color: inherit; cursor: pointer; font: inherit; font-weight: 600; padding: 1px 0; border-radius: 4px; }
+button.cwf-pm-v:hover { background: rgba(189,169,232,.18); color: #fff; }
+
+/* compact +/- stepper (shared stash) */
+.cwf-stepper { display: inline-flex; align-items: center; gap: 5px; }
+.cwf-step-btn { width: 20px; height: 20px; border-radius: 5px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-accent); cursor: pointer; font-weight: 700; line-height: 1; padding: 0; }
+.cwf-step-btn:hover { border-color: var(--cwf-accent); background: rgba(189,169,232,.18); }
+
+/* clickable travel-log hex line — pings/pans to that hex */
+.cwf-hexline { cursor: pointer; border-radius: 4px; }
+.cwf-hexline:hover { background: rgba(189,169,232,.12); }
