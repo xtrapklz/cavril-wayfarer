@@ -433,6 +433,15 @@ const Store = (() => {
         // Universal cinematic delay — how long phase cinematics hold, and the pause
         // between a transition resolving and the next one. "A couple of seconds."
         g.register(MOD, "universalDelay", { name: "Cinematic hold (seconds)", hint: "How long phase cinematics stay up, and the pause the module sits in a beat before moving on. Higher = more time to read/narrate. Default 2.5.", scope: "world", config: true, type: Number, default: 2.5, range: { min: 0.5, max: 8, step: 0.5 } });
+        g.register(MOD, "dangerCinematic", { name: "Cinematic on danger change", hint: "Show a cinematic whenever the region danger level goes up or down.", scope: "world", config: true, type: Boolean, default: true });
+        // Token movement.
+        g.register(MOD, "moveAnimMs", { name: "Hex move duration (ms)", hint: "How long the token takes to glide between hexes during travel. Higher = more gradual. Default 900.", scope: "world", config: true, type: Number, default: 900, range: { min: 100, max: 3000, step: 100 } });
+        g.register(MOD, "lockToken", { name: "Lock the party token", hint: "Prevent the party token from being dragged manually — only Wayfarer (travel/encounter moves) can reposition it. GM can still hold it; players are blocked.", scope: "world", config: true, type: Boolean, default: false });
+        // Travel SFX — one-shot sound as the token enters each hex, by how it's moving.
+        g.register(MOD, "travelSfx", { name: "Travel movement sounds", hint: "Play a one-shot sound (via Maestro) as the party crosses each hex — footsteps, cart, or boat depending on the route. Set the sound paths below.", scope: "world", config: true, type: Boolean, default: false });
+        g.register(MOD, "sfxFoot", { name: "Footsteps sound", hint: "Sound file (or a Maestro soundboard folder ending in /) for travel on foot. Blank = silent.", scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxCart", { name: "Cart sound", hint: "Sound for a cart on a road (Boat/Cart on + road). Blank = silent.", scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxBoat", { name: "Boat sound", hint: "Sound for a boat on a river (Boat/Cart on + river). Blank = silent.", scope: "world", config: true, type: String, default: "" });
         // Movement penalties for rugged terrain (separate from the biome DC).
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
@@ -1034,6 +1043,9 @@ function cwfDelayMs() { const v = Number(game.settings.get(MOD, "universalDelay"
 // While a travel sequence runs we advance the clock per hex; suppress the per-hex
 // weather/panel re-render thrash and refresh ONCE when it ends (covered by a cinematic).
 let cwfBusy = false;
+// True only while WAYFARER is moving the party token — lets the lock-token guard tell a
+// Wayfarer move from a manual drag.
+let cwfMoving = false;
 const cwfEsc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
 
 const Cinematic = (() => {
@@ -1233,7 +1245,16 @@ async function cwfDoHexStep() {
     const off = t.route[t.idx];
     const cls = Hex.classifyAt(off);
     const biome = cls?.label || "Wilderness";
-    if (tok) { try { const c = canvas.grid.getCenterPoint(off); await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true }); } catch (e) { warn("step move failed", e); } }
+    if (tok) {
+        try {
+            const c = canvas.grid.getCenterPoint(off);
+            const dur = Math.max(0, Number(game.settings.get(MOD, "moveAnimMs")) || 900);
+            Music.travelSfx(cls, t.boat);   // footsteps / cart / boat as the party sets out
+            cwfMoving = true;
+            await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true, animation: { duration: dur } });
+        } catch (e) { warn("step move failed", e); }
+        finally { cwfMoving = false; }
+    }
     const sp = Domain.PACE[t.pace]?.spaces ?? 2;
     t.acc += sp > 0 ? (Hex.stepCost(off, cls, { boat: t.boat }, t.prev) / sp) * 12 : 0;
     t.prev = off;
@@ -1243,6 +1264,7 @@ async function cwfDoHexStep() {
     // an in-card line, consistently (manual stepping → no thrash). Record the weather.
     const todBefore = t.tod, wxBefore = MiniCal.key();
     try { await MiniCal.refresh(); } catch { /* noop */ }
+    Music.syncWeather();   // ping Maestro every hex so its weather/day-night keeps step
     const wxAfter = MiniCal.key(), tod = cwfTimeOfDay();
     t.tod = tod.key;
     const weatherLabel = MiniCal.label() || Domain.WEATHER[wxAfter]?.label || "";
@@ -1578,7 +1600,26 @@ const Music = (() => {
         try { await globalThis.Maestro.play("emberEnvironment", { channel: "environment", arrangementId: arr }); _last = "camp:" + arr; }
         catch (e) { warn("maestro camp ambience failed", e); }
     }
-    return { active, update, camp, arrangementFor, reset: () => { _last = null; }, DEFAULTS };
+    // Ping Maestro to re-read the calendar weather + day/night, so its weather track and
+    // ambience stay in step as the clock advances during travel (it doesn't poll often).
+    async function syncWeather() {
+        if (!game.user.isGM || !active()) return;
+        try { await globalThis.Maestro.syncWeatherFromCalendar?.(); } catch (e) { warn("maestro weather sync failed", e); }
+        try { globalThis.Maestro.applyDayNight?.(); } catch (e) { warn("maestro day/night failed", e); }
+    }
+    // Travel one-shot SFX by HOW the party moves: boat on a river, cart on a road, else
+    // footsteps. Paths are GM-configured (a file, or a soundboard folder ending in "/").
+    async function travelSfx(cls, boat) {
+        if (!game.user.isGM || !game.settings.get(MOD, "travelSfx") || !globalThis.Maestro) return;
+        const key = (boat && cls?.river) ? "sfxBoat" : (boat && cls?.infrastructure) ? "sfxCart" : "sfxFoot";
+        const path = String(game.settings.get(MOD, key) || "").trim();
+        if (!path) return;
+        try {
+            if (path.endsWith("/") && globalThis.Maestro.playRandomInFolder) await globalThis.Maestro.playRandomInFolder(path);
+            else if (globalThis.Maestro.playOneShot) await globalThis.Maestro.playOneShot(path, {});
+        } catch (e) { warn("travel sfx failed", e); }
+    }
+    return { active, update, camp, syncWeather, travelSfx, arrangementFor, reset: () => { _last = null; }, DEFAULTS };
 })();
 
 /* =========================================================================
@@ -2459,17 +2500,17 @@ const Turn = (() => {
             const drawn = await Tables.draw(k, tier);
             v.result = drawn.text;
             if (k === "navigate") navEffect = drawn.effect || (tier === "fail" || tier === "critfail" ? "dead" : "arrive");
-            if (k === "forage") {
-                if (tier === "success" || tier === "crit") await Store.setSceneState({ foraged: true });
-                if (tier === "crit") {
-                    const fa = game.actors.get(v.actorId);
-                    const wis = fa?.system?.abilities?.wis?.mod ?? 0;
-                    let haul = wis + 2;
-                    try { haul = (await (new Roll("1d4")).evaluate()).total + wis; } catch { /* keep fallback */ }
-                    haul = Math.max(1, haul);
-                    await Party.addToStash(haul, haul);
-                    v.result += ` <em>(+${haul}🍖 / +${haul}💧 to the stash)</em>`;
-                }
+            if (k === "forage" && (tier === "success" || tier === "crit")) {
+                await Store.setSceneState({ foraged: true });
+                // Automatically forage supplies into the shared stash (the HUD + camp
+                // consumption update on their own via the item hooks). Crit hauls more.
+                const fa = game.actors.get(v.actorId);
+                const wis = Math.max(0, fa?.system?.abilities?.wis?.mod ?? 0);
+                let base = tier === "crit" ? 2 : 1;
+                try { base = (await new Roll(tier === "crit" ? "1d4" : "1d2").evaluate()).total; } catch { /* keep fallback */ }
+                const haul = Math.max(1, base + wis);
+                await Party.addToStash(haul, haul);
+                v.result += ` <em>(+${haul}🍖 / +${haul}💧 foraged into the stash)</em>`;
             }
         }
         // Role outcomes become the HEADER of the single stepped travel card; the GM
@@ -2563,7 +2604,15 @@ const Camp = (() => {
         try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(0, hour); else await Store.advanceWorldTime(3); }
         catch (e) { warn("advance to night failed", e); }
     }
-    function setDanger(n) { Store.setSceneState({ danger: Math.max(0, Math.min(5, n | 0)) }); WayfarerPanel.render(); }
+    function setDanger(n) {
+        const v = Math.max(0, Math.min(5, n | 0)), prev = dangerScore();
+        Store.setSceneState({ danger: v });
+        if (v !== prev && game.user.isGM && game.settings.get(MOD, "dangerCinematic")) {
+            const up = v > prev;
+            Cinematic.broadcast({ icon: up ? "fa-triangle-exclamation" : "fa-shield-halved", title: up ? "Danger Rises" : "Danger Eases", subtitle: `Region danger ${v}/5`, tone: up ? "encounter" : "weather" });
+        }
+        WayfarerPanel.render();
+    }
     function toggleWatcher(id) {
         const i = watchers.indexOf(id);
         if (i >= 0) watchers.splice(i, 1); else watchers.push(id);
@@ -3187,6 +3236,16 @@ function wireCardButtons(root) {
 Hooks.on("renderChatMessageHTML", (_m, html) => wireCardButtons(html));
 Hooks.on("renderChatMessage", (_m, html) => wireCardButtons(html?.[0] ?? html));
 Hooks.on("controlToken", () => { BiomeBadge.update(); WayfarerPanel.renderExternal(); });
+// Lock the designated party token to Wayfarer-only movement (optional). A manual drag
+// of it is reverted; Wayfarer's own moves (cwfMoving) pass through.
+Hooks.on("preUpdateToken", (doc, change) => {
+    if (cwfMoving || !game.settings.get(MOD, "lockToken")) return;
+    if (change?.x === undefined && change?.y === undefined) return;
+    const partyId = doc.parent?.getFlag?.(MOD, "partyToken");
+    if (!partyId || doc.id !== partyId) return;   // only the designated party marker is locked
+    delete change.x; delete change.y;
+    ui.notifications?.info(`${TITLE}: the party token is locked — only Wayfarer moves it (turn off “Lock the party token” to move it by hand).`);
+});
 // Only the followed token's refresh matters — skip the churn from every other token.
 Hooks.on("refreshToken", (token) => { if (token === Canvasry.activeToken()) BiomeBadge.update(); });
 // Committed position change (drag-drop, programmatic move, another client, calendar
