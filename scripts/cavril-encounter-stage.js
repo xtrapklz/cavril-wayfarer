@@ -391,8 +391,15 @@
     const candTags = candidateTags(cls, { type, season: ctx.season });
     const genericBias = (CFG.preferGenericMaps ?? true) && type !== "social";   // social WANTS built places
     const vctx = { ...ctx, natural: genericBias && (CFG.naturalizeMaps ?? true) };   // combat → naturalized variant
-    const scored = cat.items
-      .filter(it => it.dataKey === dataKey && it.genre === "fantasy")
+    // Curated index: when built, restrict combat picks to THIS biome's stored generic pool (your reviewed
+    // selection), falling back to the full catalog if the pool is empty or yields no tag match.
+    let poolIds = null;
+    if (genericBias && (CFG.useBiomeIndex ?? true)) {
+      const rows = biomeIndexRows();
+      if (rows) { const b = effectiveBiome(cls); const ids = rows.filter(m => !m.exclude && m.generic && m.biome === b).map(m => m.id); if (ids.length) poolIds = new Set(ids); }
+    }
+    const scoreCat = (restrict) => cat.items
+      .filter(it => it.dataKey === dataKey && it.genre === "fantasy" && (!restrict || restrict.has(it.id)))
       .map(it => {
         const base = scoreItem(it, candTags);
         let score = base;
@@ -407,6 +414,8 @@
       })
       .filter(x => x.base > 0)
       .sort((a, b) => b.score - a.score);
+    let scored = scoreCat(poolIds);
+    if (!scored.length && poolIds) { log(`curated ${effectiveBiome(cls)} pool had no tag match — using full catalog`); scored = scoreCat(null); }
     if (!scored.length) { warn(`no tag matches for biome '${effectiveBiome(cls)}' (${type})`); return null; }
 
     // Cycle: skip maps staged in the last few encounters so a biome rotates through its pool —
@@ -468,23 +477,49 @@
     for (const [b, list] of Object.entries(BIOME_TAGS)) { let c = 0; for (const t of list) if (set.has(t)) c++; if (c > n) { n = c; best = b; } }
     return n ? best : "unknown";
   }
-  // Preview the curated biome pools: classify every battlemap by its NATURALIZED variant → biome +
-  // generic/specific. The live combat path already naturalizes + cycles through these; this just shows
-  // what's in each pool so you can eyeball the calibration. CavrilEncounterStage.previewBiomePools()
+  // Classify one battlemap for the curated index: its NATURALIZED variant → biome + generic/specific.
+  function classifyMap(it) {
+    const base = naturalBase(it);
+    const tags = (base?.tags || []).map(t => String(t).toLowerCase());
+    const terrain = tags.filter(t => WILDERNESS_TAGS.has(t) || t === "natural").length;
+    const struct = tags.filter(t => STRUCTURE_TAGS.has(t)).length;
+    return { id: it.id, name: it.name, biome: biomeOf(tags), generic: terrain > 0 && terrain >= struct, natVar: base?.name || "" };
+  }
+  // The stored index merged with the GM's review-panel overrides ({id → {biome?,generic?,exclude?}}). Null
+  // until buildBiomeIndex() has run. Overrides win, so re-curating never gets clobbered by a rebuild.
+  function biomeIndexRows() {
+    let idx; try { idx = game.settings.get(MOD, "esBiomeIndex"); } catch { idx = null; }
+    if (!idx?.maps?.length) return null;
+    let ov = {}; try { ov = game.settings.get(MOD, "esBiomeOverrides") || {}; } catch { /* noop */ }
+    return idx.maps.map(m => (ov[m.id] ? { ...m, ...ov[m.id] } : m));
+  }
+  // Scan the live catalog once → classify every fantasy battlemap → store the per-biome index. Run after
+  // connecting CZEPEKU: CavrilEncounterStage.buildBiomeIndex(). Encounters then pull from the curated pools.
+  async function buildBiomeIndex() {
+    const cat = await getCatalog(true);
+    const maps = cat.items.filter(it => it.dataKey === "maps" && it.genre === "fantasy").map(classifyMap);
+    const index = { builtAt: Date.now(), count: maps.length, maps };
+    try { await game.settings.set(MOD, "esBiomeIndex", index); } catch (e) { warn("biome index save failed", e); }
+    const t = {}; for (const m of maps) { (t[m.biome] ??= { generic: 0, specific: 0 })[m.generic ? "generic" : "specific"]++; }
+    log(`biome index built: ${maps.length} maps`); console.table(t);
+    ui.notifications?.info(`Cavril: biome index built — ${maps.length} maps. Encounters now pull from the curated per-biome pools.`);
+    return index;
+  }
+  function biomeIndexStatus() {
+    const rows = biomeIndexRows();
+    if (!rows) return { built: false, hint: "run CavrilEncounterStage.buildBiomeIndex()" };
+    const t = {}; for (const m of rows) { if (m.exclude) continue; (t[m.biome] ??= { generic: 0, specific: 0 })[m.generic ? "generic" : "specific"]++; }
+    return { built: true, count: rows.length, byBiome: t };
+  }
+  // Show the per-biome pools (stored+overrides if built, else a live classification).
   async function previewBiomePools() {
-    const cat = await getCatalog();
-    const maps = cat.items.filter(it => it.dataKey === "maps" && it.genre === "fantasy");
+    let rows = biomeIndexRows();
+    if (!rows) { const cat = await getCatalog(); rows = cat.items.filter(it => it.dataKey === "maps" && it.genre === "fantasy").map(classifyMap); }
     const pools = {};
-    for (const it of maps) {
-      const tags = (naturalBase(it)?.tags || []).map(t => String(t).toLowerCase());
-      const terrain = tags.filter(t => WILDERNESS_TAGS.has(t) || t === "natural").length;
-      const struct = tags.filter(t => STRUCTURE_TAGS.has(t)).length;
-      const generic = terrain > 0 && terrain >= struct;
-      (pools[biomeOf(tags)] ??= { generic: [], specific: [] })[generic ? "generic" : "specific"].push(it.name);
-    }
+    for (const m of rows) { if (m.exclude) continue; (pools[m.biome] ??= { generic: [], specific: [] })[m.generic ? "generic" : "specific"].push(m.name); }
     const table = {}; for (const [b, p] of Object.entries(pools)) table[b] = { generic: p.generic.length, specific: p.specific.length };
-    console.table(table); console.log("[EncounterStage] biome pools (generic map names):", pools);
-    ui.notifications?.info("Cavril: biome pool preview in console (F12) — generic vs specific counts per biome.");
+    console.table(table); console.log("[EncounterStage] biome pools:", pools);
+    ui.notifications?.info("Cavril: biome pool preview in console (F12).");
     return pools;
   }
 
@@ -1267,6 +1302,9 @@
     reg("esActivateScene",    { name: "  · Switch to staged scene", hint: "Activate the new battlemap (vs. just creating it in the sidebar).", scope: "world", config: true, type: Boolean, default: true });
     reg("esHideGrid",         { name: "  · Hide grid on staged maps", hint: "Hide Foundry's grid overlay on imported battlemaps (CZEPEKU art already has its own grid). Tokens still snap.", scope: "world", config: true, type: Boolean, default: true });
     reg("esAutoEnter",        { name: "  · Enter scene automatically", hint: "OFF (recommended): stage the encounter in the background and show an 'Enter encounter' button so you move there when ready. ON: jump to the battlemap immediately.", scope: "world", config: true, type: Boolean, default: false });
+    reg("esUseBiomeIndex",    { name: "  · Use curated biome map pools", hint: "When a biome index has been built (run CavrilEncounterStage.buildBiomeIndex() once after connecting CZEPEKU), pull combat maps from the curated per-biome generic pools. Falls back to live scoring if none is built.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esBiomeIndex",       { scope: "world", config: false, type: Object, default: {} });   // the built per-biome classification {builtAt,count,maps:[{id,name,biome,generic,natVar}]}
+    reg("esBiomeOverrides",   { scope: "world", config: false, type: Object, default: {} });   // GM review-panel overrides {id→{biome?,generic?,exclude?}}
   }
   function syncCfg() {
     try {
@@ -1289,6 +1327,7 @@
       CFG.activateScene      = game.settings.get(MOD, "esActivateScene");
       CFG.hideGrid           = game.settings.get(MOD, "esHideGrid");
       CFG.autoEnter          = game.settings.get(MOD, "esAutoEnter");
+      CFG.useBiomeIndex      = game.settings.get(MOD, "esUseBiomeIndex");
     } catch (e) { warn("syncCfg failed (using defaults)", e); }
   }
 
@@ -1298,7 +1337,7 @@
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
-    getCatalog, pickMap, scenePayload, importableFor, previewBiomePools,
+    getCatalog, pickMap, scenePayload, importableFor, previewBiomePools, buildBiomeIndex, biomeIndexStatus,
     // Preview the top matches for a biome without creating anything.
     async preview(biome = "temperate", { type = "combat", when = "day", weather = null, n = 8 } = {}) {
       const cat = await getCatalog();
