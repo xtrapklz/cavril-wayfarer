@@ -191,6 +191,10 @@
 .cwf-lit { color: var(--cwf-easy); }
 .cwf-site { margin-top: 2px; }
 .cwf-site-btn { width: 100%; background: color-mix(in srgb, var(--cwf-accent) 18%, var(--cwf-bg2)); border-color: var(--cwf-accent); }
+/* Persistent "Start random encounter" test button — coral, to read as a combat action. */
+.cwf-encounter { width: 100%; margin-top: 8px; background: color-mix(in srgb, var(--cwf-hard) 16%, var(--cwf-bg2)); border-color: color-mix(in srgb, var(--cwf-hard) 55%, var(--cwf-line)); }
+.cwf-encounter:hover:not(:disabled) { background: color-mix(in srgb, var(--cwf-hard) 30%, var(--cwf-bg2)); border-color: var(--cwf-hard); }
+.cwf-encounter i { color: var(--cwf-hard); }
 .cwf-readonly { text-align: center; color: var(--cwf-muted); font-size: 10px; font-style: italic; margin-top: 2px; }
 
 /* chat cards (DDB Roll Cards style) */

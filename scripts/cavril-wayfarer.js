@@ -1931,6 +1931,7 @@ const Augur = (() => {
 const BiomeBadge = (() => {
     let el = null;
     let lastHTML = "";
+    let _hudSig = null;   // last classified hex signature — drives HUD re-sync on hex change
 
     function ensure() {
         if (el && document.body.contains(el)) return el;
@@ -1995,6 +1996,12 @@ const BiomeBadge = (() => {
         // Ambience + calendar climate follow the biome REGARDLESS of whether the visual
         // badge is shown (music shouldn't depend on the badge setting).
         if (cls) { Music.update(cls); MiniCal.syncBiome(cls); }
+        // Keep the HUD's "Current Hex" in lockstep with the badge: whenever the followed
+        // token re-classifies into a DIFFERENT hex (drag, animated travel, lock-revert —
+        // signals that update the badge but not the panel), re-render the panel too.
+        // Deduped by signature so token-animation churn doesn't spam renders.
+        const sig = cls?.signature ?? null;
+        if (sig !== _hudSig) { _hudSig = sig; try { WayfarerPanel.renderExternal(); } catch { /* panel may be closed */ } }
         if (!Store.badgeEnabled() || !cls) { hide(); return; }   // badge off, or off the hexmap
         const node = ensure();
         // Position: centred just above the token (CSS translateX -50%).
@@ -3063,6 +3070,7 @@ const WayfarerPanel = (() => {
             if (!isGM) return; // remaining actions mutate world/scene state
             switch (action) {
                 case "set-party": await Canvasry.setPartyToken(); break;
+                case "encounter-test": await globalThis.CavrilEncounterStage?.stageEncounter?.({ token: Canvasry.activeToken() }); break;
                 case "toggle-music": await toggleMusic(); break;
                 case "reset-journey": case "end-journey": await endJourney(); break;
                 case "haul": await foragerHaul(); break;
@@ -3392,6 +3400,7 @@ const WayfarerPanel = (() => {
                     <div class="cwf-label">${isGM ? `<button class="cwf-tiny" data-action="set-party" title="Set the selected token as the party marker" style="margin-right:5px"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}Current hex</div>
                     <div class="cwf-here">${here}</div>
                     ${isGM ? `<div class="cwf-danger-row"><span class="cwf-danger-l" title="Region danger — drives day & night encounters"><i class="fa-solid fa-skull"></i> Danger</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${dangerNow === n ? "on" : ""}" data-action="camp-danger" data-n="${n}" title="Set region danger ${n}">${n}</button>`).join("")}</div></div>` : ""}
+                    ${isGM && cls && globalThis.CavrilEncounterStage ? `<button class="cwf-btn cwf-encounter" data-action="encounter-test" title="Test the encounter generator — roll a CR-scaled SRD encounter for the SELECTED token's hex (on a matched CZEPEKU battlemap if connected)"><i class="fa-solid fa-dice-d20"></i> Start random encounter</button>` : ""}
                 </div>
 
                 ${Camp.active ? campCard(dis, cls) : Turn.active ? turnCard(dis) : travelSection}
