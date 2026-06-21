@@ -1232,6 +1232,7 @@ async function cwfTrekRefresh() {
 async function cwfStartTravel(tok, route, { pace = "normal", boat = false, scoutGood = false, lostHours = 0, header = "", title = "Travel", icon = "fa-person-walking-arrow-right", sub = "" } = {}) {
     if (!game.user.isGM || !tok) return;
     try { CourseOverlay.stop(); } catch { /* noop */ }
+    Music.combat(false);   // clear any lingering encounter tension as a fresh trek starts
     cwfTrek = { tokId: tok.id, route: (route || []).slice(), idx: 0, pace, boat, scoutGood, acc: 0, prev: Hex.offsetOf(tok.center), lines: [], header, title, icon, sub, halted: false, done: false, lostHours, marchHTML: "", marchSub: "", tod: cwfTimeOfDay().key, lastBiome: (Hex.classifyAt(Hex.offsetOf(tok.center))?.label || null), leg: null, running: false };
     const msg = await ChatMessage.create({ content: cwfTrekCardHTML(), whisper: cwfGmIds() }).catch(() => null);
     cwfTrek.msgId = msg?.id;
@@ -1300,6 +1301,7 @@ async function cwfAdvanceHex(auto) {
         if (ev.hours) await Store.advanceWorldTime(ev.hours);
         t.lines.push(cwfHexLineHTML(off, t.idx, biome, weatherLabel, `<i class="fa-solid ${ev.icon}"></i> <b>${ev.label}</b>${ev.tag || ""} · +${ev.hours}h<br>${ev.line}`, true));
         t.halted = true;
+        Music.combat(true);   // hostile beat → tension music (where the encounter generator will hook in)
         if (ev.cinematic) Cinematic.broadcast(ev.cinematic);
     } else {
         t.lines.push(cwfHexLineHTML(off, t.idx, biome, weatherLabel, `— ${ev?.line || "the way is clear."}`, false));
@@ -1706,7 +1708,13 @@ const Music = (() => {
             else if (globalThis.Maestro.playOneShot) await globalThis.Maestro.playOneShot(path, {});
         } catch (e) { warn("travel sfx failed", e); }
     }
-    return { active, update, camp, syncWeather, travelSfx, arrangementFor, reset: () => { _last = null; }, DEFAULTS };
+    // Shift the music mood for a hostile encounter (tension) and back (calm) when it's
+    // resolved. Maestro raises/lowers intensity on the music channel.
+    async function combat(on) {
+        if (!game.user.isGM || !game.settings.get(MOD, "musicEnabled") || !active()) return;
+        try { on ? await globalThis.Maestro.tension?.() : await globalThis.Maestro.calm?.(); } catch (e) { warn("maestro combat mood failed", e); }
+    }
+    return { active, update, camp, syncWeather, travelSfx, combat, arrangementFor, reset: () => { _last = null; }, DEFAULTS };
 })();
 
 /* =========================================================================
@@ -2688,6 +2696,7 @@ const Turn = (() => {
 const Camp = (() => {
     let active = false, supplyNote = "", watchers = [];   // watchers = ordered actorIds
     let mealResult = null, mealForaged = false;           // carried from Make Camp → resolved at dawn
+    let nightDawnPending = null;                           // {nextDay,msgId} while a night encounter halts the flow before dawn
 
     const nightHours = () => Math.max(1, Number(game.settings.get(MOD, "nightHours")) || 8);
     const dangerScore = () => Store.sceneState().danger ?? (Number(game.settings.get(MOD, "dangerDefault")) || 0);
@@ -2695,11 +2704,13 @@ const Camp = (() => {
     function begin(note = "", consumeResult = null, foraged = false) {
         if (!game.user.isGM) return;
         active = true; supplyNote = note; mealResult = consumeResult; mealForaged = !!foraged;
+        nightDawnPending = null;
         const members = new Set(Party.members().map(a => a.id));
         watchers = (game.settings.get(MOD, "lastWatch") || []).filter(id => members.has(id));
         advanceToNight();
         const tok = Canvasry.activeToken();
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
+        Music.combat(false);   // a day-halting encounter may have left tension up — camp is calm
         Music.camp(cls);
         Cinematic.broadcast({ icon: "fa-campground", title: "Make Camp", subtitle: `${cls?.label || "Wilderness"} · dusk`, tone: "dusk" });
         WayfarerPanel.render();
@@ -2736,7 +2747,7 @@ const Camp = (() => {
     const shiftHours = () => watchers.length ? Math.round(nightHours() / watchers.length) : 0;
 
     async function resolveNight() {
-        if (!game.user.isGM) return;
+        if (!game.user.isGM || nightDawnPending) return;   // already halted on a night encounter — wait for "wake at dawn"
         const tok = Canvasry.activeToken();
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
         Cinematic.broadcast({ icon: "fa-moon", title: "The Night Watch", subtitle: cls?.label || "", tone: "night" });
@@ -2771,28 +2782,51 @@ const Camp = (() => {
         const survival = await cwfCampSurvival(mealResult, { foraged: mealForaged, watchers });
         mealResult = null;
         if (survival?.html) body += `<div class="cwf-night-sec">Rest &amp; provisions${survival.label ? ` · ${survival.label}` : ""}</div>${survival.html}`;
-        ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "" }) });
-
         const prev = Store.sceneState().day || 1, nextDay = prev + 1;
         await Store.setSceneState({ day: nextDay, foraged: false, shortRest: false });
-        await new Promise(r => setTimeout(r, cwfDelayMs()));   // sit in the night beat before dawn breaks
-        Cinematic.broadcast({ icon: "fa-sun", title: "Dawn", subtitle: `Day ${nextDay}${encounters ? " · a restless night" : " · all is quiet"}`, tone: "dawn" });
-        try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(1, Number(game.settings.get(MOD, "wakeHour")) || 6); else await Store.advanceWorldTime(N); }
+
+        if (encounters > 0) {
+            // HOSTILE NIGHT ENCOUNTER → INTERCEPT: do not roll on to dawn. Raise combat
+            // music, fire the encounter beat (the cavril-wayfarer.encounter hook already
+            // fired — this is where the auto-encounter generator will build it), and wait
+            // for the GM to run it. A button wakes the party to dawn afterwards.
+            Music.combat(true);
+            Cinematic.broadcast({ icon: "fa-dragon", title: "Ambushed!", subtitle: `${cls?.label || "the wild"} · hour ${firstHour}`, tone: "encounter" });
+            const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span><button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn"><i class="fa-solid fa-sun"></i> Resolved → wake at dawn</button></div>`;
+            const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "", footerHTML: foot }) }).catch(() => null);
+            nightDawnPending = { nextDay, msgId: msg?.id };
+            cwfCampFinalize("Night watch — resolve the encounter, then wake at dawn.");   // collapse the camp card so its Resolve can't re-fire
+            WayfarerPanel.render();
+            return;   // dawn waits for the button (and, later, the encounter resolution)
+        }
+        ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "" }) });
+        await wakeAtDawn(nextDay);
+    }
+    // Advance to the following dawn — automatically on a quiet night, or from the
+    // "wake at dawn" button once a night encounter has been run.
+    async function wakeAtDawn(nextDay) {
+        if (!game.user.isGM) return;
+        if (nextDay == null) nextDay = nightDawnPending?.nextDay ?? (Store.sceneState().day || 1);
+        const pendingMsg = nightDawnPending?.msgId; nightDawnPending = null;
+        Music.combat(false);   // back to calm now the fight's over
+        await new Promise(r => setTimeout(r, cwfDelayMs()));   // sit in the beat before dawn breaks
+        Cinematic.broadcast({ icon: "fa-sun", title: "Dawn", subtitle: `Day ${nextDay}`, tone: "dawn" });
+        try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(1, Number(game.settings.get(MOD, "wakeHour")) || 6); else await Store.advanceWorldTime(nightHours()); }
         catch (e) { warn("advance to dawn failed", e); }
-        // Dawn = a long rest: restore HP / spell slots / hit dice (exhaustion already
-        // resolved above by the watch rules). Silent — the Dawn cinematic just played.
         if (game.settings.get(MOD, "longRestAtDawn")) await cwfPartyRest("long", { newDay: true, silent: true });
         active = false;
+        if (pendingMsg) { const m = game.messages.get(pendingMsg); if (m) { try { await m.update({ content: cwfCardShell("fa-moon", "Night Watch", `<div class="cwf-muted2">Resolved — dawn breaks on Day ${nextDay}.</div>`) }); } catch { /* noop */ } } }
         await cwfCampFinalize(`Resolved — dawn breaks on Day ${nextDay}.`);
         WayfarerPanel.render(); BiomeBadge.update();
         if (game.settings.get(MOD, "resyncAtDawn")) cwfResyncSheets();   // prompted; players' DDB edits → Foundry
     }
-    function cancel() { active = false; cwfCampFinalize("Camp struck — back on the road."); WayfarerPanel.render(); }
+    function cancel() { active = false; nightDawnPending = null; Music.combat(false); cwfCampFinalize("Camp struck — back on the road."); WayfarerPanel.render(); }
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
 
     return {
-        begin, setDanger, toggleWatcher, resolveNight, cancel, watcherForHour, shiftHours, dangerScore, nightHours,
-        get active() { return active; }, get watchers() { return watchers; }, get supplyNote() { return supplyNote; }
+        begin, setDanger, toggleWatcher, resolveNight, wakeAtDawn, cancel, watcherForHour, shiftHours, dangerScore, nightHours,
+        get active() { return active; }, get watchers() { return watchers; }, get supplyNote() { return supplyNote; },
+        get nightEncounterPending() { return !!nightDawnPending; }
     };
 })();
 
@@ -2894,6 +2928,7 @@ const WayfarerPanel = (() => {
                 case "camp-danger": Camp.setDanger(Number(btn.dataset.n)); break;
                 case "camp-watch": Camp.toggleWatcher(btn.dataset.id); break;
                 case "camp-resolve": await Camp.resolveNight(); break;
+                case "camp-dawn": await Camp.wakeAtDawn(); break;
                 case "camp-cancel": Camp.cancel(); break;
             }
         } catch (e) { warn("panel action failed", action, e); }
@@ -3061,6 +3096,15 @@ const WayfarerPanel = (() => {
         const watchNote = watch.length
             ? `${watch.length} on watch · ~${Camp.shiftHours()}h each${rl ? ` · ${rl}` : ""}`
             : (rl || "no watch — unguarded");
+        // A night encounter has halted the flow before dawn — run it, then wake.
+        if (Camp.nightEncounterPending) return `
+            <div class="cwf-section cwf-turn">
+                <div class="cwf-label">Camp · Night <span class="cwf-muted2">${esc(cls?.label || "")}</span></div>
+                <div class="cwf-card-row"><span class="cwf-card-l"><i class="fa-solid fa-dragon" style="color:#e0554d"></i> Encounter</span><span class="cwf-card-v">underway — resolve it, then wake the party</span></div>
+                <div class="cwf-actions">
+                    <button class="cwf-btn cwf-primary" data-action="camp-dawn" ${dis}><i class="fa-solid fa-sun"></i> Resolved → wake at dawn</button>
+                </div>
+            </div>`;
         return `
             <div class="cwf-section cwf-turn">
                 <div class="cwf-label">Camp · Night <span class="cwf-muted2">${esc(cls?.label || "")} · base <b>${base}</b>/${Danger.scale()} per hr</span></div>
@@ -3343,6 +3387,7 @@ function wireCardButtons(root) {
                 else if (act === "cdanger") { Camp.setDanger(Number(el.dataset.n)); }   // setDanger refreshes the card
                 else if (act === "cwatch") { Camp.toggleWatcher(el.dataset.id); }
                 else if (act === "cresolve") { await Camp.resolveNight(); }
+                else if (act === "nightdawn") { await Camp.wakeAtDawn(); }   // after the night encounter is run
                 else if (act === "ccancel") { Camp.cancel(); }
             } catch (e) { warn("card button failed", e); }
         });
