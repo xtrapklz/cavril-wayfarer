@@ -854,15 +854,28 @@
     return pts;
   }
   // Create tokens for actors at the given {x,y} points.
+  // Build token data straight from each actor's PROTOTYPE token (robust across V14 — getTokenDocument
+  // had quirks that were silently dropping the party). Strip the id, set position + actorId.
   async function placeTokens(scene, actors, points) {
     const data = [];
     for (let i = 0; i < actors.length; i++) {
+      const a = actors[i]; if (!a?.id) continue;
       const x = Math.round(points[i].x), y = Math.round(points[i].y);
-      try { const td = await actors[i].getTokenDocument({ x, y, hidden: false }); const obj = td.toObject(); obj.x = x; obj.y = y; data.push(obj); }
-      catch (e) { warn(`token for ${actors[i].name} failed`, e); }
+      try {
+        const proto = (a.prototypeToken?.toObject?.() ?? foundry.utils.deepClone(a.prototypeToken ?? {})) || {};
+        delete proto._id;
+        proto.x = x; proto.y = y; proto.actorId = a.id; proto.hidden = false;
+        if (!proto.name) proto.name = a.name;
+        data.push(proto);
+      } catch (e) { warn(`token data for ${a?.name} failed`, e); }
     }
-    try { return await scene.createEmbeddedDocuments("Token", data); }
-    catch (e) { warn("token create failed", e); return []; }
+    if (!data.length) { warn("placeTokens: no token data built"); return []; }
+    try {
+      const created = await scene.createEmbeddedDocuments("Token", data);
+      log(`created ${created.length}/${data.length} tokens on "${scene.name}".`);
+      if (created.length < data.length) warn(`only ${created.length}/${data.length} tokens created on "${scene.name}".`);
+      return created;
+    } catch (e) { warn("token create failed", e); ui.notifications?.warn(`Encounter Stage: couldn't place tokens — ${e.message}`); return []; }
   }
 
   // Party PCs (from Wayfarer's group), scattered in the centre. Cluster scales with party size
@@ -930,7 +943,7 @@
       if (add.length) await combat.createEmbeddedDocuments("Combatant", add);
       try { await combat.activate?.(); } catch { /* noop */ }
       try { await combat.rollNPC?.(); } catch (e) { warn("rollNPC failed", e); }   // foe initiative; PCs roll their own
-      ChatMessage.create({ content: `<div style="text-align:center;padding:.4em;font-family:'Modesto Condensed','Signika',serif;font-size:1.35em;font-weight:700;letter-spacing:.05em;color:#e0824d;text-shadow:0 0 12px rgba(224,130,77,.4)"><i class="fa-solid fa-dice-d20"></i> Roll for initiative!</div>` });
+      // The "Roll for initiative!" call is fired as a CINEMATIC on entry (revealEncounter), not a chat line.
       return combat;
     } catch (e) { warn("build combat failed", e); ui.notifications?.warn("Encounter Stage: couldn't set up the combat tracker."); return null; }
   }
@@ -1106,13 +1119,16 @@
     return { scene, actors, foeTokens, partyTokens, combat, journal, pick, cls, when, season, weather, fallback: onFallback };
   }
 
-  // Tension + alert SFX + the Ambush cinematic — the dramatic reveal as you move into the fight.
+  // The dramatic reveal as you move into the fight: tension music + alert SFX + the Ambush
+  // cinematic, then a beat later the "Roll for Initiative!" cinematic (its own tone/SFX).
   function revealEncounter(biomeLabel) {
     if (!(CFG.tensionOnStage ?? true)) return;
+    const Cine = globalThis.CavrilWayfarer?.Cinematic;
     try { globalThis.Maestro?.tension?.(); } catch (e) { warn("tension shift failed", e); }
     const sfx = cwfRef(game.settings.get(MOD, "esEncounterSfx"));
     if (sfx) { try { globalThis.Maestro?.triggerRef?.(sfx); } catch (e) { warn("encounter sfx failed", e); } }
-    try { globalThis.CavrilWayfarer?.Cinematic?.broadcast?.({ icon: "fa-dragon", title: "Ambush!", subtitle: biomeLabel || "", tone: "encounter" }); } catch (e) { warn("encounter cinematic failed", e); }
+    try { Cine?.broadcast?.({ icon: "fa-dragon", title: "Ambush!", subtitle: biomeLabel || "", tone: "encounter" }); } catch (e) { warn("encounter cinematic failed", e); }
+    try { setTimeout(() => { try { Cine?.broadcast?.({ icon: "fa-dice-d20", title: "Roll for Initiative!", subtitle: "", tone: "initiative" }); } catch { /* noop */ } }, 2600); } catch { /* noop */ }
   }
   const cwfEnterCard = (sceneId, mapName, ready, foes) => `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-dragon"></i> <span>Encounter staged</span></div>
     <div class="cwf-card-bd"><div class="cwf-card-row"><span class="cwf-card-l">Map</span><span class="cwf-card-v">${esc(mapName)}</span></div>

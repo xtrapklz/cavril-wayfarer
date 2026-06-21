@@ -440,6 +440,7 @@ const Store = (() => {
         // (a random cue plays from it). Blank = silent. The GM triggers it; Maestro plays it to all.
         const cineSfxHint = "Maestro cue or a wildcard folder ending in / (random cue). Blank = silent.";
         g.register(MOD, "sfxCineEncounter", { name: "Cinematic sound — Encounter / Ambush", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxCineInitiative", { name: "Cinematic sound — Roll for Initiative", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "sfxCineDusk",      { name: "Cinematic sound — Make Camp (dusk)", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "sfxCineNight",     { name: "Cinematic sound — Night Watch", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "sfxCineDawn",      { name: "Cinematic sound — Dawn", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
@@ -1106,7 +1107,8 @@ const Cinematic = (() => {
         dusk:      { color: "#e0824d", glow: "rgba(224,130,77,.5)" },
         night:     { color: "#8e7bd0", glow: "rgba(142,123,208,.55)" },
         dawn:      { color: "#ffd34d", glow: "rgba(255,211,77,.5)" },
-        weather:   { color: "#7bdcff", glow: "rgba(123,220,255,.5)" }
+        weather:   { color: "#7bdcff", glow: "rgba(123,220,255,.5)" },
+        initiative:{ color: "#ffd34d", glow: "rgba(255,211,77,.6)" }
     };
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
     let el = null, timer = null;
@@ -1144,7 +1146,7 @@ const Cinematic = (() => {
     // Each cinematic BEAT (tone) → its own configurable sound, played GM-side via Maestro
     // (which broadcasts the audio to the table). A folder path ending in "/" plays a random
     // cue from that wildcard folder; otherwise it's a Maestro reference.
-    const CINE_SFX_KEY = { encounter: "sfxCineEncounter", dawn: "sfxCineDawn", dusk: "sfxCineDusk", night: "sfxCineNight", weather: "sfxCineWeather", travel: "sfxCineTravel" };
+    const CINE_SFX_KEY = { encounter: "sfxCineEncounter", initiative: "sfxCineInitiative", dawn: "sfxCineDawn", dusk: "sfxCineDusk", night: "sfxCineNight", weather: "sfxCineWeather", travel: "sfxCineTravel" };
     function cineSfx(tone) {
         if (!game.user.isGM) return;
         const ref = cwfMaestroRef(game.settings.get(MOD, CINE_SFX_KEY[tone] || CINE_SFX_KEY.travel) || "");
