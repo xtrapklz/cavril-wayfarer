@@ -1382,13 +1382,26 @@
     } catch (e) { warn("syncCfg failed (using defaults)", e); }
   }
 
+  // Stage ONE known CZEPEKU map by its variant key (e.g. a building interior Cavril: Cities pre-assigned).
+  // Authored scene only — the caller holds a specific key, not a catalog item, so there's no image-only
+  // fallback. Returns the created Scene (or null). `activate:"create"` stages it in the sidebar without viewing.
+  async function stageMapByKey(variantKey, { activate = CFG.activateScene, title = null } = {}) {
+    if (!variantKey) return null;
+    try {
+      const resp = await scenePayload(variantKey);
+      if (!resp?.sceneData) { warn(`stageMapByKey: no authored scene for ${variantKey}`); return null; }
+      if (title) resp.sceneData.name = title;
+      return await createAuthoredScene(resp, { activate });
+    } catch (e) { warn(`stageMapByKey failed for ${variantKey}`, e?.message || e); return null; }
+  }
+
   // ===== PUBLIC API ========================================================
   const buildApi = () => ({
     _installed: true,
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
-    getCatalog, pickMap, scenePayload, importableFor, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview,
+    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview,
     // Preview the top matches for a biome without creating anything.
     async preview(biome = "temperate", { type = "combat", when = "day", weather = null, n = 8 } = {}) {
       const cat = await getCatalog();
