@@ -513,17 +513,26 @@
     } catch (e) { warn("combat-start music failed", e); }
   }
 
-  // Dedup: a token ends up with 2+ combatants (our pre-added one + a player's manual / DDB
-  // initiative roll that made its own) → delete the OLDER copies, keep the just-created one
-  // (it carries the fresh roll). Scoped to our staged scenes so other combats are untouched.
-  async function onCombatantCreated(combatant) {
+  // Dedup by ACTOR (not just token). A player rolling initiative — via the tracker or DDB —
+  // can spawn a SECOND combatant for the same character on a DIFFERENT (or no) token than our
+  // pre-added one, so two instances with two initiative values appear. On the roll, we collapse
+  // them: keep the one with a real token on the map (the visible dropped token), move the fresh
+  // initiative onto it, delete the rest. Scoped to our staged scenes.
+  async function onCombatantRolled(combatant, change) {
     try {
-      if (!game.user.isGM || !combatant?.tokenId) return;
+      if (!game.user.isGM || !change || !("initiative" in change) || change.initiative == null) return;
       const combat = combatant.parent;
       if (!combat?.scene?.getFlag?.("cavril-wayfarer", "originScene")) return;
-      const dupes = (combat.combatants?.contents || combat.combatants || []).filter(c => c.id !== combatant.id && c.tokenId === combatant.tokenId);
-      if (dupes.length) await combat.deleteEmbeddedDocuments("Combatant", dupes.map(c => c.id));
-    } catch (e) { warn("combatant dedup failed", e); }
+      const actorId = combatant.actorId; if (!actorId) return;
+      const all = (combat.combatants?.contents || combat.combatants || []).filter(c => c.actorId === actorId);
+      if (all.length < 2) return;
+      const init = combatant.initiative;                  // the roll that just landed
+      const keep = all.find(c => c.token) || combatant;    // prefer the visible (real-token) combatant
+      const remove = all.filter(c => c.id !== keep.id).map(c => c.id);
+      if (remove.length) await combat.deleteEmbeddedDocuments("Combatant", remove);
+      if (keep.id !== combatant.id && keep.initiative !== init) { try { await keep.update({ initiative: init }); } catch { /* noop */ } }
+      log(`merged ${all.length} → 1 combatant for ${combatant.name || actorId} (init ${init}).`);
+    } catch (e) { warn("combatant dedup (roll) failed", e); }
   }
 
   // ===== INSTALL ===========================================================
@@ -765,6 +774,27 @@
     }
     log(`rolled ${actors.length} foes for ${ebiome}${compId ? ` [${compId}]` : ""} (CR ${crLo}–${crHi}, budget ${budget}): ${actors.map(a => `${a.name}(CR ${a.system?.details?.cr ?? "?"})`).join(", ")}`);
     return actors;
+  }
+
+  // Diagnostics: surface mismatches between the party-group members and the player-owned
+  // characters — the likely source of duplicate combatants (an encounter actor that isn't the
+  // same identity the sheet / DDB rolls initiative for). Run CavrilEncounterStage.diagnoseParty().
+  function diagnoseParty() {
+    let members = [];
+    try { members = globalThis.CavrilWayfarer?.Party?.members?.() || []; } catch { /* noop */ }
+    const pcs = (game.actors?.filter(a => a.type === "character" && a.hasPlayerOwner)) || [];
+    const row = (a, src) => ({ source: src, name: a.name, id: a.id, type: a.type, playerOwned: !!a.hasPlayerOwner, linked: a.prototypeToken?.actorLink !== false, activeTokens: a.getActiveTokens?.().length ?? 0 });
+    const memberIds = new Set(members.map(a => a.id));
+    const out = {
+      groupMembers: members.length, playerOwnedPCs: pcs.length,
+      pcsNotInPartyGroup: pcs.filter(a => !memberIds.has(a.id)).map(a => a.name),
+      unlinkedMembers: members.filter(a => a.prototypeToken?.actorLink === false).map(a => a.name),
+      gmOwnedMembers: members.filter(a => !a.hasPlayerOwner).map(a => a.name),
+    };
+    console.log(`%c[EncounterStage] party diagnostics`, CSS, out);
+    console.table([...members.map(a => row(a, "party-group")), ...pcs.map(a => row(a, "player-owned"))]);
+    ui.notifications?.info(`Party diagnostics in console (F12): ${members.length} group member(s), ${pcs.length} player-owned PC(s). Unlinked/mismatched members are the duplicate-combatant cause.`);
+    return out;
   }
 
   // Diagnostics: why aren't foes dropping? Logs pack/index/type/CR/party state.
@@ -1198,7 +1228,7 @@
     stageEncounter,
     enterEncounter,
     encounterHere: (opts) => stageEncounter(opts),
-    rollMonsters, dropTokens, playCombatMusic, currentSeason, timeOfDay, partyContext, diagnoseMonsters,
+    rollMonsters, dropTokens, playCombatMusic, currentSeason, timeOfDay, partyContext, diagnoseMonsters, diagnoseParty,
     BIOME_CREATURES, TYPE_MUSIC,
     // Per-biome diagnostics: which mapped tags actually exist + how many maps carry them.
     async audit() {
@@ -1216,7 +1246,7 @@
       log(`catalog has ${cat.allTags.size} tags. Missing tags above are candidates to remap.`);
       return rows;
     },
-    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("createCombatant", hookIds.combatant); _returnBtn?.remove(); _returnBtn = null; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
+    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("updateCombatant", hookIds.combatant); _returnBtn?.remove(); _returnBtn = null; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
   });
 
   // ===== INSTALL ===========================================================
@@ -1228,7 +1258,7 @@
     hookIds.combat    = Hooks.on("createCombat", onCreateCombat);
     hookIds.canvas    = Hooks.on("canvasReady", refreshReturnControl);   // show/hide the Return-to-overworld button
     hookIds.cStart    = Hooks.on("combatStart", onCombatStart);          // combat music starts when COMBAT begins
-    hookIds.combatant = Hooks.on("createCombatant", onCombatantCreated); // dedup duplicate PC combatants
+    hookIds.combatant = Hooks.on("updateCombatant", onCombatantRolled); // dedup duplicate PC combatants on the roll
     globalThis.CavrilEncounterStage = buildApi();
     refreshReturnControl();   // in case we boot directly onto a staged battlemap
     log("installed. Hooks: cavril-wayfarer.encounter → pick, createCombat → stage.");
