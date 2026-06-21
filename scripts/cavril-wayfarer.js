@@ -1140,8 +1140,8 @@ const Cinematic = (() => {
         initiative:{ color: "#ffd34d", glow: "rgba(255,211,77,.6)" }
     };
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
-    let el = null, timer = null;
-    function clear() { if (timer) { clearTimeout(timer); timer = null; } if (el) { el.remove(); el = null; } }
+    let el = null, timer = null, _q = [], _active = false;
+    function clear() { _q.length = 0; _active = false; if (timer) { clearTimeout(timer); timer = null; } if (el) { el.remove(); el = null; } }
     function fadeOut() {
         if (!el) return;
         const node = el; el = null;
@@ -1149,27 +1149,45 @@ const Cinematic = (() => {
         node.classList.add("cwf-cine-out");
         setTimeout(() => node.remove(), 650);
     }
-    function play({ icon = "fa-mountain-sun", title = "", subtitle = "", tone = "travel", hold = null } = {}) {
-        try {
-            clear();
-            const ms = hold ?? cwfDelayMs();   // universal delay drives the hold
-            const t = TONE[tone] || TONE.travel;
-            el = document.createElement("div");
-            el.className = "cwf-cine";
-            el.style.setProperty("--cwf-cine-accent", t.color);
-            el.style.setProperty("--cwf-cine-glow", t.glow);
-            el.innerHTML = `
-                <div class="cwf-cine-blur"></div>
-                <div class="cwf-cine-bar cwf-cine-top"></div>
-                <div class="cwf-cine-bar cwf-cine-bot"></div>
-                <div class="cwf-cine-mid">
-                    <i class="fa-solid ${icon} cwf-cine-icon"></i>
-                    <div class="cwf-cine-title">${esc(title)}</div>
-                    ${subtitle ? `<div class="cwf-cine-sub">${esc(subtitle)}</div>` : ""}
-                </div>`;
-            document.body.appendChild(el);
-            timer = setTimeout(fadeOut, 700 + Math.max(400, ms));
-        } catch (e) { warn("cinematic failed", e); }
+    // ── Conductor ──────────────────────────────────────────────────────────────────────────────────
+    // Every cinematic beat passes through a serial QUEUE. Beats that fire close together (an encounter
+    // the same tick as dusk, a danger spike mid-arrival) no longer cut each other off: each gets its full
+    // readable hold, then fades to the next at a natural pace. The per-beat sound fires when the beat
+    // actually appears (not when it was enqueued), so audio stays married to what's on screen.
+    function _render({ icon = "fa-mountain-sun", title = "", subtitle = "", tone = "travel", hold = null } = {}) {
+        if (el) { el.remove(); el = null; }
+        const ms = hold ?? cwfDelayMs();   // universal delay = the minimum readable hold
+        const t = TONE[tone] || TONE.travel;
+        el = document.createElement("div");
+        el.className = "cwf-cine";
+        el.style.setProperty("--cwf-cine-accent", t.color);
+        el.style.setProperty("--cwf-cine-glow", t.glow);
+        el.innerHTML = `
+            <div class="cwf-cine-blur"></div>
+            <div class="cwf-cine-bar cwf-cine-top"></div>
+            <div class="cwf-cine-bar cwf-cine-bot"></div>
+            <div class="cwf-cine-mid">
+                <i class="fa-solid ${icon} cwf-cine-icon"></i>
+                <div class="cwf-cine-title">${esc(title)}</div>
+                ${subtitle ? `<div class="cwf-cine-sub">${esc(subtitle)}</div>` : ""}
+            </div>`;
+        document.body.appendChild(el);
+        return ms;
+    }
+    function _pump() {
+        if (_active || !_q.length) return;
+        _active = true;
+        const spec = _q.shift();
+        let ms = 0;
+        try { ms = _render(spec); cineSfx(spec?.tone); } catch (e) { warn("cinematic failed", e); }
+        // hold on screen, fade, then (once the 650ms fade clears) advance to the next queued beat
+        timer = setTimeout(() => { fadeOut(); setTimeout(() => { _active = false; _pump(); }, 680); }, 700 + Math.max(400, ms));
+    }
+    // Enqueue a beat. The conductor shows it once the current one has had its hold and faded. `hold`
+    // overrides the per-beat time; a flood guard keeps only the most recent few so a burst can't back up.
+    function play(spec = {}) {
+        try { _q.push(spec); if (_q.length > 8) _q.splice(0, _q.length - 8); _pump(); }
+        catch (e) { warn("cinematic enqueue failed", e); }
     }
     // GM fires these; mirror to every client so the table sees the same beat.
     // Each cinematic BEAT (tone) → its own configurable sound, played GM-side via Maestro
@@ -1185,8 +1203,7 @@ const Cinematic = (() => {
     }
     function broadcast(spec) {
         try { game.socket?.emit(`module.${MOD}`, { type: "cinematic", spec }); } catch (e) { warn("cinematic broadcast failed", e); }
-        cineSfx(spec?.tone);
-        play(spec);
+        play(spec);   // cineSfx now fires inside the conductor when the beat actually appears, so it stays in sync
     }
     // Match Cavril: Maestro's "Sound Effects" volume slider so this module's own synthesised cues sit at the SAME
     // level as the rest of the table's SFX. Maestro plays our FILE cues at this level already (playOneShot/triggerRef
