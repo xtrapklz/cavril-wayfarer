@@ -3741,15 +3741,18 @@ function returnTool() {
 // Always put Wayfarer (and, on a staged scene, the Return tool) in the main Token Controls
 // group — in ADDITION to the Augur Tools group. Handles the V12 array + V13/V14 record shapes.
 Hooks.on("getSceneControlButtons", (controls) => {
-    const tools = [(() => { const { isVisible, ...t } = wayfarerTool(); return t; })()];
-    if (canvas?.scene?.getFlag?.(MOD, "originScene")) { const { isVisible, ...rt } = returnTool(); tools.push(rt); }
+    const addTool = (grp, t) => { if (!grp) return; grp.tools ??= (Array.isArray(grp.tools) ? grp.tools : {}); if (Array.isArray(grp.tools)) { if (!grp.tools.some(x => x?.name === t.name)) grp.tools.push(t); } else grp.tools[t.name] = t; };
+    const groupList = Array.isArray(controls) ? controls : (controls && typeof controls === "object" ? Object.values(controls) : []);
     try {
-        let grp = null;
-        if (Array.isArray(controls)) grp = controls.find(c => c.name === "token" || c.name === "tokens");
-        else if (controls && typeof controls === "object") grp = controls.tokens || controls.token || Object.values(controls).find(c => c?.name === "tokens" || c?.name === "token");
-        if (!grp) return;
-        grp.tools ??= (Array.isArray(grp.tools) ? grp.tools : {});
-        for (const t of tools) { if (Array.isArray(grp.tools)) grp.tools.push(t); else grp.tools[t.name] = t; }
+        // Wayfarer HUD toggle lives in the Token Controls group.
+        const tokenGrp = groupList.find(c => c?.name === "token" || c?.name === "tokens");
+        const { isVisible, ...wt } = wayfarerTool(); addTool(tokenGrp, wt);
+        // Return-to-overworld: on a staged scene, put it in EVERY tool group so it never
+        // vanishes when you switch to walls / lighting / drawings / the Augur set, etc.
+        if (canvas?.scene?.getFlag?.(MOD, "originScene")) {
+            const { isVisible: _v, ...rt } = returnTool();
+            for (const grp of groupList) addTool(grp, { ...rt });
+        }
     } catch (e) { warn("could not add toolbar button", e); }
 });
 // Refresh the controls when the scene changes so the Return tool appears/disappears.

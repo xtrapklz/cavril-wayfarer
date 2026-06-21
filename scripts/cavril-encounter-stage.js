@@ -1098,6 +1098,11 @@
 
     // 5) Document it (journal pin on the overworld hex + originScene flag for the Return tool),
     //    and remember the biome for the reveal cinematic on entry.
+    // ALWAYS stamp the origin so the Return-to-overworld tool works even when documenting is off
+    // (this used to live inside documentEncounter, so disabling docs silently killed the return button).
+    if (originScene && scene && scene.id !== originScene.id) {
+      try { await scene.setFlag("cavril-wayfarer", "originScene", originScene.id); } catch (e) { warn("origin flag failed", e); }
+    }
     let journal = null;
     if ((opts.document ?? CFG.documentEncounters) && originScene && scene && scene.id !== originScene.id) {
       const label = [when, season, weather].filter(Boolean).join(" · ");
