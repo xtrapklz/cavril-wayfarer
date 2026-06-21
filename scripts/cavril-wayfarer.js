@@ -1268,7 +1268,7 @@ function cwfTrekCardHTML() {
     const march = t.marchHTML ? `<div class="cwf-night-sec">Forced march${t.marchSub ? ` · ${cwfEsc(t.marchSub)}` : ""}</div>${t.marchHTML}` : "";
     const clock = `<span class="cwf-card-clock">Hex ${t.idx}/${t.route.length} · ${cwfClockLabel()}</span>`;
     let foot;
-    if (t.done) foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-flag-checkered"></i> ${t.halted ? "Halted" : "Arrived"} · ${cwfClockLabel()}</span><button class="cwf-cardbtn cwf-primary" data-cwf="camp"><i class="fa-solid fa-campground"></i> Make camp</button></div>`;
+    if (t.done) foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-flag-checkered"></i> ${t.halted ? "Halted" : "Arrived"} · ${cwfClockLabel()}</span>${t.halted ? cwfStageBtn() : ""}<button class="cwf-cardbtn cwf-primary" data-cwf="camp"><i class="fa-solid fa-campground"></i> Make camp</button></div>`;
     else if (t.running) foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-person-walking-arrow-right"></i> Travelling… · ${cwfClockLabel()}</span><button class="cwf-cardbtn cwf-primary" data-cwf="pause"><i class="fa-solid fa-pause"></i> Pause</button></div>`;
     else foot = `<div class="cwf-cardbtns">${clock}<button class="cwf-cardbtn cwf-primary" data-cwf="auto" title="Travel until something happens (biome / weather / time change or an encounter)"><i class="fa-solid fa-play"></i> Travel</button><button class="cwf-cardbtn" data-cwf="step" title="Advance one hex"><i class="fa-solid fa-shoe-prints"></i> Step</button><button class="cwf-cardbtn" data-cwf="stop" title="Stop here for the day"><i class="fa-solid fa-flag-checkered"></i> Stop</button></div>`;
     return cwfCardShell(t.icon, t.title, (t.header || "") + log + march, { sub: t.sub, footerHTML: foot });
@@ -2621,6 +2621,9 @@ function cwfCardShell(icon, title, bodyHTML, { sub = "", footerHTML = "" } = {})
     </div>`;
 }
 const cwfRow = (label, value) => `<div class="cwf-card-row"><span class="cwf-card-l">${label}</span><span class="cwf-card-v">${value}</span></div>`;
+// "Build battlemap" button — only when the Encounter Stage module is installed. Pulls a
+// CZEPEKU map + CR-scaled foes + combat music for the current hex (data-cwf="stage").
+const cwfStageBtn = () => globalThis.CavrilEncounterStage ? `<button class="cwf-cardbtn" data-cwf="stage" title="Build a CZEPEKU battlemap + foes + combat music for this encounter"><i class="fa-solid fa-dragon"></i> Build battlemap</button>` : "";
 const TIER_LABEL = { crit: "Critical Success", success: "Success", fail: "Failure", critfail: "Critical Failure" };
 // Per-role skill options the GM can switch between for the situation. First = default.
 const ROLE_SKILLS = {
@@ -2920,7 +2923,7 @@ const Camp = (() => {
             // for the GM to run it. A button wakes the party to dawn afterwards.
             Music.combat(true);
             Cinematic.broadcast({ icon: "fa-dragon", title: "Ambushed!", subtitle: `${cls?.label || "the wild"} · hour ${firstHour}`, tone: "encounter" });
-            const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span><button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn"><i class="fa-solid fa-sun"></i> Resolved → wake at dawn</button></div>`;
+            const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span>${cwfStageBtn()}<button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn"><i class="fa-solid fa-sun"></i> Resolved → wake at dawn</button></div>`;
             const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "", footerHTML: foot }) }).catch(() => null);
             nightDawnPending = { nextDay, msgId: msg?.id };
             cwfCampFinalize("Night watch — resolve the encounter, then wake at dawn.");   // collapse the camp card so its Resolve can't re-fire
@@ -3538,7 +3541,8 @@ function wireCardButtons(root) {
                 }
                 if (act === "dawn") { advanceToDawn(); return; }
                 if (!game.user.isGM) return;
-                if (act === "step") await cwfDoHexStep();
+                if (act === "stage") { await globalThis.CavrilEncounterStage?.stageEncounter?.(); }   // build CZEPEKU map + foes + music
+                else if (act === "step") await cwfDoHexStep();
                 else if (act === "auto") await cwfMontage();
                 else if (act === "pause") { if (cwfTrek) cwfTrek.running = false; }
                 else if (act === "stop") await cwfFinishTravel();

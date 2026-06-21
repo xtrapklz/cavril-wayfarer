@@ -1,0 +1,747 @@
+/* ============================================================================
+ * Cavril Encounter Stage — PROTOTYPE macro
+ * ----------------------------------------------------------------------------
+ * Bridges cavril-wayfarer's encounter roll → a CZEPEKU Universe battlemap.
+ *
+ *   cavril-wayfarer.encounter (fires on a travel/night encounter)
+ *        → classify the hex (biome + elevation + vegetation + weather + day/night)
+ *        → score the CZEPEKU catalog by tag overlap, pick the best map + variant
+ *        → (optionally) pre-download the assets so the map is ready instantly
+ *   createCombat (the party rolls initiative)
+ *        → Scene.create from the pre-picked map (walls + lights included) + activate
+ *
+ * Everything here was verified live against the user's subscription:
+ *   - data:   GET czepeku.com/api/trpc  (x-session-id header)
+ *   - assets: GET czepeku.com/api/session/<id>/fvtt/download  (NO header — path auth)
+ *   - 91.5% of variants ship pre-authored walls+lights; the rest fall back to
+ *     an image-only scene built from the raw map image.
+ *
+ * Paste into a Foundry script macro (or load via a launcher) AS GM. Re-running
+ * is idempotent. Inspect/tune with the CavrilEncounterStage.* API (see bottom).
+ * ========================================================================== */
+/* Loaded as the second esmodule of the cavril-wayfarer module (alongside
+ * cavril-wayfarer.js). Talks to the main module through globalThis.CavrilWayfarer.
+ * Settings register on "init"; hooks + API install on "ready". */
+(() => {
+  const MOD = "cavril-wayfarer";
+  const TAG = "%c[EncounterStage]";
+  const CSS = "color:#caa6ff;font-weight:bold";
+  const log  = (...a) => console.log(TAG, CSS, ...a);
+  const warn = (...a) => console.warn(TAG, CSS, ...a);
+
+  // ===== CONFIG (tune freely) ==============================================
+  const CFG = {
+    API: "https://www.czepeku.com",
+    autoStageOnCombat: true,   // createCombat → build + activate the staged map
+    autoDownloadOnPick: true,  // pre-fetch assets at encounter time (hides latency)
+    activateScene: true,       // switch to the new scene (vs. just create it)
+    allowImageFallback: true,  // build an image-only scene when no authored scene exists
+    fallbackGridSize: 140,     // px/square guess for fallback scenes (CZEPEKU native ~140)
+    topK: 8,                   // (legacy) kept for compatibility
+    candidatePool: 12,         // randomize among the top-N importable maps (variety)
+    randomizeMap: true,        // weighted-random pick from the pool instead of always the #1 match
+    whisperPicks: true,        // whisper the staged map to the GM
+    catalogTtlMs: 5 * 60_000,
+    // --- full encounter staging (stageEncounter) ---
+    monsterPack: "dnd5e.monsters", // Actor compendium to draw foes from
+    dropMonsters: true,            // place biome-appropriate monster tokens
+    maxMonsters: 6,                // hard cap on bodies dropped
+    encounterBudgetMul: 0.5,       // total CR budget ≈ partyLevel × partySize × this
+    playCombatMusic: true,         // start the Maestro theme for the dominant creature type
+    startCombat: false,            // also create + start the Foundry combat tracker
+    lightColoration: 10,           // force every authored light to Foundry "Natural Light" technique (10); null = leave as-authored
+    excludeVariantWords: ["rain", "storm", "downpour"], // never instantiate these variants — CZEPEKU's top-down rain clashes with our weather system
+  };
+
+  // biome → CZEPEKU candidate tags, strongest first. Data-driven: only tags that
+  // actually exist in the live catalog contribute, so over-listing is harmless.
+  // Run CavrilEncounterStage.audit() to see which of these hit real maps.
+  const BIOME_TAGS = {
+    temperate: ["forest", "clearing", "autumn", "green", "garden", "hill", "river", "grass", "plains"],
+    savanna:   ["drought", "clearing", "plains", "grass", "farm", "desert"],
+    boreal:    ["forest", "pine", "fog", "autumn", "clearing", "frozen"],
+    desert:    ["desert", "sand", "dune", "drought", "canyon", "crater", "oasis"],
+    wasteland: ["ash", "destruction", "abandoned", "drought", "bones", "corpse", "ruins", "crater"],
+    jungle:    ["jungle", "fungi", "bioluminescent", "coral", "fey", "clearing", "swamp"],
+    tainted:   ["infested", "blood", "corpse", "eldritch", "fungi", "infernal", "darkness", "graveyard"],
+    tundra:    ["frozen", "snow", "ice", "winter", "fog", "clearing"],
+    frozen:    ["frozen", "snow", "ice", "crystal", "aurora", "cavern", "glacier"],
+    volcanic:  ["lava", "fire", "ash", "crater", "forge", "infernal", "volcano"],
+    void:      ["astral", "celestial", "dreamscape", "darkness", "eldritch", "void"],
+    unknown:   ["forest", "clearing", "hill", "fog", "ruins", "cavern"],
+    water:     ["ocean", "sea", "beach", "island", "coral", "docks", "ship", "shipwreck", "water", "lake", "reef", "coast"],
+  };
+  // elevation / vegetation / hydrology overlays (added to the candidate set).
+  const ELEV_TAGS = {
+    water:  ["beach", "island", "docks", "coral", "ocean", "river", "lake", "ship"],
+    swamp:  ["swamp", "fungi", "fog", "flood", "marsh", "bog"],
+    high:   ["cliff", "canyon", "crater", "mountain", "cavern"],
+    medium: ["hill", "cliff"],
+    flat:   [],
+  };
+  // social encounters lean on built/inhabited scenes rather than open battlefields.
+  const SOCIAL_TAGS = ["market", "tavern", "court", "courtyard", "camp", "library",
+    "garden", "docks", "festivity", "building", "interior", "temple", "shop"];
+  // condition → words we look for in a variant's NAME or tags to pick day/night/weather/season.
+  const VARIANT_WORDS = {
+    night:  ["night", "dark", "dusk", "moon", "midnight"],
+    day:    ["day", "dawn", "noon", "original", "morning"],
+    rain:   ["rain", "storm", "wet", "downpour"],
+    snow:   ["snow", "ice", "frozen", "winter", "blizzard"],
+    fog:    ["fog", "mist", "haze"],
+    spring: ["spring", "bloom", "blossom"],
+    summer: ["summer", "sun"],
+    autumn: ["autumn", "fall"],
+    winter: ["winter", "snow", "frozen", "ice"],
+  };
+  // season → extra biome candidate tags (CZEPEKU has real "autumn" tags, snow for winter…).
+  const SEASON_TAGS = {
+    spring: ["green", "clearing", "garden"],
+    summer: ["drought", "clearing"],
+    autumn: ["autumn"],
+    winter: ["snow", "frozen", "ice"],
+  };
+  const WEIGHT = { biome: 3, overlay: 2, social: 2, season: 2, feature: 3 }; // tag-class weights for scoring
+
+  // ===== CZEPEKU ADAPTER (proven calls) ====================================
+  const sessionId = () => game.settings.get("czepeku", "sessionId");
+  const onForge = typeof ForgeVTT !== "undefined" && ForgeVTT.usingTheForge;
+  const SOURCE = onForge ? "forgevtt" : "data";
+  // V13+ moved FilePicker under foundry.applications.apps; the global still works
+  // but logs a deprecation warning on every call. Prefer the namespaced class.
+  const FP = foundry.applications?.apps?.FilePicker?.implementation ?? FilePicker;
+  const ROOT = "czepeku";
+  const CT = { "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png",
+    "image/gif": "gif", "image/avif": "avif", "image/bmp": "bmp",
+    "video/webm": "webm", "video/mp4": "mp4" };
+
+  async function czQuery(path, input) {
+    const sid = sessionId();
+    if (!sid) throw new Error("No CZEPEKU sessionId — open CZEPEKU → Connect and log in.");
+    const url = new URL(`${CFG.API}/api/trpc/${path}`);
+    url.searchParams.set("batch", "1");
+    if (input != null) url.searchParams.set("input", JSON.stringify({ 0: { json: input } }));
+    const res = await fetch(url, { headers: { "x-session-id": sid } });
+    const txt = await res.text();
+    if (!res.ok) throw new Error(`${path} HTTP ${res.status}: ${txt.slice(0, 200)}`);
+    const body = JSON.parse(txt); const e = Array.isArray(body) ? body[0] : body;
+    if (e?.error) throw new Error(`${path}: ${JSON.stringify(e.error).slice(0, 200)}`);
+    return e?.result?.data?.json ?? e?.result?.data;
+  }
+  // download endpoint: sessionId in the PATH, NO custom header (header → CORS preflight 403).
+  const dlUrl = (qs) => `${CFG.API}/api/session/${sessionId()}/fvtt/download?${qs}`;
+
+  // catalog cache → flat list of items with normalised variants.
+  let _catalog = null, _catalogAt = 0;
+  async function getCatalog(force = false) {
+    if (!force && _catalog && (Date.now() - _catalogAt) < CFG.catalogTtlMs) return _catalog;
+    const data = await czQuery("fvtt.getSessionData", null);
+    const items = [];
+    const allTags = new Set();
+    for (const genre of ["fantasy", "scifi"]) {
+      for (const dataKey of ["maps", "scenes"]) {
+        for (const it of (data?.[genre]?.[dataKey] ?? [])) {
+          const variants = (it.variants ?? []).map(v => {
+            (v.tags ?? []).forEach(t => allTags.add(t));
+            return {
+              id: v.id, name: v.name ?? "", tags: v.tags ?? [],
+              key: `Map:${v.id}`,
+              animated: (v.animated ?? []).map(a => ({ id: a.id, name: a.name, key: `AnimatedMap:${a.id}` })),
+            };
+          });
+          items.push({ id: it.id, name: it.name ?? "", genre, dataKey, isShip: !!it.isShip, variants });
+        }
+      }
+    }
+    _catalog = { items, allTags, urls: data?.urls ?? {} };
+    _catalogAt = Date.now();
+    log(`catalog: ${items.length} items, ${allTags.size} tags (cached ${CFG.catalogTtlMs / 1000}s)`);
+    return _catalog;
+  }
+  const importableFor = (keys) => czQuery("fvtt.scenesExistForVariantKeys", keys);
+  const scenePayload  = (variantKey) => czQuery("fvtt.sceneForVariantKey", { variantKey });
+
+  // Faithful re-implementation of the module's downloadDependencies (Forge-aware,
+  // header-less, skips already-downloaded files). Returns { depKey: localPath }.
+  async function downloadDependencies(deps) {
+    const keyOf = d => typeof d === "string" ? d : `${d.model}:${d.id}`;
+    const nameOf = d => {
+      if (typeof d === "string") { const m = d.match(/^assetKey:(.*)$/); if (!m) throw new Error("bad file id " + d); return `assets/${m[1]}`; }
+      return d.filename;
+    };
+    const url = d => typeof d === "string" ? dlUrl(`file=${d}`) : dlUrl(`model=${d.model}&id=${d.id}`);
+    const hasExt = f => { const i = f.lastIndexOf("."); return i > 0 && i < f.length - 1; };
+    const ensureDir = async fp => {
+      const parts = fp.split("/"); const filename = parts.pop();
+      if (onForge) { const path = parts.join("/") + "/"; try { await FP.createDirectory(SOURCE, path); } catch (e) {} return { path, filename }; }
+      let path = ""; for (const d of parts) { path += d + "/"; try { if (await FP.browse(SOURCE, path)) continue; } catch (e) {} try { await FP.createDirectory(SOURCE, path); } catch (e) {} }
+      return { path, filename };
+    };
+    const filePaths = {};
+    const all = [...(deps.database ?? []), ...(deps.file ?? [])];
+    for (const d of all) {
+      let rel = `${ROOT}/${nameOf(d)}`; filePaths[keyOf(d)] = rel;
+      const { path, filename } = await ensureDir(rel);
+      let cached = false;
+      try { const ex = await FP.browse(SOURCE, path); cached = ex.files.some(f => decodeURIComponent(f.split("/").pop()) === filename); } catch (e) {}
+      if (cached) continue;
+      const r = await fetch(url(d)); if (!r.ok) throw new Error(`download ${keyOf(d)} HTTP ${r.status}`);
+      const blob = await r.blob(); let up = filename;
+      if (!hasExt(filename)) { const ct = (r.headers.get("content-type") || "").split(";")[0].trim(); const ext = CT[ct]; if (ext) { up = `${filename.replace(/\.*$/, "")}.${ext}`; filePaths[keyOf(d)] = `${ROOT}/assets/${up}`; } }
+      await FP.upload(SOURCE, path, new File([blob], up));
+    }
+    return filePaths;
+  }
+
+  // Build a real Scene from a sceneForVariantKey payload (mirrors CzepekuVariantPicker,
+  // including the V14 levels-background migration). Returns the created Scene.
+  async function createAuthoredScene(resp, { activate } = {}) {
+    const filePaths = await downloadDependencies(resp.dependencies ?? { file: [], database: [] });
+    const sd = foundry.utils.deepClone(resp.sceneData);
+    const gMaj = parseInt(game.version.split(".")[0], 10);
+    const dMaj = sd._stats?.coreVersion ? parseInt(sd._stats.coreVersion.split(".")[0], 10) : 13;
+    const v14 = gMaj >= 14 && dMaj < 14;
+    if (v14 && Array.isArray(sd.tiles)) {
+      sd.tiles = sd.tiles
+        .map(t => { const { x, y, width = 0, height = 0 } = t; return { ...t, x: (x ?? 0) + width / 2, y: (y ?? 0) + height / 2 }; })
+        .map(t => (t.occlusion && t.occlusion.mode === 0) ? (({ occlusion, ...r }) => r)(t) : t);
+    }
+    const bgKey = sd.flags?.czepeku?.background;
+    if (bgKey) {
+      const bg = filePaths[bgKey];
+      if (!bg) throw new Error("background dependency unresolved: " + bgKey);
+      if (v14) sd.levels = [{ name: "Level", background: { ...(sd.background || {}), src: bg } }];
+      else if (gMaj >= 14) { if (sd.levels?.[0]?.background) sd.levels[0].background.src = bg; else sd.background = { ...(sd.background || {}), src: bg }; }
+      else sd.background = { ...(sd.background || {}), src: bg };
+    }
+    for (const t of (sd.tiles || [])) { const s = t.flags?.czepeku?.source; if (s && filePaths[s]) { t.texture = t.texture || {}; t.texture.src = filePaths[s]; } }
+    // CZEPEKU bakes a coloration technique that reads badly; force "Natural Light" (10) on every light.
+    if (CFG.lightColoration != null) for (const l of (sd.lights || [])) { l.config = l.config || {}; l.config.coloration = CFG.lightColoration; }
+    sd.active = false; sd.navigation = false; sd.tokens = [];
+    const scene = await Scene.create(sd);
+    if (!scene) throw new Error("Scene.create returned null");
+    try { const th = await scene.createThumbnail(); const td = typeof th === "string" ? th : th?.thumb; if (td) await scene.update({ thumb: td }); } catch (e) {}
+    if (activate ?? CFG.activateScene) await scene.activate(); else scene.view?.();
+    return scene;
+  }
+
+  // Fallback: no authored scene → download the raw map image and build a basic,
+  // wall-less scene around it. Coverage for the newest ~5% of maps.
+  async function createImageOnlyScene(item, variant, { activate } = {}) {
+    const id = variant.id;
+    const rel = `${ROOT}/fallback/${id}.webp`;
+    const parts = rel.split("/"); const filename = parts.pop(); const dir = parts.join("/") + "/";
+    try { await FP.createDirectory(SOURCE, dir); } catch (e) {}
+    let exists = false;
+    try { const ex = await FP.browse(SOURCE, dir); exists = ex.files.some(f => decodeURIComponent(f.split("/").pop()) === filename); } catch (e) {}
+    if (!exists) {
+      const r = await fetch(dlUrl(`model=Map&id=${id}`)); if (!r.ok) throw new Error(`fallback download HTTP ${r.status}`);
+      await FP.upload(SOURCE, dir, new File([await r.blob()], filename));
+    }
+    let w = 4760, h = 7140; // sensible default; refine by probing the bitmap
+    try { const bmp = await createImageBitmap(await (await fetch(rel)).blob()); w = bmp.width; h = bmp.height; bmp.close?.(); } catch (e) {}
+    const g = CFG.fallbackGridSize;
+    const sd = {
+      name: `${item.name} — ${variant.name}`.trim(),
+      width: w, height: h, padding: 0, navigation: false, active: false,
+      background: { src: rel }, grid: { size: g }, tokenVision: false,
+      flags: { "cavril-encounter-stage": { fallback: true, mapId: id } },
+    };
+    const scene = await Scene.create(sd);
+    if (!scene) throw new Error("fallback Scene.create returned null");
+    try { const th = await scene.createThumbnail(); const td = typeof th === "string" ? th : th?.thumb; if (td) await scene.update({ thumb: td }); } catch (e) {}
+    if (activate ?? CFG.activateScene) await scene.activate(); else scene.view?.();
+    return scene;
+  }
+
+  // ===== MATCHER ===========================================================
+  const norm = s => String(s || "").toLowerCase();
+  const wordHit = (variant, words) => {
+    const n = norm(variant.name); const tags = variant.tags.map(norm);
+    return words.some(w => n.includes(w) || tags.includes(w));
+  };
+  // Variants whose name/tags hit an exclude word are never instantiated (whole-word match,
+  // so "rain" won't trip on "rainforest"). Our weather system renders rain on a dry map instead.
+  const isExcluded = (variant) => {
+    const words = CFG.excludeVariantWords || [];
+    if (!words.length) return false;
+    const hay = `${variant.name} ${(variant.tags || []).join(" ")}`.toLowerCase();
+    return words.some(w => new RegExp(`\\b${w}\\b`, "i").test(hay));
+  };
+  // Wayfarer classifies open water as biome "temperate" (its name regex) with
+  // elevation/terrainKey "water" — collapse that to a real "water" biome so ocean
+  // hexes get sea maps + aquatic foes, not forests.
+  function effectiveBiome(cls) {
+    if (!cls) return "unknown";
+    if (cls.terrainKey === "water" || cls.water === true || cls.elevation === "water") return "water";
+    return cls.biome || "unknown";
+  }
+
+  // Candidate tags from a Wayfarer classification + encounter context.
+  function candidateTags(cls, { type = "combat", season = null } = {}) {
+    const biome = effectiveBiome(cls);
+    const set = new Map(); // tag → weight
+    const add = (tags, w) => tags.forEach(t => set.set(t, Math.max(set.get(t) || 0, w)));
+    add(BIOME_TAGS[biome] || BIOME_TAGS.unknown, WEIGHT.biome);
+    add(ELEV_TAGS[cls?.elevation] || [], WEIGHT.overlay);
+    if (cls?.vegetation === "high") add(["forest"], WEIGHT.overlay);
+    if (cls?.river) add(["river", "water", "bridge", "docks", "lake", "stream"], WEIGHT.feature);
+    if (cls?.infrastructure) add(["road", "bridge", "camp", "caravan", "gate"], WEIGHT.feature);
+    if (cls?.coast) add(["beach", "coast", "docks", "coral", "island", "ocean", "lighthouse"], WEIGHT.feature);
+    if (season && SEASON_TAGS[season]) add(SEASON_TAGS[season], WEIGHT.season);
+    if (type === "social") add(SOCIAL_TAGS, WEIGHT.social);
+    return set; // Map<tag, weight>
+  }
+
+  // Score an item by its best variant's weighted tag overlap with the candidate set.
+  function scoreItem(item, candTags) {
+    let best = 0;
+    for (const v of item.variants) {
+      let s = 0;
+      for (const t of v.tags) { const w = candTags.get(t); if (w) s += w; }
+      if (s > best) best = s;
+    }
+    return best;
+  }
+
+  // Pick the best variant within an item for the current day/night + weather.
+  function pickVariant(item, { when = "day", weather = null, season = null } = {}) {
+    const wantNight = when === "night";
+    const wxWords = weather && VARIANT_WORDS[weather] ? VARIANT_WORDS[weather] : null;
+    const seWords = season && VARIANT_WORDS[season] ? VARIANT_WORDS[season] : null;
+    const allowed = item.variants.filter(v => !isExcluded(v));
+    const pool = allowed.length ? allowed : item.variants; // if every variant is excluded, fall back to all
+    let best = pool[0], bestScore = -1;
+    for (const v of pool) {
+      let s = 0;
+      if (wantNight && wordHit(v, VARIANT_WORDS.night)) s += 4;
+      if (!wantNight && wordHit(v, VARIANT_WORDS.day)) s += 2;
+      if (wxWords && wordHit(v, wxWords)) s += 3;
+      if (seWords && wordHit(v, seWords)) s += 2;
+      if (s > bestScore) { bestScore = s; best = v; }
+    }
+    return best;
+  }
+
+  // Full pick: classify → score catalog → check importability of the top-K → choose.
+  async function pickMap(cls, ctx = {}) {
+    const type = ctx.type || "combat";
+    const dataKey = type === "social" ? "scenes" : "maps";
+    const cat = await getCatalog();
+    const candTags = candidateTags(cls, { type, season: ctx.season });
+    const scored = cat.items
+      .filter(it => it.dataKey === dataKey && it.genre === "fantasy")
+      .map(it => ({ it, score: scoreItem(it, candTags) }))
+      .filter(x => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+    if (!scored.length) { warn(`no tag matches for biome '${effectiveBiome(cls)}' (${type})`); return null; }
+
+    // Consider a POOL of the top-scored maps (not just #1) and check importability.
+    const pool = scored.slice(0, CFG.candidatePool ?? 12);
+    const allKeys = pool.flatMap(x => x.it.variants.flatMap(v => [v.key, ...v.animated.map(a => a.key)]));
+    let exist = {};
+    try { exist = await importableFor(allKeys); } catch (e) { warn("importability check failed", e.message); }
+
+    // Collect every importable candidate (each with a non-excluded, condition-matched variant).
+    const candidates = [];
+    for (const { it, score } of pool) {
+      const variant = pickVariant(it, ctx);
+      let variantKey = [variant.key, ...variant.animated.map(a => a.key)].find(k => exist[k]);
+      let chosen = variant;
+      if (!variantKey) {
+        for (const v of it.variants) {
+          if (isExcluded(v)) continue;
+          const k = [v.key, ...v.animated.map(a => a.key)].find(kk => exist[kk]);
+          if (k) { variantKey = k; chosen = v; break; }
+        }
+      }
+      if (variantKey) candidates.push({ item: it, variant: chosen, variantKey, score, importable: true });
+    }
+
+    if (candidates.length) {
+      if (!(CFG.randomizeMap ?? true) || candidates.length === 1) return candidates[0]; // deterministic best
+      // weighted-random by score: better matches are likelier, but you get variety run-to-run
+      const total = candidates.reduce((s, c) => s + c.score, 0);
+      let r = Math.random() * total;
+      for (const c of candidates) { if ((r -= c.score) < 0) return c; }
+      return candidates[candidates.length - 1];
+    }
+    // nothing importable in the pool → image-only fallback on the best-scored item
+    if (CFG.allowImageFallback) {
+      const { it, score } = scored[0];
+      return { item: it, variant: pickVariant(it, ctx), variantKey: null, score, importable: false };
+    }
+    return null;
+  }
+
+  // ===== STAGING ===========================================================
+  let pending = null; // { pick, cls, ctx, paths?, ts }
+
+  async function stagePick(pick, { activate, download } = {}) {
+    if (!game.user.isGM) return null;
+    if (pick.importable) {
+      const resp = await scenePayload(pick.variantKey);
+      return createAuthoredScene(resp, { activate });
+    }
+    if (CFG.allowImageFallback) return createImageOnlyScene(pick.item, pick.variant, { activate });
+    throw new Error("pick is not importable and fallback is disabled");
+  }
+
+  function describePick(pick) {
+    return `${pick.item.name} — ${pick.variant.name}` +
+      `${pick.importable ? "" : " (image-only)"} · score ${pick.score}`;
+  }
+
+  // ===== GLUE: Wayfarer encounter → pick + pre-fetch =======================
+  // Enrich the bare hook ctx with the live hex classification + weather.
+  function liveClassification(ctxBiome) {
+    try {
+      const W = globalThis.CavrilWayfarer;
+      const tok = W?.Canvasry?.activeToken?.();
+      const cls = tok ? W.Canvasry.biomeForToken(tok) : null;
+      if (cls?.biome) return cls;
+    } catch (e) {}
+    return { biome: ctxBiome || "unknown" };
+  }
+  const liveWeather = () => { try { return globalThis.CavrilWayfarer?.MiniCal?.key?.() ?? null; } catch { return null; } };
+
+  async function onEncounter(ctx) {
+    try {
+      if (!game.user.isGM) return;
+      const cls = liveClassification(ctx?.biome);
+      const when = ctx?.when || "day";
+      const weather = liveWeather();
+      const season = currentSeason();
+      const pick = await pickMap(cls, { type: "combat", when, weather, season });
+      if (!pick) { pending = null; return; }
+      pending = { pick, cls, ctx: { when, weather }, ts: Date.now() };
+      log(`staged for ${cls.biome}/${when}: ${describePick(pick)}`);
+      if (CFG.autoDownloadOnPick && pick.importable) {
+        // warm the cache so createCombat is instant; ignore failures (retried at stage time)
+        scenePayload(pick.variantKey)
+          .then(resp => downloadDependencies(resp.dependencies))
+          .then(() => log(`pre-fetched assets for "${pick.item.name}"`))
+          .catch(e => warn("pre-fetch failed (will retry on combat)", e.message));
+      }
+      if (CFG.whisperPicks) {
+        const gmIds = game.users.filter(u => u.isGM).map(u => u.id);
+        ChatMessage.create({
+          whisper: gmIds,
+          content: `<div style="border-left:3px solid #caa6ff;padding:.3em .6em">
+            <b>Encounter Stage</b><br>Biome: <b>${cls.biome}</b> · ${when}${weather ? " · " + weather : ""}<br>
+            Battlemap: <b>${pick.item.name}</b> — ${pick.variant.name}${pick.importable ? "" : " <i>(image-only)</i>"}<br>
+            <small>Pulls automatically when combat begins.</small></div>`,
+        });
+      }
+    } catch (e) { warn("encounter handler failed", e); }
+  }
+
+  async function onCreateCombat() {
+    try {
+      if (!CFG.autoStageOnCombat || !game.user.isGM) return;
+      if (!pending) { log("combat started, but nothing staged — run CavrilEncounterStage.stageForBiome(...) or trigger a Wayfarer encounter first"); return; }
+      const p = pending; pending = null;
+      ui.notifications?.info(`Encounter Stage: preparing "${p.pick.item.name}"…`);
+      const scene = await stagePick(p.pick, { activate: CFG.activateScene });
+      ui.notifications?.info(`Encounter Stage: "${scene.name}" ready.`);
+      log(`combat scene created: ${scene.name} (${scene.id})`);
+    } catch (e) { warn("createCombat staging failed", e); ui.notifications?.error("Encounter Stage failed — see console."); }
+  }
+
+  // ===== INSTALL ===========================================================
+  const hookIds = {};   // populated by install() on ready
+
+  // ===== FULL ENCOUNTER STAGING ============================================
+  // Time-of-day + season from Foundry's world clock / calendar (game.time.calendar
+  // owns seasons in V13+), so no hard dependency on Mini Calendar internals.
+  function currentHour() {
+    try {
+      const c = game.time?.components ?? game.time?.calendar?.timeToComponents?.(game.time.worldTime);
+      if (c && Number.isFinite(c.hour)) return c.hour;
+    } catch (e) {}
+    return Math.floor((((game.time?.worldTime ?? 0) / 3600) % 24 + 24) % 24);
+  }
+  const timeOfDay = () => { const h = currentHour(); return (h >= 6 && h < 19) ? "day" : "night"; };
+  function currentSeason() {
+    try {
+      const cal = game.time?.calendar;
+      const comps = game.time?.components ?? cal?.timeToComponents?.(game.time.worldTime);
+      const seasons = cal?.seasons?.values ?? [];
+      const months = cal?.months?.values ?? [];
+      if (comps?.month == null || !seasons.length) return null;
+      const ord = months[comps.month]?.ordinal ?? (comps.month + 1);
+      const s = seasons.find(se => {
+        const a = se.monthStart, b = se.monthEnd;
+        if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+        return a <= b ? (ord >= a && ord <= b) : (ord >= a || ord <= b);
+      });
+      return s ? String(game.i18n.localize(s.name)).toLowerCase().trim() : null;
+    } catch (e) { return null; }
+  }
+
+  // Party context (player-owned characters), for CR budgeting.
+  function partyContext() {
+    const pcs = (game.actors?.filter(a => a.type === "character" && a.hasPlayerOwner)) ?? [];
+    const levels = pcs.map(a => a.system?.details?.level ?? 1).filter(Number.isFinite);
+    const level = levels.length ? Math.max(1, Math.round(levels.reduce((x, y) => x + y, 0) / levels.length)) : 3;
+    const size = Math.max(1, pcs.length || (game.users?.filter(u => !u.isGM && u.character)?.length) || 4);
+    return { level, size };
+  }
+
+  async function ensureFolder(name, type) {
+    let f = game.folders?.find(x => x.type === type && x.name === name);
+    if (!f) { try { f = await Folder.create({ name, type, sorting: "a" }); } catch (e) {} }
+    return f ?? null;
+  }
+
+  // Wayfarer's 12 biomes → plausible D&D 5e creature types.
+  const BIOME_CREATURES = {
+    temperate: ["beast", "fey", "plant", "humanoid", "monstrosity"],
+    savanna:   ["beast", "monstrosity", "humanoid"],
+    boreal:    ["beast", "fey", "monstrosity", "giant"],
+    desert:    ["beast", "monstrosity", "elemental", "humanoid", "undead"],
+    wasteland: ["undead", "fiend", "monstrosity", "aberration", "construct"],
+    jungle:    ["beast", "plant", "monstrosity", "humanoid", "fey"],
+    tainted:   ["aberration", "fiend", "undead", "ooze", "monstrosity"],
+    tundra:    ["beast", "giant", "elemental", "monstrosity"],
+    frozen:    ["beast", "giant", "elemental", "undead", "monstrosity"],
+    volcanic:  ["elemental", "fiend", "dragon", "beast"],
+    void:      ["aberration", "celestial", "fiend", "construct"],
+    water:     ["beast", "monstrosity", "elemental", "aberration", "dragon"],
+    unknown:   ["beast", "humanoid", "monstrosity"],
+  };
+  // D&D 5e creature type → Maestro combat soundscape id (mirrors cavril-maestro/combat.mjs).
+  const TYPE_MUSIC = {
+    aberration: "mutagenicCombat", beast: "beastCombat", celestial: "celestialCombat",
+    construct: "constructCombat", dragon: "mutagenicCombat", elemental: "elementalCombat",
+    fey: "illusoryCombat", fiend: "abyssalCombat", giant: "raiderCombat",
+    humanoid: "pirateCombat", monstrosity: "monstrosityCombat", ooze: "oozeCombat",
+    plant: "monstrosityCombat", undead: "undeadCombat",
+  };
+  const typeOfEntry = e => {
+    const t = e?.system?.details?.type;
+    return String((t && typeof t === "object") ? (t.value || t.custom || "") : (t || "")).toLowerCase().trim();
+  };
+  const crOfEntry = e => {
+    let cr = e?.system?.details?.cr;
+    if (typeof cr === "string") cr = cr.includes("/") ? (() => { const [a, b] = cr.split("/").map(Number); return a / b; })() : Number(cr);
+    cr = Number(cr);
+    return Number.isFinite(cr) ? cr : null;
+  };
+
+  // Pick a biome-appropriate, CR-scaled group from the monster compendium and
+  // hydrate them into world actors (imported once, flagged + reused thereafter).
+  async function rollMonsters(cls) {
+    const pack = game.packs?.get(CFG.monsterPack);
+    if (!pack) { warn(`monster pack '${CFG.monsterPack}' not found`); return []; }
+    const typeSet = new Set(BIOME_CREATURES[effectiveBiome(cls)] || BIOME_CREATURES.unknown);
+    const { level, size } = partyContext();
+    const index = await pack.getIndex({ fields: ["system.details.cr", "system.details.type"] });
+    const crLo = Math.max(0, level - 3), crHi = level + 2;
+    let pool = index.filter(e => { const cr = crOfEntry(e); return typeSet.has(typeOfEntry(e)) && cr != null && cr >= crLo && cr <= crHi; });
+    if (!pool.length) pool = index.filter(e => typeSet.has(typeOfEntry(e)) && crOfEntry(e) != null); // widen if band empty
+    if (!pool.length) { warn(`no ${[...typeSet].join("/")} foes in ${CFG.monsterPack}`); return []; }
+    const budget = Math.max(1, Math.round(level * size * CFG.encounterBudgetMul));
+    const shuffled = pool.map(e => [Math.random(), e]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
+    const chosen = []; let spent = 0;
+    for (const e of shuffled) {
+      if (chosen.length >= CFG.maxMonsters) break;
+      chosen.push(e); spent += (crOfEntry(e) || 0.25) + 1;
+      if (spent >= budget && chosen.length >= 1) break;
+    }
+    const folder = await ensureFolder("Encounter Monsters", "Actor");
+    const actors = [];
+    for (const e of chosen) {
+      const srcId = `${pack.collection}.${e._id}`;
+      let actor = game.actors?.find(a => a.getFlag?.("cavril-encounter-stage", "srcId") === srcId);
+      if (!actor) {
+        const data = (await pack.getDocument(e._id)).toObject();
+        data.folder = folder?.id ?? null;
+        foundry.utils.setProperty(data, "flags.cavril-encounter-stage.srcId", srcId);
+        actor = await Actor.create(data);
+      }
+      if (actor) actors.push(actor);
+    }
+    return actors;
+  }
+
+  // Drop tokens for the given actors, clustered near the scene centre.
+  async function dropTokens(sceneDoc, actors) {
+    if (!actors.length) return [];
+    const gs = sceneDoc.grid?.size || sceneDoc.grid || CFG.fallbackGridSize;
+    const cx = Math.round(sceneDoc.width * 0.5), cy = Math.round(sceneDoc.height * 0.5);
+    const data = [];
+    for (let i = 0; i < actors.length; i++) {
+      const ang = (i / actors.length) * Math.PI * 2;
+      const r = gs * (1.2 + 1.6 * (i % 2));
+      const x = Math.round(cx + Math.cos(ang) * r), y = Math.round(cy + Math.sin(ang) * r);
+      try {
+        const td = await actors[i].getTokenDocument({ x, y, hidden: false });
+        const obj = td.toObject(); obj.x = x; obj.y = y; data.push(obj);
+      } catch (e) { warn(`token for ${actors[i].name} failed`, e); }
+    }
+    try { return await sceneDoc.createEmbeddedDocuments("Token", data); }
+    catch (e) { warn("token drop failed", e); return []; }
+  }
+
+  // Dominant creature type by CR + horde weight (mirrors Maestro's selection math).
+  function dominantType(actors) {
+    const score = {};
+    for (const a of actors) {
+      const t = String(a.system?.details?.type?.value ?? a.system?.details?.type ?? "").toLowerCase().trim();
+      if (!TYPE_MUSIC[t]) continue;
+      const cr = Number(a.system?.details?.cr);
+      score[t] = (score[t] || 0) + (Number.isFinite(cr) ? cr : 0) + 1;
+    }
+    let best = null, bs = -1;
+    for (const [t, s] of Object.entries(score)) if (s > bs) { bs = s; best = t; }
+    return best;
+  }
+
+  function playCombatMusic(actors) {
+    const M = globalThis.Maestro;
+    if (!M?.play) { warn("Maestro not available — skipping combat music"); return null; }
+    const t = dominantType(actors), ss = t && TYPE_MUSIC[t];
+    if (!ss) return null;
+    try { M.play(ss, { channel: "music" }); log(`combat music: ${ss} (${t})`); return ss; }
+    catch (e) { warn("Maestro.play failed", e); return null; }
+  }
+
+  // THE command: read the selected token's hex → pick the map → build the scene →
+  // drop biome-appropriate foes → start the matching combat music.
+  async function stageEncounter(opts = {}) {
+    if (!game.user.isGM) return warn("GM only");
+    pending = null;   // this IS the staging — don't let a later createCombat double-stage
+    const W = globalThis.CavrilWayfarer;
+    const token = opts.token ?? canvas.tokens?.controlled?.[0] ?? W?.Canvasry?.activeToken?.();
+    if (!token) return warn("select a token standing on a hex first");
+    const cls = (() => { try { return W?.Canvasry?.biomeForToken?.(token) ?? null; } catch (e) { return null; } })() || { biome: "unknown" };
+    const when = timeOfDay(), season = currentSeason(), weather = liveWeather();
+    const type = opts.type || "combat";
+    const ebiome = effectiveBiome(cls);
+    const feats = [cls.river && "river", cls.infrastructure && "road", cls.coast && "coast", (cls.water || cls.terrainKey === "water") && "water"].filter(Boolean).join("+");
+    log(`encounter @ ${token.name}: biome=${ebiome}${cls.biome && cls.biome !== ebiome ? `(raw ${cls.biome})` : ""}${cls.elevation ? "/" + cls.elevation : ""}${feats ? " [" + feats + "]" : ""} · ${when}${season ? " · " + season : ""}${weather ? " · " + weather : ""}`);
+
+    const pick = await pickMap(cls, { type, when, weather, season });
+    if (!pick) return warn(`no map match for ${cls.biome}`);
+    log(`map: ${describePick(pick)}`);
+    ui.notifications?.info(`Staging "${pick.item.name}"…`);
+    const scene = await stagePick(pick, { activate: opts.activate ?? true });
+    if (!scene) return warn("scene build failed");
+
+    let actors = [], tokens = [];
+    if ((opts.dropMonsters ?? CFG.dropMonsters) && type === "combat") {
+      actors = await rollMonsters(cls);
+      tokens = await dropTokens(scene, actors);
+      log(`dropped ${tokens.length} foes: ${actors.map(a => `${a.name}(CR ${a.system?.details?.cr ?? "?"})`).join(", ")}`);
+    }
+    if ((opts.playMusic ?? CFG.playCombatMusic) && actors.length) playCombatMusic(actors);
+
+    if ((opts.startCombat ?? CFG.startCombat) && tokens.length) {
+      try {
+        const combat = await Combat.create({ scene: scene.id });
+        const combatants = scene.tokens.filter(t => t.actor?.type === "npc").map(t => ({ tokenId: t.id, sceneId: scene.id }));
+        if (combatants.length) await combat.createEmbeddedDocuments("Combatant", combatants);
+        await combat.startCombat?.();
+      } catch (e) { warn("combat start failed", e); }
+    }
+    ui.notifications?.info(`Encounter ready: "${pick.item.name}" · ${actors.length} foes`);
+    return { scene, actors, tokens, pick, cls, when, season, weather };
+  }
+
+  // ===== SETTINGS ==========================================================
+  function registerSettings() {
+    const reg = (key, data) => { try { game.settings.register(MOD, key, data); } catch (e) { warn("setting", key, "failed", e); } };
+    reg("esEnabled",          { name: "Encounter Stage — enable", hint: "Auto-stage a CZEPEKU battlemap for hostile encounters. Requires the CZEPEKU Universe module connected (Connect + log in).", scope: "world", config: true, type: Boolean, default: true });
+    reg("esAutoStageOnCombat",{ name: "  · Stage on combat start", hint: "When a combat is created, build + activate the map the last encounter staged.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esDropMonsters",     { name: "  · Drop foes", hint: "Place a CR-scaled, biome-appropriate group of monsters on the staged map.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esCombatMusic",      { name: "  · Combat music", hint: "Start the Cavril: Maestro combat theme for the dominant foe type when foes are dropped.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esMaxMonsters",      { name: "  · Max foes", hint: "Hard cap on bodies dropped per encounter.", scope: "world", config: true, type: Number, default: 6, range: { min: 1, max: 20, step: 1 } });
+    reg("esBudgetMul",        { name: "  · Encounter budget ×", hint: "Total CR budget ≈ party level × party size × this.", scope: "world", config: true, type: Number, default: 0.5, range: { min: 0.1, max: 2, step: 0.1 } });
+    reg("esMonsterPack",      { name: "  · Monster compendium", hint: "Actor compendium to draw foes from (e.g. dnd5e.monsters, or a DDB monsters pack).", scope: "world", config: true, type: String, default: "dnd5e.monsters" });
+    reg("esImageFallback",    { name: "  · Image-only fallback", hint: "When a map has no pre-authored scene (~5%), still stage it as a wall-less image scene.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esActivateScene",    { name: "  · Switch to staged scene", hint: "Activate the new battlemap (vs. just creating it in the sidebar).", scope: "world", config: true, type: Boolean, default: true });
+  }
+  function syncCfg() {
+    try {
+      CFG.autoStageOnCombat  = game.settings.get(MOD, "esAutoStageOnCombat");
+      CFG.dropMonsters       = game.settings.get(MOD, "esDropMonsters");
+      CFG.playCombatMusic    = game.settings.get(MOD, "esCombatMusic");
+      CFG.maxMonsters        = Number(game.settings.get(MOD, "esMaxMonsters")) || CFG.maxMonsters;
+      CFG.encounterBudgetMul = Number(game.settings.get(MOD, "esBudgetMul")) || CFG.encounterBudgetMul;
+      CFG.monsterPack        = String(game.settings.get(MOD, "esMonsterPack") || CFG.monsterPack);
+      CFG.allowImageFallback = game.settings.get(MOD, "esImageFallback");
+      CFG.activateScene      = game.settings.get(MOD, "esActivateScene");
+    } catch (e) { warn("syncCfg failed (using defaults)", e); }
+  }
+
+  // ===== PUBLIC API ========================================================
+  const buildApi = () => ({
+    _installed: true,
+    CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
+    getCatalog, pickMap, scenePayload, importableFor,
+    // Preview the top matches for a biome without creating anything.
+    async preview(biome = "temperate", { type = "combat", when = "day", weather = null, n = 8 } = {}) {
+      const cat = await getCatalog();
+      const cls = { biome };
+      const cand = candidateTags(cls, { type });
+      const dataKey = type === "social" ? "scenes" : "maps";
+      const rows = cat.items.filter(i => i.dataKey === dataKey && i.genre === "fantasy")
+        .map(it => ({ name: it.name, score: scoreItem(it, cand), variant: pickVariant(it, { when, weather }).name }))
+        .filter(x => x.score > 0).sort((a, b) => b.score - a.score).slice(0, n);
+      console.table(rows);
+      return rows;
+    },
+    // Pick + stage immediately for a biome (manual/social path; bypasses combat).
+    async stageForBiome(biome = "temperate", { type = "combat", when = "day", weather = null, activate = CFG.activateScene } = {}) {
+      const pick = await pickMap({ biome }, { type, when, weather });
+      if (!pick) return warn(`no match for ${biome}`);
+      log(`staging now: ${describePick(pick)}`);
+      return stagePick(pick, { activate });
+    },
+    // Stage whatever the last Wayfarer encounter picked (what createCombat would do).
+    async stageNow({ activate = CFG.activateScene } = {}) {
+      if (!pending) return warn("nothing pending — trigger an encounter or use stageForBiome()");
+      const p = pending; pending = null; return stagePick(p.pick, { activate });
+    },
+    peekPending: () => pending,
+    // The headline command: stage a full encounter from the selected token's hex.
+    stageEncounter,
+    encounterHere: (opts) => stageEncounter(opts),
+    rollMonsters, dropTokens, playCombatMusic, currentSeason, timeOfDay, partyContext,
+    BIOME_CREATURES, TYPE_MUSIC,
+    // Per-biome diagnostics: which mapped tags actually exist + how many maps carry them.
+    async audit() {
+      const cat = await getCatalog();
+      const present = t => cat.allTags.has(t);
+      const count = t => cat.items.filter(i => i.dataKey === "maps" && i.variants.some(v => v.tags.includes(t))).length;
+      console.log("%c[EncounterStage] biome→tag coverage (maps)", CSS);
+      const rows = [];
+      for (const [biome, tags] of Object.entries(BIOME_TAGS)) {
+        const hits = tags.filter(present);
+        const miss = tags.filter(t => !present(t));
+        rows.push({ biome, hits: hits.map(t => `${t}(${count(t)})`).join(" "), missing: miss.join(" ") || "—" });
+      }
+      console.table(rows);
+      log(`catalog has ${cat.allTags.size} tags. Missing tags above are candidates to remap.`);
+      return rows;
+    },
+    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); delete globalThis.CavrilEncounterStage; log("uninstalled"); },
+  });
+
+  // ===== INSTALL ===========================================================
+  function install() {
+    if (globalThis.CavrilEncounterStage?._installed) return;
+    if (!game.settings.get(MOD, "esEnabled")) { log("disabled in settings — not installing."); return; }
+    syncCfg();
+    hookIds.encounter = Hooks.on("cavril-wayfarer.encounter", onEncounter);
+    hookIds.combat    = Hooks.on("createCombat", onCreateCombat);
+    globalThis.CavrilEncounterStage = buildApi();
+    log("installed. Hooks: cavril-wayfarer.encounter → pick, createCombat → stage.");
+    log("Select a token + run CavrilEncounterStage.stageEncounter() — biome → map → foes → music. Also .audit() · .preview('jungle').");
+    // Surface tag-mapping quality once the catalog loads (no-op if CZEPEKU isn't connected).
+    getCatalog().then(() => globalThis.CavrilEncounterStage.audit()).catch(e => warn("catalog not loaded (connect CZEPEKU): " + e.message));
+  }
+  Hooks.once("init", registerSettings);
+  Hooks.once("ready", install);
+})();
