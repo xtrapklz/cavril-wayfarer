@@ -3643,7 +3643,10 @@ function wireCardButtons(root) {
     });
 }
 Hooks.on("renderChatMessageHTML", (_m, html) => wireCardButtons(html));
-Hooks.on("renderChatMessage", (_m, html) => wireCardButtons(html?.[0] ?? html));
+// Foundry 11–12 only have the old jQuery hook; on 13+ skip it so we don't trip the
+// renderChatMessage deprecation (the HTML hook above already wires the card buttons).
+if ((parseInt(String(game?.version ?? "13"), 10) || 13) < 13)
+    Hooks.on("renderChatMessage", (_m, html) => wireCardButtons(html?.[0] ?? html));
 Hooks.on("controlToken", (token, controlled) => {
     BiomeBadge.update(); WayfarerPanel.renderExternal();
     // Mid-plot, SELECTING a different token re-anchors the course to it (fixes "started
