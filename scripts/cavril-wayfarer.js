@@ -405,6 +405,7 @@ const Store = (() => {
         g.register(MOD, "wakeHour", { name: "Wake hour (0-23)", hint: "Hour the party rises at dawn after the night resolves.", scope: "world", config: true, type: Number, default: 6 });
         g.register(MOD, "biomeDangerJSON", { name: "Biome danger modifier (advanced)", hint: 'Optional JSON of biome → night danger (0-2), e.g. {"volcanic":2,"jungle":1}. Blank uses defaults.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "campMapJSON", { name: "Biome → camp ambience (advanced)", hint: 'Optional JSON of biome → Maestro arrangement for camp. Blank = "campVista" for all.', scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "openCityOnArrival", { name: "Open CityHUD on settlement arrival", hint: "When you enter a site whose scene is a Cavril CityHUD city, raise its CityHUD automatically — the road→town handoff in one motion. No effect if CityHUD isn't installed.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "lastWatch", { scope: "world", config: false, type: Array, default: [] });
         // Per-hex travel events: a roll on every hex entered → mostly mundane flavor,
         // a danger-scaled chance of a real event (combat/puzzle/site) that halts the day.
@@ -2002,16 +2003,36 @@ const Augur = (() => {
         } catch (e) { warn("Augur present but its API could not be imported; using core fallbacks.", e); _api = null; }
         return _api;
     }
+    // If the entered scene is a Cavril CityHUD settlement (its imported city scene carries
+    // flags.world.cavrilImport / cityJournalId), raise its CityHUD so road→town is one motion.
+    // CityHUD.open() resolves the city from the now-active scene, so we just poke it after a beat.
+    // Optional-chained + gated: a no-op if CityHUD isn't installed or the toggle is off.
+    function maybeOpenCity(scene) {
+        if (!game.user.isGM || !game.settings.get(MOD, "openCityOnArrival")) return;
+        const w = scene?.flags?.world || {};
+        if (!(w.cavrilImport || w.cityJournalId)) return;
+        if (!globalThis.CavrilCityHUD?.open) return;
+        // Open once the target scene is actually the active canvas — handles Augur's transition
+        // delay so CityHUD resolves the right city. Gives up after ~3s if activation never lands.
+        let tries = 0;
+        const tryOpen = () => {
+            if (canvas?.scene?.id === scene.id) { try { globalThis.CavrilCityHUD.open(); log("CityHUD raised for arrived settlement."); } catch (e) { warn("CityHUD open on arrival failed", e); } return; }
+            if (++tries < 12) setTimeout(tryOpen, 250);
+        };
+        setTimeout(tryOpen, 250);
+    }
     // Travel into a Site's linked scene from the hexmap.
     async function enterSite(site) {
         if (!site?.sceneId) return ui.notifications?.warn("That site has no linked scene.");
         const target = game.scenes?.get(site.sceneId);
         if (!target) return ui.notifications?.warn("Linked scene not found.");
         const a = await api();
+        let transitioned = false;
         try {
-            if (a?.transitionToScene) { await a.transitionToScene(target); return; }
+            if (a?.transitionToScene) { await a.transitionToScene(target); transitioned = true; }
         } catch (e) { warn("augur transitionToScene failed, falling back to view()", e); }
-        if (game.user.isGM) await target.activate(); else target.view();
+        if (!transitioned) { if (game.user.isGM) await target.activate(); else target.view(); }
+        maybeOpenCity(target);
     }
     return { active, api, enterSite };
 })();
