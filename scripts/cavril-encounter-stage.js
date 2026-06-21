@@ -533,43 +533,95 @@
   // hydrate them into world actors (imported once, flagged + reused thereafter).
   async function rollMonsters(cls) {
     const pack = game.packs?.get(CFG.monsterPack);
-    if (!pack) { warn(`monster pack '${CFG.monsterPack}' not found`); return []; }
-    const typeSet = new Set(BIOME_CREATURES[effectiveBiome(cls)] || BIOME_CREATURES.unknown);
+    if (!pack) {
+      const avail = game.packs?.filter(p => p.documentName === "Actor").map(p => p.collection).join(", ") || "none";
+      const m = `monster compendium "${CFG.monsterPack}" not found. Available Actor packs: ${avail}`;
+      warn(m); ui.notifications?.error(`Encounter Stage: ${m}`, { permanent: true }); return [];
+    }
+    const ebiome = effectiveBiome(cls);
+    const typeSet = new Set(BIOME_CREATURES[ebiome] || BIOME_CREATURES.unknown);
     const { level, size } = partyContext();
-    const index = await pack.getIndex({ fields: ["system.details.cr", "system.details.type"] });
     const crLo = Math.max(0, level - 3), crHi = level + 2;
-    let pool = index.filter(e => { const cr = crOfEntry(e); return typeSet.has(typeOfEntry(e)) && cr != null && cr >= crLo && cr <= crHi; });
-    if (!pool.length) pool = index.filter(e => typeSet.has(typeOfEntry(e)) && crOfEntry(e) != null); // widen if band empty
-    if (!pool.length) { warn(`no ${[...typeSet].join("/")} foes in ${CFG.monsterPack}`); return []; }
+    let index;
+    try { index = await pack.getIndex({ fields: ["system.details.cr", "system.details.type"] }); }
+    catch (e) { warn("getIndex failed", e); ui.notifications?.error(`Encounter Stage: couldn't read ${CFG.monsterPack}.`); return []; }
+
+    // CR is reliably in the compendium index; the CREATURE TYPE often is NOT (it varies by
+    // dnd5e version). So: if the index carries type, filter on it (fast); otherwise load the
+    // CR-banded documents and read the type from each (slower, one-time, but always correct).
+    const inBand = e => { const cr = crOfEntry(e); return cr != null && cr >= crLo && cr <= crHi; };
+    const typeIndexed = index.some(e => typeOfEntry(e));
+    let pool = [];   // [{ id, cr, name }]
+    if (typeIndexed) {
+      for (const e of index) if (typeSet.has(typeOfEntry(e)) && inBand(e)) pool.push({ id: e._id, cr: crOfEntry(e) ?? 0, name: e.name });
+      if (!pool.length) for (const e of index) if (typeSet.has(typeOfEntry(e))) pool.push({ id: e._id, cr: crOfEntry(e) ?? 0, name: e.name });
+    } else {
+      const band = index.filter(e => inBand(e) || crOfEntry(e) == null);
+      const scan = band.length ? band : Array.from(index);
+      if (scan.length > 40) ui.notifications?.info(`Encounter Stage: scanning ${scan.length} ${CFG.monsterPack} entries for ${ebiome} foes…`);
+      for (const e of scan) {
+        try { const d = await pack.getDocument(e._id); if (typeSet.has(typeOfEntry(d))) pool.push({ id: e._id, cr: crOfEntry(d) ?? crOfEntry(e) ?? 0, name: d.name }); }
+        catch { /* skip unreadable */ }
+      }
+    }
+    if (!pool.length) {
+      const m = `no ${[...typeSet].join(" / ")} foes in "${CFG.monsterPack}" for ${ebiome} (CR ${crLo}–${crHi}, party lvl ${level}×${size}).`;
+      warn(m); ui.notifications?.warn(`Encounter Stage: ${m}`, { permanent: true }); return [];
+    }
     const budget = Math.max(1, Math.round(level * size * CFG.encounterBudgetMul));
-    const shuffled = pool.map(e => [Math.random(), e]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
+    const shuffled = pool.map(x => [Math.random(), x]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
     const chosen = []; let spent = 0;
-    for (const e of shuffled) {
+    for (const x of shuffled) {
       if (chosen.length >= CFG.maxMonsters) break;
-      chosen.push(e); spent += (crOfEntry(e) || 0.25) + 1;
+      chosen.push(x); spent += (x.cr || 0.25) + 1;
       if (spent >= budget && chosen.length >= 1) break;
     }
     const folder = await ensureFolder("Encounter Monsters", "Actor");
     const actors = [];
-    for (const e of chosen) {
-      const srcId = `${pack.collection}.${e._id}`;
+    for (const x of chosen) {
+      const srcId = `${pack.collection}.${x.id}`;
       let actor = game.actors?.find(a => a.getFlag?.("cavril-encounter-stage", "srcId") === srcId);
       if (!actor) {
-        const data = (await pack.getDocument(e._id)).toObject();
-        data.folder = folder?.id ?? null;
-        foundry.utils.setProperty(data, "flags.cavril-encounter-stage.srcId", srcId);
-        actor = await Actor.create(data);
+        try {
+          const data = (await pack.getDocument(x.id)).toObject();
+          data.folder = folder?.id ?? null;
+          foundry.utils.setProperty(data, "flags.cavril-encounter-stage.srcId", srcId);
+          actor = await Actor.create(data);
+        } catch (err) { warn(`import "${x.name}" failed`, err); }
       }
       if (actor) actors.push(actor);
     }
+    log(`rolled ${actors.length} foes for ${ebiome} (CR ${crLo}–${crHi}, budget ${budget}): ${actors.map(a => `${a.name}(CR ${a.system?.details?.cr ?? "?"})`).join(", ")}`);
     return actors;
   }
 
-  // Drop tokens for the given actors, clustered near the scene centre.
-  async function dropTokens(sceneDoc, actors) {
+  // Diagnostics: why aren't foes dropping? Logs pack/index/type/CR/party state.
+  async function diagnoseMonsters(biome = "temperate") {
+    const out = { pack: CFG.monsterPack, packFound: false };
+    const pack = game.packs?.get(CFG.monsterPack);
+    if (!pack) { out.availableActorPacks = game.packs.filter(p => p.documentName === "Actor").map(p => p.collection); console.log(`%c[EncounterStage] diagnostics`, CSS, out); return out; }
+    out.packFound = true;
+    const index = await pack.getIndex({ fields: ["system.details.cr", "system.details.type"] });
+    const first = index.find(() => true);
+    out.size = index.size;
+    out.typeInIndex = index.some(e => typeOfEntry(e));
+    out.sampleName = first?.name; out.sampleType = typeOfEntry(first) || "(blank in index)"; out.sampleCr = crOfEntry(first);
+    const { level, size } = partyContext();
+    out.party = `lvl ${level} × ${size}`; out.crBand = `${Math.max(0, level - 3)}–${level + 2}`;
+    const typeSet = new Set(BIOME_CREATURES[biome] || BIOME_CREATURES.unknown);
+    out.biome = biome; out.wantTypes = [...typeSet].join("/");
+    if (out.typeInIndex) out.matchingTypeCount = index.filter(e => typeSet.has(typeOfEntry(e))).length;
+    else out.note = "creature type NOT in the compendium index — rollMonsters will load documents to read it (slower, but works).";
+    console.log(`%c[EncounterStage] monster diagnostics`, CSS, out);
+    ui.notifications?.info(`Encounter Stage diagnostics in console (F12). Pack: ${out.packFound ? "OK" : "MISSING"} · ${out.size ?? 0} entries · type-in-index: ${out.typeInIndex}.`);
+    return out;
+  }
+
+  // Drop tokens for the given actors, clustered near the scene centre (or a given anchor).
+  async function dropTokens(sceneDoc, actors, anchor = null) {
     if (!actors.length) return [];
     const gs = sceneDoc.grid?.size || sceneDoc.grid || CFG.fallbackGridSize;
-    const cx = Math.round(sceneDoc.width * 0.5), cy = Math.round(sceneDoc.height * 0.5);
+    const cx = Math.round(anchor?.x ?? sceneDoc.width * 0.5), cy = Math.round(anchor?.y ?? sceneDoc.height * 0.5);
     const data = [];
     for (let i = 0; i < actors.length; i++) {
       const ang = (i / actors.length) * Math.PI * 2;
@@ -622,37 +674,57 @@
     const feats = [cls.river && "river", cls.infrastructure && "road", cls.coast && "coast", (cls.water || cls.terrainKey === "water") && "water"].filter(Boolean).join("+");
     log(`encounter @ ${token.name}: biome=${ebiome}${cls.biome && cls.biome !== ebiome ? `(raw ${cls.biome})` : ""}${cls.elevation ? "/" + cls.elevation : ""}${feats ? " [" + feats + "]" : ""} · ${when}${season ? " · " + season : ""}${weather ? " · " + weather : ""}`);
 
-    const pick = await pickMap(cls, { type, when, weather, season });
-    if (!pick) return warn(`no map match for ${cls.biome}`);
-    log(`map: ${describePick(pick)}`);
-    ui.notifications?.info(`Staging "${pick.item.name}"…`);
-    const scene = await stagePick(pick, { activate: opts.activate ?? true });
-    if (!scene) return warn("scene build failed");
+    // 1) Try to stage a CZEPEKU battlemap. If CZEPEKU isn't connected (or nothing matches),
+    //    DON'T abort — fall back to the current scene so the SRD foes still get built.
+    let scene = null, pick = null, onFallback = false;
+    if (opts.map ?? true) {
+      try {
+        pick = await pickMap(cls, { type, when, weather, season });
+        if (pick) {
+          log(`map: ${describePick(pick)}`);
+          ui.notifications?.info(`Encounter Stage: staging "${pick.item.name}"…`);
+          scene = await stagePick(pick, { activate: opts.activate ?? CFG.activateScene });
+        } else {
+          ui.notifications?.warn(`Encounter Stage: no CZEPEKU map matched ${ebiome} — dropping foes on the current map.`);
+        }
+      } catch (e) {
+        const noCz = /sessionId|CZEPEKU|Access-Control|fetch/i.test(String(e.message));
+        warn("map stage failed", e);
+        ui.notifications?.warn(`Encounter Stage: ${noCz ? "CZEPEKU not connected" : "map build failed (" + e.message + ")"} — dropping foes on the current map.`);
+      }
+    }
+    if (!scene) { scene = canvas?.scene; onFallback = true; }   // SRD encounter on the active scene
+    if (!scene) { ui.notifications?.error("Encounter Stage: no scene available to stage on."); return null; }
 
+    // 2) Roll + drop the SRD foes (this is independent of CZEPEKU). On the fallback map,
+    //    cluster them near the chosen token rather than the scene centre.
     let actors = [], tokens = [];
     if ((opts.dropMonsters ?? CFG.dropMonsters) && type === "combat") {
       actors = await rollMonsters(cls);
-      tokens = await dropTokens(scene, actors);
-      log(`dropped ${tokens.length} foes: ${actors.map(a => `${a.name}(CR ${a.system?.details?.cr ?? "?"})`).join(", ")}`);
+      if (actors.length) {
+        const anchor = onFallback ? { x: token.center?.x ?? token.x, y: token.center?.y ?? token.y } : null;
+        tokens = await dropTokens(scene, actors, anchor);
+        log(`dropped ${tokens.length}/${actors.length} foes${onFallback ? " (on current scene)" : ""}.`);
+      }
     }
     if ((opts.playMusic ?? CFG.playCombatMusic) && actors.length) playCombatMusic(actors);
 
     if ((opts.startCombat ?? CFG.startCombat) && tokens.length) {
       try {
         const combat = await Combat.create({ scene: scene.id });
-        const combatants = scene.tokens.filter(t => t.actor?.type === "npc").map(t => ({ tokenId: t.id, sceneId: scene.id }));
+        const combatants = tokens.map(t => ({ tokenId: t.id, sceneId: scene.id }));
         if (combatants.length) await combat.createEmbeddedDocuments("Combatant", combatants);
         await combat.startCombat?.();
       } catch (e) { warn("combat start failed", e); }
     }
-    ui.notifications?.info(`Encounter ready: "${pick.item.name}" · ${actors.length} foes`);
-    return { scene, actors, tokens, pick, cls, when, season, weather };
+    ui.notifications?.info(`Encounter ready: ${pick ? `"${pick.item.name}" · ` : ""}${actors.length} foe${actors.length === 1 ? "" : "s"}${onFallback && pick === null ? " (current map)" : ""}.`);
+    return { scene, actors, tokens, pick, cls, when, season, weather, fallback: onFallback };
   }
 
   // ===== SETTINGS ==========================================================
   function registerSettings() {
     const reg = (key, data) => { try { game.settings.register(MOD, key, data); } catch (e) { warn("setting", key, "failed", e); } };
-    reg("esEnabled",          { name: "Encounter Stage — enable", hint: "Auto-stage a CZEPEKU battlemap for hostile encounters. Requires the CZEPEKU Universe module connected (Connect + log in).", scope: "world", config: true, type: Boolean, default: true });
+    reg("esEnabled",          { name: "Encounter Stage — enable", hint: "Build encounters for hostile beats: SRD foes (always) + a CZEPEKU battlemap (if the CZEPEKU Universe module is connected). Without CZEPEKU, foes drop on the current map.", scope: "world", config: true, type: Boolean, default: true });
     reg("esAutoStageOnCombat",{ name: "  · Stage on combat start", hint: "When a combat is created, build + activate the map the last encounter staged.", scope: "world", config: true, type: Boolean, default: true });
     reg("esDropMonsters",     { name: "  · Drop foes", hint: "Place a CR-scaled, biome-appropriate group of monsters on the staged map.", scope: "world", config: true, type: Boolean, default: true });
     reg("esCombatMusic",      { name: "  · Combat music", hint: "Start the Cavril: Maestro combat theme for the dominant foe type when foes are dropped.", scope: "world", config: true, type: Boolean, default: true });
@@ -708,7 +780,7 @@
     // The headline command: stage a full encounter from the selected token's hex.
     stageEncounter,
     encounterHere: (opts) => stageEncounter(opts),
-    rollMonsters, dropTokens, playCombatMusic, currentSeason, timeOfDay, partyContext,
+    rollMonsters, dropTokens, playCombatMusic, currentSeason, timeOfDay, partyContext, diagnoseMonsters,
     BIOME_CREATURES, TYPE_MUSIC,
     // Per-biome diagnostics: which mapped tags actually exist + how many maps carry them.
     async audit() {

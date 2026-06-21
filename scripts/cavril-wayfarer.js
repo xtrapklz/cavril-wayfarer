@@ -952,14 +952,22 @@ const Party = (() => {
         await addItem(g, RATION_RE, "Rations", rations);
         await addItem(g, WATER_RE, "Waterskin", water);
     }
-    // Nudge the shared stash up/down by one (the HUD steppers).
+    // Nudge the shared stash up/down by one (the HUD steppers). Works WITHOUT a dnd5e "group" actor: the group
+    // inventory is preferred, but with individual PCs we add to / take from a party member instead (so the +/-
+    // buttons always do something instead of silently bailing when there's no group actor).
     async function adjustStash(type, delta) {
         if (!game.user.isGM || !delta) return;
-        const g = groupActor();
-        if (!g) { ui.notifications?.warn(`${TITLE}: no party group actor to hold supplies.`); return; }
         const re = type === "water" ? WATER_RE : RATION_RE;
-        if (delta > 0) await addItem(g, re, type === "water" ? "Waterskin" : "Rations", delta);
-        else await take(g, re, -delta);
+        const g = groupActor();
+        if (delta > 0) {
+            const holder = g || members()[0];
+            if (!holder) { ui.notifications?.warn(`${TITLE}: no party actor (group or character) to hold supplies.`); return; }
+            await addItem(holder, re, type === "water" ? "Waterskin" : "Rations", delta);
+        } else {
+            let need = -delta;
+            if (g) need -= await take(g, re, need);
+            for (const m of members()) { if (need <= 0) break; need -= await take(m, re, need); }   // then pull from members' packs
+        }
     }
     // Set a member's OWN ration/water count to a value (the HUD per-character edit).
     async function setMemberSupply(actorId, type, value) {
@@ -2621,9 +2629,10 @@ function cwfCardShell(icon, title, bodyHTML, { sub = "", footerHTML = "" } = {})
     </div>`;
 }
 const cwfRow = (label, value) => `<div class="cwf-card-row"><span class="cwf-card-l">${label}</span><span class="cwf-card-v">${value}</span></div>`;
-// "Build battlemap" button — only when the Encounter Stage module is installed. Pulls a
-// CZEPEKU map + CR-scaled foes + combat music for the current hex (data-cwf="stage").
-const cwfStageBtn = () => globalThis.CavrilEncounterStage ? `<button class="cwf-cardbtn" data-cwf="stage" title="Build a CZEPEKU battlemap + foes + combat music for this encounter"><i class="fa-solid fa-dragon"></i> Build battlemap</button>` : "";
+// "Build encounter" button — only when the Encounter Stage module is installed. Rolls
+// SRD foes + combat music for the current hex, on a matched CZEPEKU map if connected
+// (else the current scene). data-cwf="stage".
+const cwfStageBtn = () => globalThis.CavrilEncounterStage ? `<button class="cwf-cardbtn" data-cwf="stage" title="Build this encounter — SRD foes + combat music, on a matched CZEPEKU battlemap if connected"><i class="fa-solid fa-dragon"></i> Build encounter</button>` : "";
 const TIER_LABEL = { crit: "Critical Success", success: "Success", fail: "Failure", critfail: "Critical Failure" };
 // Per-role skill options the GM can switch between for the situation. First = default.
 const ROLE_SKILLS = {
@@ -2633,6 +2642,7 @@ const ROLE_SKILLS = {
 };
 const Turn = (() => {
     let active = false, step = "active", route = [], governing = null, pace = "normal", boat = false, turnTok = null;
+    let held = false;   // set when the GM manually edits a roll value → suspends auto-resolve so they can adjust freely
     const newSlot = () => ({ actorId: null, actorName: null, skillId: null, total: null, nat: null, outcome: null, result: null });
     const roles = { navigate: newSlot(), scout: newSlot(), forage: newSlot() };
 
@@ -2640,7 +2650,7 @@ const Turn = (() => {
         const r = Travel.route;
         if (!r?.length) { ui.notifications?.warn(`${TITLE}: plot a destination first.`); return; }
         turnTok = Travel.token || Canvasry.activeToken();   // lock the party token now (selection can change mid-turn)
-        active = true; step = "active";
+        active = true; step = "active"; held = false;
         route = r.slice();
         governing = Travel.governing();
         pace = Travel.pace || "normal"; boat = Travel.boat;
@@ -2702,22 +2712,33 @@ const Turn = (() => {
         const rr = Array.isArray(result) ? result[0] : result;
         if (rr) { s.total = rr.total ?? null; s.nat = natOf(rr); }
         WayfarerPanel.render();
-        maybeAutoResolve();
+        // Deliberately NO auto-resolve here: a GM rolling in Foundry is present and may want to adjust totals first,
+        // so leave resolution to the "Resolve turn" button. Auto-resolve still fires for rolls that arrive from D&D
+        // Beyond (remote players), where there's no GM click — see ingestRoll().
     }
     function enter(roleKey, val) {
         const n = Number(val);
-        if (Number.isFinite(n)) { roles[roleKey].total = n; roles[roleKey].nat = null; }
+        if (Number.isFinite(n)) { roles[roleKey].total = n; roles[roleKey].nat = null; held = true; }   // manual entry → GM drives, no auto-resolve
         WayfarerPanel.render();
         maybeAutoResolve();
+    }
+    // Nudge a rolled total up/down by 1 before resolving (the +/- steppers on each role). Takes manual control of
+    // the turn so auto-resolve won't fire out from under you; clears the natural die since the value is now hand-set.
+    function adjust(roleKey, delta) {
+        const s = roles[roleKey];
+        s.total = (Number.isFinite(s.total) ? s.total : 0) + Number(delta || 0);
+        s.nat = null; held = true;
+        WayfarerPanel.render();
     }
 
     function outcomeFor(s) {
         if (s.total == null) return null;
         const dc = governing?.dc ?? 10;
         if (s.nat === 20) return "crit";
-        if (s.nat === 1) return "critfail";
+        if (s.nat === 1) return "critfail";           // a fumble is a natural 1 — not just a low total
         if (s.total >= dc + 10) return "crit";
-        if (s.total <= dc - 10) return "critfail";
+        // NOTE: removed "total <= dc - 10 → critfail". The governing DC is the route's WORST hex, so on hard
+        // terrain a perfectly ordinary low roll was constantly a critical failure. A big miss is now a normal fail.
         return s.total >= dc ? "success" : "fail";
     }
     const claimedRoles = () => Object.entries(roles).filter(([, v]) => v.actorId);
@@ -2725,8 +2746,8 @@ const Turn = (() => {
     // Once every claimed role has a result (rolled in Foundry or arrived from D&D Beyond),
     // resolve the turn on its own — the players' rolls are the trigger, no GM click.
     function maybeAutoResolve() {
-        if (!game.settings.get(MOD, "autoResolveTurn") || step !== "active" || !allRolled()) return;
-        setTimeout(() => { try { if (active && step === "active" && allRolled()) resolve(); } catch (e) { warn("auto-resolve failed", e); } }, 700);   // let the last roll card land
+        if (held || !game.settings.get(MOD, "autoResolveTurn") || step !== "active" || !allRolled()) return;   // GM is adjusting → don't resolve
+        setTimeout(() => { try { if (active && !held && step === "active" && allRolled()) resolve(); } catch (e) { warn("auto-resolve failed", e); } }, 700);   // let the last roll card land
     }
 
     async function resolve() {
@@ -2785,7 +2806,7 @@ const Turn = (() => {
     }
 
     function end() {
-        active = false; step = "active"; route = []; governing = null; turnTok = null;
+        active = false; step = "active"; route = []; governing = null; turnTok = null; held = false;
         for (const k of Object.keys(roles)) roles[k] = newSlot();
         CourseOverlay.clear();
         WayfarerPanel.render(); BiomeBadge.update();
@@ -2808,7 +2829,7 @@ const Turn = (() => {
     }
 
     return {
-        begin, claim, setSkill, roll, enter, resolve, end, ingestRoll, partyMembers, outcomeFor, rollState,
+        begin, claim, setSkill, roll, enter, adjust, resolve, end, ingestRoll, partyMembers, outcomeFor, rollState,
         claimedRoles, allRolled,
         get active() { return active; }, get step() { return step; }, get roles() { return roles; },
         get governing() { return governing; }, get route() { return route; }
@@ -3062,6 +3083,7 @@ const WayfarerPanel = (() => {
                 case "travel-cancel": Travel.cancel(); break;
                 case "turn-begin": Turn.begin(); if (Turn.active) Travel.cancel(); break;
                 case "turn-roll": await Turn.roll(btn.dataset.role); break;
+                case "turn-adjust": Turn.adjust(btn.dataset.role, Number(btn.dataset.d)); break;
                 case "turn-resolve": await Turn.resolve(); break;
                 case "turn-end": Turn.end(); break;
                 case "camp-danger": Camp.setDanger(Number(btn.dataset.n)); break;
@@ -3203,11 +3225,12 @@ const WayfarerPanel = (() => {
             const advTag = rs.mode === "advantage" ? `<span class="cwf-adv">ADV</span>` : rs.mode === "disadvantage" ? `<span class="cwf-dis">DIS</span>` : "";
             const tier = Turn.outcomeFor(s);
             const badge = s.total != null ? `<span class="cwf-tier cwf-${tier}">${s.total} · ${TIER_LABEL[tier]}</span>` : "";
+            const adj = s.total != null ? `<span class="cwf-stepper"><button class="cwf-step-btn" data-action="turn-adjust" data-role="${k}" data-d="-1" title="−1 to the total" ${dis}>−</button><button class="cwf-step-btn" data-action="turn-adjust" data-role="${k}" data-d="1" title="+1 to the total" ${dis}>+</button></span>` : "";
             const rollRow = s.actorId ? `
                 <div class="cwf-roll-row">
                     <button class="cwf-btn cwf-roll" data-action="turn-roll" data-role="${k}" ${dis}><i class="fa-solid fa-dice-d20"></i> Roll</button>
                     <input class="cwf-enter" data-action="turn-enter" data-role="${k}" type="number" placeholder="#" title="Type a d20 total (manual / in-person)" value="${s.total ?? ""}" ${dis}>
-                    ${badge}
+                    ${adj}${badge}
                 </div>` : "";
             return `
                 <div class="cwf-role ${s.actorId ? "claimed" : ""}">
