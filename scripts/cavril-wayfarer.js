@@ -1523,7 +1523,7 @@ function cwfCampCardHTML() {
     const body = `${Camp.supplyNote ? cwfRow("Supplies", cwfEsc(Camp.supplyNote)) : ""}
         <div class="cwf-card-row"><span class="cwf-card-l">Danger</span><span class="cwf-card-v">${danger} + biome ${biomeM} + hostiles ${hostileM} = <b>${base}</b>/${Danger.scale()} per hr</span></div>
         <div class="cwf-cardbtns">${dial}</div>
-        <div class="cwf-night-sec">Watch order · ${cwfEsc(watchNote)}</div>
+        <div class="cwf-night-sec">Watch order · ${cwfEsc(watchNote)} <button class="cwf-cardbtn" data-cwf="cwatch-all" style="min-width:0;padding:0 7px;font-size:.82em" title="Put the whole party on watch">All</button><button class="cwf-cardbtn" data-cwf="cwatch-none" style="min-width:0;padding:0 7px;font-size:.82em" title="Clear the watch">Clear</button></div>
         <div class="cwf-watch-grid">${chips || `<span class="cwf-muted2">No party members.</span>`}</div>`;
     const foot = `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="ccancel"><i class="fa-solid fa-xmark"></i> Cancel</button><button class="cwf-cardbtn cwf-primary" data-cwf="cresolve"><i class="fa-solid fa-moon"></i> Resolve night → dawn</button></div>`;
     return cwfCardShell("fa-campground", "Make Camp", body, { sub: cls?.label || "", footerHTML: foot });
@@ -3057,6 +3057,14 @@ const Camp = (() => {
         WayfarerPanel.render();
         cwfCampRefresh();
     }
+    // One-click reset the watch — whole party on, or nobody (for a fast re-shuffle on a danger spike).
+    function setAllWatch(on) {
+        watchers.length = 0;
+        if (on) for (const a of Party.members()) watchers.push(a.id);
+        game.settings.set(MOD, "lastWatch", watchers.slice()).catch(() => {});
+        WayfarerPanel.render();
+        cwfCampRefresh();
+    }
     // Which watcher (actorId) covers night-hour h (0-based)? null if no watch.
     function watcherForHour(h) {
         if (!watchers.length) return null;
@@ -3143,7 +3151,7 @@ const Camp = (() => {
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
 
     return {
-        begin, setDanger, toggleWatcher, resolveNight, wakeAtDawn, cancel, watcherForHour, shiftHours, dangerScore, nightHours,
+        begin, setDanger, toggleWatcher, setAllWatch, resolveNight, wakeAtDawn, cancel, watcherForHour, shiftHours, dangerScore, nightHours,
         get active() { return active; }, get watchers() { return watchers; }, get supplyNote() { return supplyNote; },
         get nightEncounterPending() { return !!nightDawnPending; }
     };
@@ -3742,6 +3750,8 @@ function wireCardButtons(root) {
                 else if (act === "camp") { cwfTrek = null; await WayfarerPanel.makeCamp(); }
                 else if (act === "cdanger") { Camp.setDanger(Number(el.dataset.n)); }   // setDanger refreshes the card
                 else if (act === "cwatch") { Camp.toggleWatcher(el.dataset.id); }
+                else if (act === "cwatch-all") { Camp.setAllWatch(true); }
+                else if (act === "cwatch-none") { Camp.setAllWatch(false); }
                 else if (act === "cresolve") { await Camp.resolveNight(); }
                 else if (act === "nightdawn") { await Camp.wakeAtDawn(); }   // after the night encounter is run
                 else if (act === "ccancel") { Camp.cancel(); }
