@@ -560,61 +560,85 @@
   };
 
   // ===== BIOME ENCOUNTER ROSTERS (open SRD creatures, original ecological grouping) =======
-  // Per biome: `pool` = rank-and-file (mixed CR so the band filter finds tier-right picks),
-  // `apex` = leaders / big solo threats. Names are matched against the monster pack by name;
-  // misses are skipped, so over-listing is safe. Your Primus creatures layer on via LORE_ROSTER.
+  // Per biome, three roles, each spanning CR so role-specific bands find tier-right picks:
+  //   pool   = rank-and-file (faced in numbers)   lurker = ambushers (hide / strike from cover)
+  //   apex   = leaders + big solo threats
+  // Names are matched against the monster pack by name; misses are skipped, so over-listing is
+  // safe. Your Primus creatures layer on via LORE_ROSTER (the esLoreRostersJSON setting).
   const BIOME_ROSTER = {
-    temperate: { pool: ["Wolf", "Boar", "Black Bear", "Giant Spider", "Bandit", "Scout", "Giant Wasp", "Stirge", "Giant Rat", "Giant Eagle", "Awakened Tree", "Sprite"], apex: ["Dire Wolf", "Owlbear", "Brown Bear", "Bandit Captain", "Ogre", "Druid", "Green Hag", "Werewolf"] },
-    boreal:    { pool: ["Wolf", "Worg", "Boar", "Black Bear", "Goblin", "Giant Owl", "Giant Elk", "Scout"], apex: ["Dire Wolf", "Brown Bear", "Owlbear", "Ogre", "Troll", "Werebear", "Green Hag"] },
-    jungle:    { pool: ["Giant Centipede", "Giant Boar", "Ape", "Giant Wasp", "Constrictor Snake", "Giant Frog", "Panther", "Giant Poisonous Snake", "Flying Snake", "Velociraptor", "Swarm of Insects"], apex: ["Giant Ape", "Tiger", "Giant Constrictor Snake", "Giant Crocodile", "Allosaurus", "Yuan-ti Malison"] },
-    desert:    { pool: ["Jackal", "Giant Lizard", "Hyena", "Vulture", "Giant Vulture", "Scout", "Bandit", "Cultist", "Swarm of Insects"], apex: ["Giant Scorpion", "Giant Hyena", "Lion", "Lamia", "Mummy", "Salamander", "Gnoll Pack Lord"] },
-    savanna:   { pool: ["Hyena", "Jackal", "Gnoll", "Boar", "Giant Vulture", "Lion", "Scout"], apex: ["Giant Hyena", "Lion", "Rhinoceros", "Elephant", "Triceratops", "Gnoll Fang of Yeenoghu"] },
-    frozen:    { pool: ["Wolf", "Worg", "Polar Bear", "Ice Mephit", "Giant Goat"], apex: ["Polar Bear", "Yeti", "Winter Wolf", "Mammoth", "Abominable Yeti", "Young White Dragon"] },
-    tundra:    { pool: ["Wolf", "Worg", "Giant Elk", "Polar Bear", "Giant Goat"], apex: ["Mammoth", "Winter Wolf", "Saber-Toothed Tiger", "Yeti", "Frost Giant"] },
-    volcanic:  { pool: ["Magma Mephit", "Fire Snake", "Magmin", "Hell Hound"], apex: ["Salamander", "Fire Elemental", "Azer", "Young Red Dragon"] },
-    wasteland: { pool: ["Jackal", "Giant Vulture", "Zombie", "Skeleton", "Ghoul", "Bandit", "Cultist", "Giant Scorpion"], apex: ["Wight", "Ghast", "Manticore", "Cult Fanatic", "Mummy", "Ogre"] },
-    tainted:   { pool: ["Zombie", "Skeleton", "Ghoul", "Cultist", "Shadow", "Stirge", "Swarm of Insects"], apex: ["Ghast", "Wight", "Specter", "Cult Fanatic", "Carrion Crawler", "Otyugh", "Gibbering Mouther"] },
-    void:      { pool: ["Shadow", "Specter", "Will-o'-Wisp", "Cultist", "Nothic"], apex: ["Wraith", "Wight", "Invisible Stalker", "Gibbering Mouther", "Chuul"] },
-    water:     { pool: ["Reef Shark", "Giant Crab", "Merfolk", "Swarm of Quippers", "Crocodile", "Constrictor Snake", "Giant Octopus"], apex: ["Hunter Shark", "Giant Shark", "Giant Crocodile", "Plesiosaurus", "Water Elemental", "Sea Hag", "Killer Whale"] },
-    unknown:   { pool: ["Wolf", "Bandit", "Giant Spider", "Scout"], apex: ["Ogre", "Dire Wolf", "Bandit Captain"] },
+    temperate: { pool: ["Wolf", "Boar", "Giant Rat", "Stirge", "Bandit", "Giant Wasp", "Black Bear", "Scout", "Thug", "Giant Eagle", "Swarm of Ravens"], lurker: ["Giant Spider", "Giant Wolf Spider", "Spy", "Green Hag", "Awakened Tree"], apex: ["Dire Wolf", "Owlbear", "Brown Bear", "Bandit Captain", "Ogre", "Druid", "Veteran", "Troll", "Werewolf", "Werebear", "Knight", "Hill Giant", "Mage", "Treant"] },
+    boreal:    { pool: ["Wolf", "Worg", "Boar", "Black Bear", "Goblin", "Giant Owl", "Giant Elk", "Scout", "Stirge"], lurker: ["Giant Spider", "Werewolf", "Green Hag", "Goblin Boss"], apex: ["Dire Wolf", "Brown Bear", "Owlbear", "Ogre", "Troll", "Werebear", "Hill Giant", "Mammoth", "Young Green Dragon", "Treant"] },
+    jungle:    { pool: ["Giant Centipede", "Giant Boar", "Ape", "Giant Wasp", "Constrictor Snake", "Giant Frog", "Flying Snake", "Velociraptor", "Swarm of Insects", "Giant Poisonous Snake", "Pteranodon"], lurker: ["Panther", "Giant Spider", "Giant Constrictor Snake", "Yuan-ti Malison", "Tiger"], apex: ["Giant Ape", "Tiger", "Giant Crocodile", "Allosaurus", "Yuan-ti Malison", "Triceratops", "Tyrannosaurus Rex", "Young Green Dragon"] },
+    desert:    { pool: ["Jackal", "Giant Lizard", "Hyena", "Vulture", "Giant Vulture", "Scout", "Bandit", "Cultist", "Swarm of Insects"], lurker: ["Giant Scorpion", "Lamia", "Spy", "Mummy", "Cult Fanatic"], apex: ["Giant Scorpion", "Giant Hyena", "Lion", "Lamia", "Mummy", "Salamander", "Gnoll Pack Lord", "Mummy Lord", "Young Brass Dragon", "Androsphinx"] },
+    savanna:   { pool: ["Hyena", "Jackal", "Gnoll", "Boar", "Giant Vulture", "Lion", "Scout", "Giant Hyena"], lurker: ["Lion", "Giant Hyena", "Gnoll Pack Lord", "Cult Fanatic"], apex: ["Lion", "Rhinoceros", "Elephant", "Triceratops", "Gnoll Fang of Yeenoghu", "Tyrannosaurus Rex", "Young Brass Dragon"] },
+    frozen:    { pool: ["Wolf", "Worg", "Polar Bear", "Ice Mephit", "Giant Goat", "Swarm of Ravens"], lurker: ["Winter Wolf", "Yeti", "Will-o'-Wisp", "Polar Bear"], apex: ["Polar Bear", "Yeti", "Winter Wolf", "Mammoth", "Abominable Yeti", "Frost Giant", "Young White Dragon", "Adult White Dragon"] },
+    tundra:    { pool: ["Wolf", "Worg", "Giant Elk", "Polar Bear", "Giant Goat"], lurker: ["Winter Wolf", "Yeti", "Saber-Toothed Tiger"], apex: ["Mammoth", "Winter Wolf", "Saber-Toothed Tiger", "Yeti", "Frost Giant", "Abominable Yeti", "Young White Dragon"] },
+    volcanic:  { pool: ["Magma Mephit", "Fire Snake", "Magmin", "Hell Hound", "Smoke Mephit"], lurker: ["Salamander", "Hell Hound", "Fire Elemental"], apex: ["Salamander", "Fire Elemental", "Azer", "Young Red Dragon", "Adult Red Dragon", "Fire Giant"] },
+    wasteland: { pool: ["Jackal", "Giant Vulture", "Zombie", "Skeleton", "Ghoul", "Bandit", "Cultist", "Vulture"], lurker: ["Ghost", "Giant Scorpion", "Cult Fanatic", "Wight"], apex: ["Wight", "Ghast", "Manticore", "Mummy", "Ogre", "Revenant", "Wraith", "Young Black Dragon"] },
+    tainted:   { pool: ["Zombie", "Skeleton", "Ghoul", "Cultist", "Shadow", "Stirge", "Swarm of Insects", "Giant Centipede"], lurker: ["Ghost", "Specter", "Carrion Crawler", "Otyugh", "Will-o'-Wisp"], apex: ["Ghast", "Wight", "Wraith", "Cult Fanatic", "Gibbering Mouther", "Mummy", "Vampire Spawn", "Flameskull"] },
+    void:      { pool: ["Shadow", "Specter", "Will-o'-Wisp", "Cultist", "Nothic", "Flameskull"], lurker: ["Phase Spider", "Invisible Stalker", "Specter", "Nothic"], apex: ["Wraith", "Wight", "Invisible Stalker", "Gibbering Mouther", "Chuul", "Cloaker", "Salamander"] },
+    water:     { pool: ["Reef Shark", "Giant Crab", "Merfolk", "Swarm of Quippers", "Crocodile", "Constrictor Snake", "Giant Octopus", "Sahuagin"], lurker: ["Hunter Shark", "Giant Constrictor Snake", "Sea Hag", "Water Elemental"], apex: ["Hunter Shark", "Giant Shark", "Giant Crocodile", "Plesiosaurus", "Water Elemental", "Killer Whale", "Sahuagin Baron", "Young Bronze Dragon"] },
+    unknown:   { pool: ["Wolf", "Bandit", "Giant Spider", "Scout", "Boar"], lurker: ["Giant Spider", "Spy", "Ghost"], apex: ["Ogre", "Dire Wolf", "Bandit Captain", "Owlbear", "Veteran"] },
   };
-  // Encounter COMPOSITIONS — how the staged foes are shaped (vs a flat budget fill).
+  // Hex FEATURES add creatures on top of the biome roster (river/coast → aquatic; road → waylayers).
+  const FEATURE_ROSTER = {
+    water: { pool: ["Reef Shark", "Giant Crab", "Swarm of Quippers", "Constrictor Snake"], lurker: ["Hunter Shark", "Giant Octopus"], apex: ["Giant Shark", "Water Elemental", "Giant Crocodile"] },
+    road:  { pool: ["Bandit", "Scout", "Thug"], lurker: ["Spy"], apex: ["Bandit Captain", "Veteran"] },
+  };
+  // Encounter COMPOSITIONS — how foes are shaped. `danger` = the scene-danger range this shape
+  // can appear in (so calm hexes lean to packs, deadly hexes to leaders/solos).
   const COMPOSITIONS = [
-    { id: "pack",       weight: 3, slots: [["pool", 3, 6]] },                 // a swarm of rank-and-file
-    { id: "packLeader", weight: 3, slots: [["pool", 2, 4], ["apex", 1, 1]] }, // minions + a leader/brute
-    { id: "ambush",     weight: 2, slots: [["pool", 2, 3]] },                 // a small group from cover
-    { id: "skirmish",   weight: 2, slots: [["pool", 2, 4]] },
-    { id: "solo",       weight: 1, slots: [["apex", 1, 1]] },                 // one big threat
-    { id: "mixed",      weight: 2, slots: [["pool", 2, 4], ["apex", 1, 1]] },
+    { id: "pack",       weight: 3, danger: [0, 3], slots: [["pool", 3, 6]] },
+    { id: "packLeader", weight: 3, danger: [1, 5], slots: [["pool", 2, 4], ["apex", 1, 1]] },
+    { id: "ambush",     weight: 2, danger: [1, 5], slots: [["lurker", 2, 3]] },
+    { id: "skirmish",   weight: 2, danger: [0, 4], slots: [["pool", 2, 4]] },
+    { id: "solo",       weight: 1, danger: [2, 5], slots: [["apex", 1, 1]] },
+    { id: "mixed",      weight: 2, danger: [1, 5], slots: [["pool", 2, 3], ["lurker", 1, 1]] },
   ];
-  // Your Primus creatures, merged OVER the SRD roster (biome → {pool,apex} of names). Loaded
-  // from the esLoreRostersJSON setting so you can feature signature monsters per biome.
-  let LORE_ROSTER = {};
-  function mergedRoster(biome) {
+  let LORE_ROSTER = {};   // your Primus creatures, merged OVER the SRD roster
+  const ROLES = ["pool", "lurker", "apex"];
+  function mergedRoster(biome, feats = {}) {
     const base = BIOME_ROSTER[biome] || BIOME_ROSTER.unknown, lore = LORE_ROSTER[biome] || {};
-    return { pool: [...(base.pool || []), ...(lore.pool || [])], apex: [...(base.apex || []), ...(lore.apex || [])] };
-  }
-  const pickWeighted = (arr) => { const tot = arr.reduce((s, c) => s + (c.weight || 1), 0); let r = Math.random() * tot; for (const c of arr) { if ((r -= (c.weight || 1)) < 0) return c; } return arr[arr.length - 1]; };
-
-  // Compose an encounter from the biome roster + a composition template, within the CR band.
-  // Returns [{id,cr,name}] or null (→ caller falls back to the type-based pool).
-  function composeEncounter(biome, index, crLo, crHi, level, size) {
-    const roster = mergedRoster(biome);
-    const byName = new Map();
-    for (const e of index) { const cr = crOfEntry(e); if (cr == null || cr < crLo || cr > crHi) continue; const k = (e.name || "").toLowerCase(); (byName.get(k) || byName.set(k, []).get(k)).push({ id: e._id, cr, name: e.name }); }
-    const fromList = (names) => { const o = []; for (const n of names || []) { const m = byName.get(String(n).toLowerCase()); if (m) o.push(...m); } return o; };
-    const poolOpts = fromList(roster.pool), apexOpts = fromList(roster.apex);
-    if (!poolOpts.length && !apexOpts.length) return null;   // roster has nothing in this CR band → fall back
-    const comp = pickWeighted(COMPOSITIONS);
-    const budget = Math.max(1, Math.round(level * size * (CFG.encounterBudgetMul ?? 0.5)));
-    const chosen = []; let spent = 0;
-    const take = (opts, n) => { for (let i = 0; i < n && opts.length; i++) { if (chosen.length >= (CFG.maxMonsters ?? 6)) return; const x = opts[Math.floor(Math.random() * opts.length)]; chosen.push(x); spent += (x.cr || 0.25) + 1; if (spent >= budget && chosen.length >= 1) return; } };
-    for (const [slot, lo, hi] of comp.slots) {
-      const n = lo + Math.floor(Math.random() * (hi - lo + 1));
-      const opts = slot === "apex" ? (apexOpts.length ? apexOpts : poolOpts) : (poolOpts.length ? poolOpts : apexOpts);
-      take(opts, n);
-      if (spent >= budget || chosen.length >= (CFG.maxMonsters ?? 6)) break;
+    const out = {};
+    for (const r of ROLES) {
+      out[r] = [...(base[r] || []), ...(lore[r] || [])];
+      if (feats.water) out[r].push(...(FEATURE_ROSTER.water[r] || []));
+      if (feats.road) out[r].push(...(FEATURE_ROSTER.road[r] || []));
     }
+    return out;
+  }
+  const pickWeighted = (arr) => { const tot = arr.reduce((s, c) => s + (c.weight || 1), 0) || 1; let r = Math.random() * tot; for (const c of arr) { if ((r -= (c.weight || 1)) < 0) return c; } return arr[arr.length - 1]; };
+  function weightedCompositions(danger) {
+    const d = Number.isFinite(danger) ? danger : 2;
+    return COMPOSITIONS.filter(c => !c.danger || (d >= c.danger[0] && d <= c.danger[1]))
+      .map(c => ({ ...c, weight: (c.weight || 1) * ((c.id === "solo" || c.id === "packLeader") ? (1 + d * 0.15) : 1) }));
+  }
+
+  // Compose an encounter from the biome roster + a danger-weighted composition. Each ROLE draws
+  // from its own CR band (pool = weak/numerous, lurker = mid, apex = near party level), the budget
+  // scales with scene danger, and hex features add aquatic/road foes. Returns {chosen,comp} | null.
+  function composeEncounter(cls, index, level, size, danger) {
+    const biome = effectiveBiome(cls);
+    const feats = { water: !!(cls?.river || cls?.coast), road: !!cls?.infrastructure };
+    const roster = mergedRoster(biome, feats);
+    const bands = {
+      pool:   [Math.max(0, Math.floor(level / 4) - 1), Math.max(1, Math.ceil(level / 2) + 1)],
+      lurker: [Math.max(0, Math.floor(level / 4)),     Math.max(1, level)],
+      apex:   [Math.max(1, level - 2),                 level + 4],
+    };
+    const mapInBand = ([lo, hi]) => { const m = new Map(); for (const e of index) { const cr = crOfEntry(e); if (cr == null || cr < lo || cr > hi) continue; const k = (e.name || "").toLowerCase(); (m.get(k) || m.set(k, []).get(k)).push({ id: e._id, cr, name: e.name }); } return m; };
+    const maps = { pool: mapInBand(bands.pool), lurker: mapInBand(bands.lurker), apex: mapInBand(bands.apex) };
+    const optsFor = (role) => { const o = []; for (const n of roster[role] || []) { const m = maps[role].get(String(n).toLowerCase()); if (m) o.push(...m); } return o; };
+    if (!ROLES.some(r => optsFor(r).length)) return null;   // nothing in any band → caller falls back
+    const comp = pickWeighted(weightedCompositions(danger));
+    const dFactor = Math.max(0.7, Math.min(1.35, 0.75 + (Number.isFinite(danger) ? danger : 2) * 0.1));
+    const budget = Math.max(1, Math.round(level * size * (CFG.encounterBudgetMul ?? 0.5) * dFactor));
+    const chosen = []; let spent = 0;
+    const take = (role, n) => {
+      let opts = optsFor(role); if (!opts.length) opts = optsFor("pool"); if (!opts.length) opts = optsFor("apex");
+      for (let i = 0; i < n && opts.length; i++) { if (chosen.length >= (CFG.maxMonsters ?? 6)) return; const x = opts[Math.floor(Math.random() * opts.length)]; chosen.push(x); spent += (x.cr || 0.25) + 1; if (spent >= budget && chosen.length >= 1) return; }
+    };
+    for (const [role, lo, hi] of comp.slots) { take(role, lo + Math.floor(Math.random() * (hi - lo + 1))); if (spent >= budget || chosen.length >= (CFG.maxMonsters ?? 6)) break; }
     return chosen.length ? { chosen, comp: comp.id } : null;
   }
 
@@ -681,7 +705,8 @@
     // to the random budget-fill of the type-pool when the roster has nothing in this CR band.
     let chosen = [], compId = null;
     if (CFG.encounterTables ?? true) {
-      const composed = composeEncounter(ebiome, index, crLo, crHi, level, size);
+      let danger = 2; try { danger = Number(globalThis.CavrilWayfarer?.Camp?.dangerScore?.()); if (!Number.isFinite(danger)) danger = 2; } catch { danger = 2; }
+      const composed = composeEncounter(cls, index, level, size, danger);
       if (composed) { chosen = composed.chosen; compId = composed.comp; }
     }
     if (!chosen.length) {
@@ -1076,6 +1101,22 @@
       const rows = cat.items.filter(i => i.dataKey === dataKey && i.genre === "fantasy")
         .map(it => ({ name: it.name, score: scoreItem(it, cand), variant: pickVariant(it, { when, weather }).name }))
         .filter(x => x.score > 0).sort((a, b) => b.score - a.score).slice(0, n);
+      console.table(rows);
+      return rows;
+    },
+    // Preview the FOES a biome rolls at a given level/danger — no actors created. Great for
+    // tuning rosters: CavrilEncounterStage.previewEncounter("desert", { level: 8, danger: 4 }).
+    async previewEncounter(biome = "temperate", { level = 3, size = 4, danger = 2, n = 6, river = false, road = false } = {}) {
+      const pack = game.packs?.get(CFG.monsterPack);
+      if (!pack) { warn(`monster pack "${CFG.monsterPack}" not found`); return []; }
+      const index = await pack.getIndex({ fields: ["system.details.cr", "system.details.type"] });
+      const cls = { biome, river, coast: false, infrastructure: road };
+      const rows = [];
+      for (let i = 0; i < n; i++) {
+        const c = composeEncounter(cls, index, level, size, danger);
+        rows.push(c ? { composition: c.comp, foes: c.chosen.map(x => `${x.name} (CR ${x.cr})`).join(", ") } : { composition: "—", foes: "(roster empty in band → type-based fallback)" });
+      }
+      console.log(`%c[EncounterStage] ${biome} · level ${level}×${size} · danger ${danger}${river ? " · river" : ""}${road ? " · road" : ""}`, CSS);
       console.table(rows);
       return rows;
     },
