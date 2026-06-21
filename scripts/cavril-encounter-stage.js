@@ -44,11 +44,15 @@
     catalogTtlMs: 5 * 60_000,
     // --- full encounter staging (stageEncounter) ---
     monsterPack: "dnd5e.monsters", // Actor compendium to draw foes from
+    dropParty: true,               // place the party PC tokens in the centre
+    partySpreadFt: 10,             // party scatters within this many feet of each other
     dropMonsters: true,            // place biome-appropriate monster tokens
+    foeStandoffFt: 25,             // foe clusters start this far from the party
     maxMonsters: 6,                // hard cap on bodies dropped
     encounterBudgetMul: 0.5,       // total CR budget ≈ partyLevel × partySize × this
+    addToCombat: true,             // add party + foes to the tracker + roll NPC initiative
     playCombatMusic: true,         // start the Maestro theme for the dominant creature type
-    startCombat: false,            // also create + start the Foundry combat tracker
+    startCombat: false,            // GM begins combat (then ddb-roll-cards automates)
     lightColoration: 10,           // force every authored light to Foundry "Natural Light" technique (10); null = leave as-authored
     excludeVariantWords: ["rain", "storm", "downpour"], // never instantiate these variants — CZEPEKU's top-down rain clashes with our weather system
   };
@@ -375,7 +379,8 @@
   }
 
   // ===== STAGING ===========================================================
-  let pending = null; // { pick, cls, ctx, paths?, ts }
+  let pending = null;   // { pick, cls, ctx, paths?, ts }
+  let _staging = false; // true while stageEncounter runs — suppresses the createCombat auto-stage
 
   async function stagePick(pick, { activate, download } = {}) {
     if (!game.user.isGM) return null;
@@ -438,8 +443,8 @@
 
   async function onCreateCombat() {
     try {
-      if (!CFG.autoStageOnCombat || !game.user.isGM) return;
-      if (!pending) { log("combat started, but nothing staged — run CavrilEncounterStage.stageForBiome(...) or trigger a Wayfarer encounter first"); return; }
+      if (_staging || !CFG.autoStageOnCombat || !game.user.isGM) return;   // our own buildCombat — don't double-stage
+      if (!pending) return;   // nothing pre-picked; the GM is running their own combat
       const p = pending; pending = null;
       ui.notifications?.info(`Encounter Stage: preparing "${p.pick.item.name}"…`);
       const scene = await stagePick(p.pick, { activate: CFG.activateScene });
@@ -636,6 +641,84 @@
     catch (e) { warn("token drop failed", e); return []; }
   }
 
+  // feet → pixels using the scene's grid distance (default 5 ft / square).
+  const ftToPx = (scene, ft) => { const gs = scene.grid?.size || CFG.fallbackGridSize; const d = scene.grid?.distance || 5; return (ft / d) * gs; };
+  // Scatter N points around a centre within radiusPx, keeping a minimum separation.
+  function scatterPoints(n, center, radiusPx, minSep) {
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      let x, y, tries = 0;
+      do {
+        const ang = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * radiusPx;
+        x = center.x + Math.cos(ang) * r; y = center.y + Math.sin(ang) * r; tries++;
+      } while (tries < 16 && pts.some(p => Math.hypot(p.x - x, p.y - y) < minSep));
+      pts.push({ x, y });
+    }
+    return pts;
+  }
+  // Create tokens for actors at the given {x,y} points.
+  async function placeTokens(scene, actors, points) {
+    const data = [];
+    for (let i = 0; i < actors.length; i++) {
+      const x = Math.round(points[i].x), y = Math.round(points[i].y);
+      try { const td = await actors[i].getTokenDocument({ x, y, hidden: false }); const obj = td.toObject(); obj.x = x; obj.y = y; data.push(obj); }
+      catch (e) { warn(`token for ${actors[i].name} failed`, e); }
+    }
+    try { return await scene.createEmbeddedDocuments("Token", data); }
+    catch (e) { warn("token create failed", e); return []; }
+  }
+
+  // Party PCs (from Wayfarer's group), scattered in the centre within ~10 ft of each other.
+  async function dropParty(scene, center) {
+    let members = [];
+    try { members = globalThis.CavrilWayfarer?.Party?.members?.() || []; } catch { /* noop */ }
+    if (!members.length) members = (game.actors?.filter(a => a.type === "character" && a.hasPlayerOwner)) || [];
+    if (!members.length) { warn("no party members to place — set the party group / party marker token"); return []; }
+    const gs = scene.grid?.size || CFG.fallbackGridSize;
+    const radius = Math.max(gs, ftToPx(scene, CFG.partySpreadFt ?? 10) * 0.5);   // ~10 ft cluster
+    return placeTokens(scene, members, scatterPoints(members.length, center, radius, gs * 0.85));
+  }
+
+  // Foes in 1–3 strategic clusters AROUND the party muster point.
+  async function dropFoesAround(scene, actors, center) {
+    if (!actors.length) return [];
+    const gs = scene.grid?.size || CFG.fallbackGridSize;
+    const nClusters = actors.length <= 2 ? 1 : Math.min(3, Math.ceil(actors.length / 3));
+    const dist = ftToPx(scene, CFG.foeStandoffFt ?? 25);   // clusters stand off this far from the party
+    const base = Math.random() * Math.PI * 2;
+    const clusters = Array.from({ length: nClusters }, (_, i) => {
+      const ang = base + (i / nClusters) * Math.PI * 2 + (Math.random() - 0.5) * 0.6;
+      return { x: center.x + Math.cos(ang) * dist, y: center.y + Math.sin(ang) * dist };
+    });
+    const pts = [];
+    for (let i = 0; i < actors.length; i++) {
+      const c = clusters[i % nClusters];
+      let p = scatterPoints(1, c, gs * 1.4, 0)[0], tries = 0;
+      while (tries < 12 && pts.some(q => Math.hypot(q.x - p.x, q.y - p.y) < gs * 0.85)) { p = scatterPoints(1, c, gs * 2, 0)[0]; tries++; }
+      pts.push(p);
+    }
+    return placeTokens(scene, actors, pts);
+  }
+
+  // Build the encounter: add party + foes as combatants, roll NPC initiative, call for
+  // initiative. Does NOT begin combat — the GM starts it, then ddb-roll-cards drives the round.
+  async function buildCombat(scene, tokens) {
+    const list = tokens.filter(Boolean);
+    if (!list.length) return null;
+    try {
+      let combat = (game.combats?.contents || []).find(c => c.scene?.id === scene.id) || null;
+      if (!combat) combat = await Combat.create({ scene: scene.id });
+      if (!combat) return null;
+      const have = new Set(combat.combatants.map(c => c.tokenId));
+      const add = list.filter(t => !have.has(t.id)).map(t => ({ tokenId: t.id, sceneId: scene.id }));
+      if (add.length) await combat.createEmbeddedDocuments("Combatant", add);
+      try { await combat.activate?.(); } catch { /* noop */ }
+      try { await combat.rollNPC?.(); } catch (e) { warn("rollNPC failed", e); }   // PCs roll their own (DDB)
+      ChatMessage.create({ content: `<div style="text-align:center;padding:.4em;font-family:'Modesto Condensed','Signika',serif;font-size:1.35em;font-weight:700;letter-spacing:.05em;color:#e0824d;text-shadow:0 0 12px rgba(224,130,77,.4)"><i class="fa-solid fa-dice-d20"></i> Roll for initiative!</div>` });
+      return combat;
+    } catch (e) { warn("build combat failed", e); ui.notifications?.warn("Encounter Stage: couldn't set up the combat tracker."); return null; }
+  }
+
   // Dominant creature type by CR + horde weight (mirrors Maestro's selection math).
   function dominantType(actors) {
     const score = {};
@@ -662,6 +745,11 @@
   // THE command: read the selected token's hex → pick the map → build the scene →
   // drop biome-appropriate foes → start the matching combat music.
   async function stageEncounter(opts = {}) {
+    _staging = true;
+    try { return await _stageEncounterImpl(opts); }
+    finally { _staging = false; }
+  }
+  async function _stageEncounterImpl(opts = {}) {
     if (!game.user.isGM) return warn("GM only");
     pending = null;   // this IS the staging — don't let a later createCombat double-stage
     const W = globalThis.CavrilWayfarer;
@@ -696,29 +784,41 @@
     if (!scene) { scene = canvas?.scene; onFallback = true; }   // SRD encounter on the active scene
     if (!scene) { ui.notifications?.error("Encounter Stage: no scene available to stage on."); return null; }
 
-    // 2) Roll + drop the SRD foes (this is independent of CZEPEKU). On the fallback map,
-    //    cluster them near the chosen token rather than the scene centre.
-    let actors = [], tokens = [];
+    // The party muster point: scene centre on a freshly-staged map, else the token.
+    const center = onFallback
+      ? { x: token.center?.x ?? token.x, y: token.center?.y ?? token.y }
+      : { x: Math.round((scene.width || 0) * 0.5), y: Math.round((scene.height || 0) * 0.5) };
+
+    // 2) Place the PARTY in the centre, scattered within ~10 ft. Only on a fresh staged
+    //    scene — on the current-scene fallback the party tokens are presumably already there.
+    let partyTokens = [];
+    if (!onFallback && (opts.dropParty ?? CFG.dropParty)) {
+      partyTokens = await dropParty(scene, center);
+      if (partyTokens.length) log(`placed ${partyTokens.length} party tokens at centre.`);
+    }
+
+    // 3) Roll + drop the SRD foes in strategic clusters AROUND the party (independent of CZEPEKU).
+    let actors = [], foeTokens = [];
     if ((opts.dropMonsters ?? CFG.dropMonsters) && type === "combat") {
       actors = await rollMonsters(cls);
       if (actors.length) {
-        const anchor = onFallback ? { x: token.center?.x ?? token.x, y: token.center?.y ?? token.y } : null;
-        tokens = await dropTokens(scene, actors, anchor);
-        log(`dropped ${tokens.length}/${actors.length} foes${onFallback ? " (on current scene)" : ""}.`);
+        foeTokens = await dropFoesAround(scene, actors, center);
+        log(`dropped ${foeTokens.length}/${actors.length} foes around the party${onFallback ? " (current scene)" : ""}.`);
       }
     }
+
+    // 4) Add EVERYONE to the encounter, roll NPC initiative, and call for initiative.
+    //    We do NOT begin combat — the GM starts it, then ddb-roll-cards takes over.
+    let combat = null;
+    if ((opts.addToCombat ?? CFG.addToCombat) && (partyTokens.length || foeTokens.length)) {
+      combat = await buildCombat(scene, [...partyTokens, ...foeTokens]);
+    }
+
+    // 5) Correct combat music (dominant foe type); Maestro re-affirms it on combat start.
     if ((opts.playMusic ?? CFG.playCombatMusic) && actors.length) playCombatMusic(actors);
 
-    if ((opts.startCombat ?? CFG.startCombat) && tokens.length) {
-      try {
-        const combat = await Combat.create({ scene: scene.id });
-        const combatants = tokens.map(t => ({ tokenId: t.id, sceneId: scene.id }));
-        if (combatants.length) await combat.createEmbeddedDocuments("Combatant", combatants);
-        await combat.startCombat?.();
-      } catch (e) { warn("combat start failed", e); }
-    }
-    ui.notifications?.info(`Encounter ready: ${pick ? `"${pick.item.name}" · ` : ""}${actors.length} foe${actors.length === 1 ? "" : "s"}${onFallback && pick === null ? " (current map)" : ""}.`);
-    return { scene, actors, tokens, pick, cls, when, season, weather, fallback: onFallback };
+    ui.notifications?.info(`Encounter ready: ${pick ? `"${pick.item.name}" · ` : ""}${partyTokens.length} party + ${actors.length} foe${actors.length === 1 ? "" : "s"} — roll for initiative, then begin combat.`);
+    return { scene, actors, foeTokens, partyTokens, combat, pick, cls, when, season, weather, fallback: onFallback };
   }
 
   // ===== SETTINGS ==========================================================
@@ -726,7 +826,9 @@
     const reg = (key, data) => { try { game.settings.register(MOD, key, data); } catch (e) { warn("setting", key, "failed", e); } };
     reg("esEnabled",          { name: "Encounter Stage — enable", hint: "Build encounters for hostile beats: SRD foes (always) + a CZEPEKU battlemap (if the CZEPEKU Universe module is connected). Without CZEPEKU, foes drop on the current map.", scope: "world", config: true, type: Boolean, default: true });
     reg("esAutoStageOnCombat",{ name: "  · Stage on combat start", hint: "When a combat is created, build + activate the map the last encounter staged.", scope: "world", config: true, type: Boolean, default: true });
-    reg("esDropMonsters",     { name: "  · Drop foes", hint: "Place a CR-scaled, biome-appropriate group of monsters on the staged map.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esDropParty",        { name: "  · Place the party", hint: "Drop the party's PC tokens in the centre of the staged map, scattered within ~10 ft.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esDropMonsters",     { name: "  · Drop foes", hint: "Place a CR-scaled, biome-appropriate group of monsters in strategic clusters around the party.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esAddToCombat",      { name: "  · Build the encounter", hint: "Add the party + foes to the combat tracker, roll NPC initiative, and call for initiative. You still press Begin Combat yourself.", scope: "world", config: true, type: Boolean, default: true });
     reg("esCombatMusic",      { name: "  · Combat music", hint: "Start the Cavril: Maestro combat theme for the dominant foe type when foes are dropped.", scope: "world", config: true, type: Boolean, default: true });
     reg("esMaxMonsters",      { name: "  · Max foes", hint: "Hard cap on bodies dropped per encounter.", scope: "world", config: true, type: Number, default: 6, range: { min: 1, max: 20, step: 1 } });
     reg("esBudgetMul",        { name: "  · Encounter budget ×", hint: "Total CR budget ≈ party level × party size × this.", scope: "world", config: true, type: Number, default: 0.5, range: { min: 0.1, max: 2, step: 0.1 } });
@@ -737,7 +839,9 @@
   function syncCfg() {
     try {
       CFG.autoStageOnCombat  = game.settings.get(MOD, "esAutoStageOnCombat");
+      CFG.dropParty          = game.settings.get(MOD, "esDropParty");
       CFG.dropMonsters       = game.settings.get(MOD, "esDropMonsters");
+      CFG.addToCombat        = game.settings.get(MOD, "esAddToCombat");
       CFG.playCombatMusic    = game.settings.get(MOD, "esCombatMusic");
       CFG.maxMonsters        = Number(game.settings.get(MOD, "esMaxMonsters")) || CFG.maxMonsters;
       CFG.encounterBudgetMul = Number(game.settings.get(MOD, "esBudgetMul")) || CFG.encounterBudgetMul;
