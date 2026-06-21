@@ -1144,9 +1144,13 @@
   function playCombatMusic(actors) {
     const M = globalThis.Maestro;
     if (!M?.play) { warn("Maestro not available — skipping combat music"); return null; }
-    const t = dominantType(actors), ss = t && TYPE_MUSIC[t];
+    // Single source of truth: ask Maestro for the theme (it owns TYPE_MUSIC + the CR/horde scoring). Fall
+    // back to our local mirror only for an older Maestro that lacks combatSoundscapeFor.
+    let ss = null, via = "maestro";
+    try { ss = M.combatSoundscapeFor?.(actors) || null; } catch (e) { /* fall through to local */ }
+    if (!ss) { const t = dominantType(actors); ss = (t && TYPE_MUSIC[t]) || null; via = `local:${t}`; }
     if (!ss) return null;
-    try { M.play(ss, { channel: "music" }); log(`combat music: ${ss} (${t})`); return ss; }
+    try { M.play(ss, { channel: "music" }); log(`combat music: ${ss} (${via})`); return ss; }
     catch (e) { warn("Maestro.play failed", e); return null; }
   }
 
@@ -1480,6 +1484,9 @@
     hookIds.combatant = Hooks.on("updateCombatant", onCombatantRolled); // dedup duplicate PC combatants on the roll
     hookIds.cEnd      = Hooks.on("deleteCombat", onCombatEnd);          // encounter ends → post the Return-to-overworld card
     globalThis.CavrilEncounterStage = buildApi();
+    // Formalize the cross-module contract: Cavril: Cities reaches getCatalog/stageMapByKey via
+    // game.modules.get("cavril-wayfarer").api.encounterStage (discoverable) alongside the legacy global.
+    try { const _m = game.modules.get("cavril-wayfarer"); if (_m) { _m.api = _m.api || {}; _m.api.encounterStage = globalThis.CavrilEncounterStage; if (globalThis.CavrilWayfarer) _m.api.wayfarer = globalThis.CavrilWayfarer; } } catch (e) { warn("api expose skipped", e); }
     refreshReturnControl();   // in case we boot directly onto a staged battlemap
     log("installed. Hooks: cavril-wayfarer.encounter → pick, createCombat → stage.");
     log("Select a token + run CavrilEncounterStage.stageEncounter() — biome → map → foes → music. Also .audit() · .preview('jungle').");
