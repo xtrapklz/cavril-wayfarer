@@ -888,6 +888,11 @@ const Party = (() => {
         return list;
     }
     const size = () => Math.max(1, members().length);
+    // The shared-stash holder: the group actor if there is one, else the first party member — so the
+    // stash +/- always have a target AND the readout reflects the SAME actor (no group → +/- used to add
+    // to a member while the readout only watched the group, so they looked dead). Designate a party/group
+    // actor for a true shared inventory; without one the lead PC's pack stands in.
+    function stashHolder() { return groupActor() || members()[0] || null; }
 
     // dnd5e tracks a supply either as quantity (Rations) or limited USES (a
     // Waterskin with N uses) — read/spend whichever this item uses. dnd5e 4.x/5.x
@@ -950,7 +955,8 @@ const Party = (() => {
             exh: a.system?.attributes?.exhaustion ?? 0,
             rations: countItems(a, RATION_RE), water: countItems(a, WATER_RE)
         }));
-        return { members: rows, stash: { rations: g ? countItems(g, RATION_RE) : 0, water: g ? countItems(g, WATER_RE) : 0 } };
+        const h = stashHolder();
+        return { members: rows, stash: { rations: h ? countItems(h, RATION_RE) : 0, water: h ? countItems(h, WATER_RE) : 0 } };
     }
 
     // Consume 1 ration + 1 waterskin-use per member. Per member the source order is
@@ -971,10 +977,32 @@ const Party = (() => {
         }
         return { rations, water, rationsShort, waterShort, perMember };
     }
+    // Add `k` units to an item, USES-aware (the mirror of takeFromItem). A Waterskin tracks supply as
+    // limited uses, not quantity — so refill spent uses first (then expand capacity); a Ration tracks
+    // quantity. Previously this only ever bumped system.quantity, which a uses-based item ignores, so
+    // "+1 waterskin" was a silent no-op.
+    async function addToItem(item, k) {
+        if (!item || k <= 0) return;
+        const u = item.system?.uses;
+        try {
+            if (u && Number.isFinite(u.max) && u.max > 0) {
+                if ("spent" in u) {
+                    const refill = Math.min(u.spent || 0, k), extra = k - refill;
+                    const upd = { "system.uses.spent": (u.spent || 0) - refill };
+                    if (extra > 0) upd["system.uses.max"] = u.max + extra;   // beyond a full refill → more capacity
+                    await item.update(upd);
+                } else {
+                    await item.update({ "system.uses.value": (Number.isFinite(u.value) ? u.value : u.max) + k });
+                }
+            } else {
+                await item.update({ "system.quantity": (item.system?.quantity ?? 0) + k });
+            }
+        } catch (e) { warn("supply add failed", e); }
+    }
     async function addItem(actor, re, defaultName, qty) {
         if (!actor || !qty || qty <= 0) return;
         const existing = (actor.items ?? []).find(it => re.test(it.name || ""));
-        if (existing) { try { await existing.update({ "system.quantity": (existing.system?.quantity ?? 0) + qty }); } catch (e) { warn(e); } }
+        if (existing) await addToItem(existing, qty);
         else { try { await actor.createEmbeddedDocuments("Item", [{ name: defaultName, type: "loot", system: { quantity: qty } }]); } catch (e) { warn("create stash item failed", e); } }
     }
     // Forager haul → the group's shared inventory.
@@ -991,15 +1019,14 @@ const Party = (() => {
     async function adjustStash(type, delta) {
         if (!game.user.isGM || !delta) return;
         const re = type === "water" ? WATER_RE : RATION_RE;
-        const g = groupActor();
+        const holder = stashHolder();
+        if (!holder) { ui.notifications?.warn(`${TITLE}: no party actor (group or character) to hold supplies.`); return; }
         if (delta > 0) {
-            const holder = g || members()[0];
-            if (!holder) { ui.notifications?.warn(`${TITLE}: no party actor (group or character) to hold supplies.`); return; }
             await addItem(holder, re, type === "water" ? "Waterskin" : "Rations", delta);
         } else {
             let need = -delta;
-            if (g) need -= await take(g, re, need);
-            for (const m of members()) { if (need <= 0) break; need -= await take(m, re, need); }   // then pull from members' packs
+            need -= await take(holder, re, need);                                    // take from the stash holder first
+            for (const m of members()) { if (need <= 0) break; if (m === holder) continue; need -= await take(m, re, need); }  // then members' packs
         }
     }
     // Set a member's OWN ration/water count to a value (the HUD per-character edit).
