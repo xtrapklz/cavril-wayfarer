@@ -450,7 +450,29 @@ const Store = (() => {
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
         // Cavril: Maestro biome → environment soundscape.
         g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
-        g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Set this visually by RIGHT-CLICKING the music button on the travel HUD. (Advanced: raw JSON of biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay"}. Blank = defaults; "" = silence for that biome.)', scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Set this visually with the “Assign biome ambience…” button above (or right-click the ♪ on the travel HUD). Advanced: raw JSON of biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay"}. Blank = defaults; "" = silence for that biome.', scope: "world", config: true, type: String, default: "" });
+        // A discoverable override: a settings-menu button that opens the visual biome→ambience
+        // picker (the same dialog as right-clicking the ♪ on the HUD). Shim a FormApplication
+        // that just opens the dialog; if the shim can't load, the right-click path still works.
+        try {
+            const FA = foundry.appv1?.api?.FormApplication ?? globalThis.FormApplication;
+            if (FA && g.registerMenu) {
+                const MenuApp = class extends FA {
+                    static get defaultOptions() { return foundry.utils.mergeObject(super.defaultOptions, { id: "cwf-biome-ambience-menu", title: "Biome → Ambience" }); }
+                    getData() { return {}; }
+                    async _updateObject() { /* the dialog saves directly */ }
+                    render() { try { cwfMusicMapDialog(); } catch (e) { warn("ambience picker failed", e); } return this; }
+                };
+                g.registerMenu(MOD, "biomeAmbienceMenu", {
+                    name: "Biome → Maestro ambience",
+                    label: "Assign biome ambience…",
+                    hint: "Choose which Cavril: Maestro ambience plays for each biome (same picker as right-clicking the ♪ on the travel HUD).",
+                    icon: "fa-solid fa-music",
+                    type: MenuApp,
+                    restricted: true
+                });
+            }
+        } catch (e) { warn("biome-ambience menu registration failed", e); }
         // Drive Mini Calendar's weather climate from the party's current biome.
         g.register(MOD, "syncMiniCalBiome", { name: "Set Mini Calendar climate by biome", hint: "Push the party's current biome into Mini Calendar's weather climate (temperate / tropical / desert / polar) so its weather matches where you are.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "biomeClimateJSON", { name: "Biome → Mini Calendar climate (advanced)", hint: 'Optional JSON mapping hexlands biome → Mini Calendar climate, e.g. {"frozen":"polar","jungle":"tropical"}. Blank uses sensible defaults. Mini Calendar only has: temperate, tropical, desert, polar.', scope: "world", config: true, type: String, default: "" });
@@ -1656,6 +1678,19 @@ async function cwfPromptNumber(title, current = 0) {
 
 // camelCase id → "Title Case" label for biome keys + Maestro arrangement ids.
 const cwfPrettyId = (id) => String(id || "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/^./, c => c.toUpperCase());
+// Friendly label for an emberEnvironment arrangement id — uses Maestro's own ambience
+// name ("Deep Woods (Day)") rather than the raw id ("bloodwoodsDay"). Falls back to the
+// prettified id if Maestro can't resolve it.
+function cwfArrLabel(id) {
+    if (!id) return "silence";
+    try {
+        const base = String(id).replace(/(Day|Night)$/i, "");
+        const variant = String(id).slice(base.length);
+        const name = globalThis.Maestro?.refMeta?.("amb:" + base)?.label;
+        if (name) return variant ? `${name} (${variant})` : name;
+    } catch { /* fall through */ }
+    return cwfPrettyId(id);
+}
 // Normalise a Maestro reference: accept a bare ref (music:id / sfx:path / preset:tag / id)
 // or a full @Maestro[…] link pasted from a journal; "" if blank.
 const cwfMaestroRef = (s) => { s = String(s || "").trim(); const m = s.match(/^@Maestro\[(.+)\]$/i); return (m ? m[1] : s).trim(); };
@@ -1680,10 +1715,11 @@ async function cwfMusicMapDialog() {
     const rowFor = (b) => {
         const def = Music.DEFAULTS[b];
         const sel = Object.prototype.hasOwnProperty.call(cur, b) ? cur[b] : "__default__";
+        const sorted = arrs.slice().sort((x, y) => cwfArrLabel(x).localeCompare(cwfArrLabel(y)));
         const opts = [
-            `<option value="__default__"${sel === "__default__" ? " selected" : ""}>Default — ${def ? cwfEsc(cwfPrettyId(def)) : "silence"}</option>`,
+            `<option value="__default__"${sel === "__default__" ? " selected" : ""}>Default — ${cwfEsc(cwfArrLabel(def))}</option>`,
             `<option value=""${sel === "" ? " selected" : ""}>— silence —</option>`,
-            ...arrs.map(a => `<option value="${a}"${sel === a ? " selected" : ""}>${cwfEsc(cwfPrettyId(a))}</option>`)
+            ...sorted.map(a => `<option value="${a}"${sel === a ? " selected" : ""}>${cwfEsc(cwfArrLabel(a))}</option>`)
         ].join("");
         return `<div class="cwf-mm-row"><span class="cwf-mm-b">${cwfEsc(cwfPrettyId(b))}</span><select name="${b}">${opts}</select></div>`;
     };
@@ -1770,15 +1806,33 @@ async function cwfResyncSheets() {
  * configurable. arrangement "" = silence; missing biome = leave music alone.
  * ========================================================================= */
 const Music = (() => {
+    // Biome → Maestro emberEnvironment arrangement. Chosen to be GENTLE and fitting —
+    // the most common biome (temperate) gets the calmest bed, and NOTHING uses
+    // ameraspGrove ("Ancient Grove"): its loud prehistoric-insect drone overwhelmed
+    // ordinary hexes. Each is overridable per biome (right-click the ♪ toggle, or the
+    // "Biome → Ambience" settings menu).
     const DEFAULTS = {
         // hexlands biomes
-        temperate: "ameraspGroveDay", boreal: "bloodwoodsDay", jungle: "jungleDay",
-        desert: "goldenFlatsDay", savanna: "redrakFieldsDay", frozen: "mountainsDay",
-        tundra: "skybrushDay", volcanic: "cauldronDay", wasteland: "splinterCanyonsDay",
-        tainted: "mycelianExpanse", void: "", water: "oceanDay",
+        temperate: "corpinSanctuaryDay", // Open Grasslands — calm, neutral; the most-seen biome
+        boreal:    "bloodwoodsDay",       // Deep Woods — cool forest
+        jungle:    "jungleDay",           // Jungle
+        desert:    "splinterCanyonsDay",  // Desert Canyons
+        savanna:   "goldenFlatsDay",      // Golden Plains — dry grassland
+        frozen:    "mountainsDay",        // Mountains — cold high peaks
+        tundra:    "skybrushDay",         // High Plains — windswept
+        volcanic:  "cauldronDay",         // Bubbling Pools — geothermal (no lava bed exists)
+        wasteland: "wedgelandsDay",       // Barren Badlands
+        tainted:   "oozeFarmDay",         // Festering Bog — corrupted, outdoor
+        void:      "",                    // silence
+        water:     "oceanDay",            // Open Ocean
         // Primus keyword terrains (cls.terrainKey when there's no hexlands biome)
-        forest: "ameraspGroveDay", hills: "skybrushDay", mountains: "mountainsDay",
-        swamp: "inkaroPools", plains: "redrakFieldsDay", rocky: "spiresDay", coast: "tidalPoolsDay"
+        forest:    "bloodwoodsDay",       // Deep Woods
+        hills:     "rustvarValleysDay",   // Windswept Valleys
+        mountains: "mountainsDay",        // Mountains
+        swamp:     "YakoshtaDay",         // Marshland Crags
+        plains:    "corpinSanctuaryDay",  // Open Grasslands
+        rocky:     "spiresDay",           // Stone Spires
+        coast:     "tidalPoolsDay"        // Tide Pools
     };
     let _last = null;
     const active = () => !!globalThis.Maestro?.play;
