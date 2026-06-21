@@ -85,6 +85,7 @@
 .cwf-day { margin-left: auto; font-weight: 600; color: var(--cwf-accent); background: rgba(189,169,232,.12); padding: 1px 8px; border-radius: 10px; }
 .cwf-icon { background: none; border: none; color: var(--cwf-muted); cursor: pointer; width: 22px; height: 22px; border-radius: 6px; }
 .cwf-icon:hover { color: #fff; background: rgba(255,255,255,.08); }
+.cwf-icon.cwf-on { color: var(--cwf-accent); }
 
 .cwf-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 10px; }
 .cwf-section { display: flex; flex-direction: column; gap: 5px; }
@@ -206,12 +207,26 @@
 .cwf-card-l { flex: 0 0 70px; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--cwf-coral); font-weight: 700; }
 .cwf-card-v { color: #f4f4f4; }
 .cwf-card-v em { font-style: normal; color: #9a9a9a; }
-.cwf-card-foot { padding: 8px 10px; border-top: 1px solid rgba(255,255,255,.10); }
+/* Reserve a stable footer height so swapping button sets (Travel/Step/Stop ↔ Pause ↔
+   Make camp) never makes the card jump. */
+.cwf-card-foot { padding: 8px 10px; border-top: 1px solid rgba(255,255,255,.10); min-height: 45px; box-sizing: border-box; display: flex; align-items: center; }
+.cwf-card-foot > .cwf-cardbtns { width: 100%; }
 .cwf-card-clock { font-size: 11px; color: #9a9a9a; display: inline-flex; align-items: center; gap: 5px; }
 /* stepped-travel card buttons */
-.cwf-cardbtns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cwf-cardbtns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 28px; }
 .cwf-cardbtns .cwf-card-clock { margin-right: auto; }
-.cwf-cardbtn { height: 28px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-text); cursor: pointer; font-weight: 600; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+/* Watch chips sit in fixed grid cells so toggling a watcher (which adds a "1. " order
+   prefix) can't rewrap the row and resize the card — the name truncates in its cell. */
+.cwf-watch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
+.cwf-watch-grid .cwf-cardbtn { min-width: 0; justify-content: flex-start; padding: 0 9px; }
+.cwf-watch-nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Biome → Maestro ambience assignment dialog */
+.cwf-mm { display: flex; flex-direction: column; gap: 6px; max-height: 58vh; overflow: auto; padding-right: 4px; }
+.cwf-mm-hint { font-size: 12px; color: #9a9a9a; margin: 0 0 4px; line-height: 1.45; }
+.cwf-mm-row { display: grid; grid-template-columns: 112px 1fr; align-items: center; gap: 8px; }
+.cwf-mm-b { font-weight: 600; font-size: 12px; }
+.cwf-mm-row select { width: 100%; }
+.cwf-cardbtn { height: 28px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-text); cursor: pointer; font-weight: 600; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; flex: 0 0 auto; }
 .cwf-cardbtn:hover { border-color: var(--cwf-accent); }
 .cwf-cardbtn.cwf-primary { background: color-mix(in srgb, var(--cwf-hard) 26%, var(--cwf-bg2)); border-color: var(--cwf-hard); }
 .cwf-cardbtn.cwf-primary:hover { background: color-mix(in srgb, var(--cwf-hard) 42%, var(--cwf-bg2)); }
@@ -236,8 +251,9 @@
 .cwf-tier-critfail { background: var(--cwf-severe); color: #fff; }
 
 /* camp watch chips + night report */
-.cwf-watch { flex-wrap: wrap; }
-.cwf-watch .cwf-toggle { flex: 0 1 auto; }
+/* Same stable grid as the chat card — toggling a watcher never rewraps the HUD row. */
+.cwf-watch { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 5px; }
+.cwf-watch .cwf-toggle { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; justify-content: flex-start; gap: 5px; padding: 0 8px; }
 .cwf-night { display: flex; flex-direction: column; gap: 1px; margin: 4px 0; font-size: 11px; }
 .cwf-night-h { color: #9a9a9a; padding: 1px 4px; border-radius: 4px; }
 .cwf-night-h.hit { color: #fff; background: color-mix(in srgb, var(--cwf-severe) 70%, transparent); font-weight: 600; }
@@ -252,8 +268,20 @@
 .cwf-cine { position: fixed; inset: 0; z-index: 95; pointer-events: none; display: flex; align-items: center; justify-content: center; font-family: "Signika", sans-serif; }
 .cwf-cine.cwf-cine-out { animation: cwf-cine-fade .6s ease forwards; }
 /* full-screen blur behind the title so the live map (and any weather/time change) sits softened */
-.cwf-cine-blur { position: absolute; inset: 0; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); background: rgba(8,8,12,.32); animation: cwf-cine-blur-in .5s ease both; }
-@keyframes cwf-cine-blur-in { from { opacity: 0; } to { opacity: 1; } }
+/* Backdrop opens FULLY OPAQUE — a brief blackout that masks the weather / lighting
+   change happening behind it — then settles to a translucent blur, revealing the new
+   scene already in place. */
+.cwf-cine-blur { position: absolute; inset: 0; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); background-color: rgba(8,8,12,.32); animation: cwf-cine-mask .9s cubic-bezier(.4,0,.2,1) both; }
+@keyframes cwf-cine-mask { 0% { background-color: rgba(8,8,12,1); } 34% { background-color: rgba(8,8,12,1); } 100% { background-color: rgba(8,8,12,.32); } }
+
+/* Wordless danger pulse — a coloured vignette, no text. "up" flares from the edges
+   inward (threat closing in); "down" is a soft central wash that fades (relief). */
+.cwf-flash { position: fixed; inset: 0; z-index: 96; pointer-events: none; }
+.cwf-flash::before { content: ""; position: absolute; inset: 0; opacity: 0; }
+.cwf-flash[data-dir="up"]::before { background: radial-gradient(ellipse at center, transparent 22%, var(--cwf-flash-color, #e0554d) 118%); animation: cwf-flash-up 1.5s cubic-bezier(.2,.8,.2,1) both; }
+.cwf-flash[data-dir="down"]::before { background: radial-gradient(ellipse at center, var(--cwf-flash-color, #7bdcff) 0%, transparent 68%); animation: cwf-flash-down 1.85s ease-out both; }
+@keyframes cwf-flash-up { 0% { opacity: 0; transform: scale(1.16); } 13% { opacity: .92; } 100% { opacity: 0; transform: scale(1); } }
+@keyframes cwf-flash-down { 0% { opacity: 0; } 24% { opacity: .55; } 100% { opacity: 0; } }
 .cwf-cine-bar { position: absolute; left: 0; right: 0; height: 19vh; background: linear-gradient(180deg, rgba(8,8,10,.96), rgba(8,8,10,.82)); }
 .cwf-cine-top { top: 0; border-bottom: 2px solid var(--cwf-cine-accent, #bda9e8); box-shadow: 0 14px 40px rgba(0,0,0,.55); animation: cwf-cine-top .55s cubic-bezier(.2,.8,.2,1) both; }
 .cwf-cine-bot { bottom: 0; background: linear-gradient(0deg, rgba(8,8,10,.96), rgba(8,8,10,.82)); border-top: 2px solid var(--cwf-cine-accent, #bda9e8); box-shadow: 0 -14px 40px rgba(0,0,0,.55); animation: cwf-cine-bot .55s cubic-bezier(.2,.8,.2,1) both; }

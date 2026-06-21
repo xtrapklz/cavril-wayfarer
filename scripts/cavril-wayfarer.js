@@ -433,7 +433,9 @@ const Store = (() => {
         // Universal cinematic delay — how long phase cinematics hold, and the pause
         // between a transition resolving and the next one. "A couple of seconds."
         g.register(MOD, "universalDelay", { name: "Cinematic hold (seconds)", hint: "How long phase cinematics stay up, and the pause the module sits in a beat before moving on. Higher = more time to read/narrate. Default 2.5.", scope: "world", config: true, type: Number, default: 2.5, range: { min: 0.5, max: 8, step: 0.5 } });
-        g.register(MOD, "dangerCinematic", { name: "Cinematic on danger change", hint: "Show a cinematic whenever the region danger level goes up or down.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "dangerCinematic", { name: "Pulse on danger change", hint: "When region danger rises or falls, flash a wordless colour pulse + tone to the whole table — they feel the shift without ever seeing the level.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "sfxDangerUp", { name: "Danger-rising sound", hint: "Optional sound file played to all clients when danger RISES. Blank = a built-in rising tone.", scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxDangerDown", { name: "Danger-easing sound", hint: "Optional sound file played to all clients when danger FALLS. Blank = a built-in falling tone.", scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "autoResolveTurn", { name: "Auto-resolve travel turn", hint: "When every claimed role has rolled (in Foundry or from D&D Beyond), resolve the Travel Turn automatically — the players' rolls are the trigger, no Resolve click.", scope: "world", config: true, type: Boolean, default: true });
         // Token movement.
         g.register(MOD, "moveAnimMs", { name: "Hex move duration (ms)", hint: "How long the token takes to glide between hexes during travel. Higher = more gradual. Default 900.", scope: "world", config: true, type: Number, default: 900, range: { min: 100, max: 3000, step: 100 } });
@@ -448,7 +450,7 @@ const Store = (() => {
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
         // Cavril: Maestro biome → environment soundscape.
         g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
-        g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Optional JSON mapping hexlands biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay","desert":"goldenFlatsDay"}. Blank uses sensible defaults. "" = silence for that biome.', scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Set this visually by RIGHT-CLICKING the music button on the travel HUD. (Advanced: raw JSON of biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay"}. Blank = defaults; "" = silence for that biome.)', scope: "world", config: true, type: String, default: "" });
         // Drive Mini Calendar's weather climate from the party's current biome.
         g.register(MOD, "syncMiniCalBiome", { name: "Set Mini Calendar climate by biome", hint: "Push the party's current biome into Mini Calendar's weather climate (temperate / tropical / desert / polar) so its weather matches where you are.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "biomeClimateJSON", { name: "Biome → Mini Calendar climate (advanced)", hint: 'Optional JSON mapping hexlands biome → Mini Calendar climate, e.g. {"frozen":"polar","jungle":"tropical"}. Blank uses sensible defaults. Mini Calendar only has: temperate, tropical, desert, polar.', scope: "world", config: true, type: String, default: "" });
@@ -1095,7 +1097,46 @@ const Cinematic = (() => {
         try { game.socket?.emit(`module.${MOD}`, { type: "cinematic", spec }); } catch (e) { warn("cinematic broadcast failed", e); }
         play(spec);
     }
-    return { play, broadcast, clear };
+    // A short rising / falling tone for the danger pulse — synthesised so it needs no
+    // asset and plays on EVERY client. A configured sfxDanger* file overrides it.
+    function dangerTone(dir) {
+        try {
+            const Ctx = window.AudioContext || window.webkitAudioContext; if (!Ctx) return;
+            const ac = new Ctx(); try { ac.resume?.(); } catch { /* noop */ }   // players may have a suspended context
+            const o = ac.createOscillator(), g = ac.createGain();
+            o.type = "sine"; o.connect(g); g.connect(ac.destination);
+            const now = ac.currentTime, up = dir === "up", end = up ? 0.62 : 0.88;
+            if (up) { o.frequency.setValueAtTime(190, now); o.frequency.exponentialRampToValueAtTime(540, now + 0.5); }
+            else { o.frequency.setValueAtTime(440, now); o.frequency.exponentialRampToValueAtTime(150, now + 0.7); }
+            g.gain.setValueAtTime(0.0001, now);
+            g.gain.exponentialRampToValueAtTime(0.15, now + 0.05);
+            g.gain.exponentialRampToValueAtTime(0.0001, now + end);
+            o.start(now); o.stop(now + end + 0.05);
+            o.onended = () => { try { ac.close(); } catch { /* noop */ } };
+        } catch { /* noop */ }
+    }
+    function flashSound(dir) {
+        const path = String(game.settings.get(MOD, dir === "up" ? "sfxDangerUp" : "sfxDangerDown") || "").trim();
+        if (path) { try { const a = new Audio(path); a.volume = 0.6; a.play().catch(() => { }); return; } catch { /* fall through to tone */ } }
+        dangerTone(dir);
+    }
+    // A text-FREE danger pulse: a coloured vignette (red rising / cool falling) plus a
+    // tone. No number, no label — the table FEELS danger move without being told the level.
+    function flash({ dir = "up", color = "", sound = true } = {}) {
+        try {
+            const node = document.createElement("div");
+            node.className = "cwf-flash"; node.dataset.dir = dir;
+            node.style.setProperty("--cwf-flash-color", color || (dir === "up" ? "#e0554d" : "#7bdcff"));
+            document.body.appendChild(node);
+            if (sound) flashSound(dir);
+            setTimeout(() => node.remove(), dir === "up" ? 1500 : 1850);
+        } catch (e) { warn("danger flash failed", e); }
+    }
+    function broadcastFlash(spec) {
+        try { game.socket?.emit(`module.${MOD}`, { type: "flash", spec }); } catch (e) { warn("flash broadcast failed", e); }
+        flash(spec);
+    }
+    return { play, broadcast, flash, broadcastFlash, clear };
 })();
 
 // Advance the clock from camp to the next dawn (becomes the Camp Turn workflow).
@@ -1360,7 +1401,7 @@ function cwfCampCardHTML() {
     const watch = Camp.watchers;
     const chips = Party.members().map(a => {
         const i = watch.indexOf(a.id), on = i >= 0;
-        return `<button class="cwf-cardbtn ${on ? "cwf-primary" : ""}" data-cwf="cwatch" data-id="${a.id}" style="min-width:0" title="Highest mod −${Danger.highestMod(a)}">${on ? `${i + 1}. ` : ""}${cwfEsc(a.name)} <span class="cwf-rr-sk">−${Danger.highestMod(a)}</span></button>`;
+        return `<button class="cwf-cardbtn ${on ? "cwf-primary" : ""}" data-cwf="cwatch" data-id="${a.id}" title="Highest mod −${Danger.highestMod(a)}"><span class="cwf-watch-nm">${on ? `${i + 1}. ` : ""}${cwfEsc(a.name)}</span><span class="cwf-rr-sk">−${Danger.highestMod(a)}</span></button>`;
     }).join("");
     const rl = cwfWatchRestLabel(watch.length);
     const watchNote = watch.length ? `${watch.length} on watch · ~${Camp.shiftHours()}h each${rl ? ` · ${rl}` : ""}` : (rl || "no watch — unguarded");
@@ -1368,7 +1409,7 @@ function cwfCampCardHTML() {
         <div class="cwf-card-row"><span class="cwf-card-l">Danger</span><span class="cwf-card-v">${danger} + biome ${biomeM} + hostiles ${hostileM} = <b>${base}</b>/${Danger.scale()} per hr</span></div>
         <div class="cwf-cardbtns">${dial}</div>
         <div class="cwf-night-sec">Watch order · ${cwfEsc(watchNote)}</div>
-        <div class="cwf-cardbtns" style="flex-wrap:wrap">${chips || `<span class="cwf-muted2">No party members.</span>`}</div>`;
+        <div class="cwf-watch-grid">${chips || `<span class="cwf-muted2">No party members.</span>`}</div>`;
     const foot = `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="ccancel"><i class="fa-solid fa-xmark"></i> Cancel</button><button class="cwf-cardbtn cwf-primary" data-cwf="cresolve"><i class="fa-solid fa-moon"></i> Resolve night → dawn</button></div>`;
     return cwfCardShell("fa-campground", "Make Camp", body, { sub: cls?.label || "", footerHTML: foot });
 }
@@ -1597,6 +1638,76 @@ async function cwfPromptNumber(title, current = 0) {
     return await new Promise(res => { try { new Dialog({ title, content, buttons: { ok: { label: "Set", callback: (h) => res(Number(h[0].querySelector('[name=v]').value)) }, cancel: { label: "Cancel", callback: () => res(null) } }, default: "ok", close: () => res(null) }).render(true); } catch { res(null); } });
 }
 
+// camelCase id → "Title Case" label for biome keys + Maestro arrangement ids.
+const cwfPrettyId = (id) => String(id || "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/^./, c => c.toUpperCase());
+// emberEnvironment arrangement ids straight from Maestro (cached — list() console.tables).
+let _cwfArrCache = null;
+function cwfMaestroArrangements() {
+    if (_cwfArrCache) return _cwfArrCache;
+    try {
+        const env = (globalThis.Maestro?.list?.() || []).find(r => r.id === "emberEnvironment");
+        if (env?.arrangements) return (_cwfArrCache = env.arrangements.split(",").map(s => s.trim()).filter(Boolean));
+    } catch (e) { warn("maestro arrangement list failed", e); }
+    return [];
+}
+// Assign a Maestro ambience to each hexlands biome — the map that drives the music when
+// a token stops in a hex. Saves overrides to musicMapJSON; "default"/"silence" per row.
+async function cwfMusicMapDialog() {
+    if (!game.user.isGM) return;
+    if (!globalThis.Maestro?.play) { ui.notifications?.warn(`${TITLE}: Cavril: Maestro isn't active.`); return; }
+    const arrs = cwfMaestroArrangements();
+    let cur = {}; try { cur = JSON.parse(game.settings.get(MOD, "musicMapJSON") || "{}") || {}; } catch { /* noop */ }
+    const biomes = Object.keys(Music.DEFAULTS);
+    const rowFor = (b) => {
+        const def = Music.DEFAULTS[b];
+        const sel = Object.prototype.hasOwnProperty.call(cur, b) ? cur[b] : "__default__";
+        const opts = [
+            `<option value="__default__"${sel === "__default__" ? " selected" : ""}>Default — ${def ? cwfEsc(cwfPrettyId(def)) : "silence"}</option>`,
+            `<option value=""${sel === "" ? " selected" : ""}>— silence —</option>`,
+            ...arrs.map(a => `<option value="${a}"${sel === a ? " selected" : ""}>${cwfEsc(cwfPrettyId(a))}</option>`)
+        ].join("");
+        return `<div class="cwf-mm-row"><span class="cwf-mm-b">${cwfEsc(cwfPrettyId(b))}</span><select name="${b}">${opts}</select></div>`;
+    };
+    const content = `<div class="cwf-mm">
+        <p class="cwf-mm-hint">Pick the Cavril: Maestro ambience for each biome. It cross-fades in whenever the party stops in a hex of that type. <b>Default</b> uses the built-in pick; <b>silence</b> leaves that biome quiet.</p>
+        ${biomes.map(rowFor).join("")}
+    </div>`;
+    const apply = (root) => {
+        if (!root) return;
+        const out = {};
+        for (const b of biomes) {
+            const v = root.querySelector?.(`[name="${b}"]`)?.value;
+            if (v == null || v === "__default__") continue;   // omit → falls back to DEFAULTS
+            out[b] = v;                                        // "" = silence, else an arrangement id
+        }
+        game.settings.set(MOD, "musicMapJSON", Object.keys(out).length ? JSON.stringify(out) : "")
+            .then(() => {
+                Music.reset();
+                const tok = Travel.token || Canvasry.activeToken();
+                const cls = tok ? Canvasry.biomeForToken(tok) : null;
+                if (game.settings.get(MOD, "musicEnabled")) { if (Camp.active) Music.camp(cls); else Music.update(cls); }
+                ui.notifications?.info(`${TITLE}: biome ambience saved.`);
+            }).catch(e => warn("save music map failed", e));
+    };
+    const DialogV2 = foundry.applications?.api?.DialogV2;
+    try {
+        if (DialogV2) {
+            await DialogV2.wait({
+                window: { title: "Biome → Maestro ambience", icon: "fa-solid fa-music" },
+                position: { width: 440 },
+                content,
+                buttons: [
+                    { action: "save", label: "Save", icon: "fa-solid fa-check", default: true, callback: (_e, b) => apply(b.form || b) },
+                    { action: "cancel", label: "Cancel", icon: "fa-solid fa-xmark" }
+                ]
+            });
+            return;
+        }
+    } catch (e) { warn("music map dialog (v2) failed", e); }
+    try { new Dialog({ title: "Biome → Maestro ambience", content, buttons: { save: { label: "Save", callback: (h) => apply(h[0].querySelector("form") || h[0]) }, cancel: { label: "Cancel" } }, default: "save" }).render(true); }
+    catch (e) { warn("music map dialog failed", e); }
+}
+
 // Manually edit a party member's exhaustion / rations / waterskins from the HUD.
 async function cwfEditMember(actorId, field) {
     if (!game.user.isGM) return;
@@ -1685,7 +1796,8 @@ const Music = (() => {
         const raw = game.settings.get(MOD, "campMapJSON");
         if (raw && String(raw).trim()) { try { m = JSON.parse(raw) || {}; } catch (e) { warn("campMapJSON invalid", e); } }
         const key = cls?.terrainKey === "water" ? "water" : (cls?.biome || cls?.terrainKey);
-        const arr = m[key] || "campVista";
+        const arr = m[key] || "campVista";   // campVista = Maestro's "Wilderness Camp"
+        try { await globalThis.Maestro.fadeOutChannel?.("music"); } catch (e) { warn("maestro music fade failed", e); }   // drop any music so camp is just the night ambience
         try { await globalThis.Maestro.play("emberEnvironment", { channel: "environment", arrangementId: arr }); _last = "camp:" + arr; }
         catch (e) { warn("maestro camp ambience failed", e); }
     }
@@ -2725,8 +2837,7 @@ const Camp = (() => {
         const v = Math.max(0, Math.min(5, n | 0)), prev = dangerScore();
         Store.setSceneState({ danger: v });
         if (v !== prev && game.user.isGM && game.settings.get(MOD, "dangerCinematic")) {
-            const up = v > prev;
-            Cinematic.broadcast({ icon: up ? "fa-triangle-exclamation" : "fa-shield-halved", title: up ? "Danger Rises" : "Danger Eases", subtitle: `Region danger ${v}/5`, tone: up ? "encounter" : "weather" });
+            Cinematic.broadcastFlash({ dir: v > prev ? "up" : "down" });   // text-free colour pulse + tone — never shows the level
         }
         WayfarerPanel.render();
         cwfCampRefresh();
@@ -2864,6 +2975,13 @@ const WayfarerPanel = (() => {
     // ---- event wiring (delegated) -----------------------------------------
     function wire(el) {
         el.addEventListener("click", onClick);
+        // Right-click the Maestro toggle → open the biome→ambience assignment dialog.
+        el.addEventListener("contextmenu", (ev) => {
+            const t = ev.target.closest?.('[data-action="toggle-music"]');
+            if (!t || !game.user.isGM) return;
+            ev.preventDefault();
+            cwfMusicMapDialog();
+        });
         // Dropdowns / manual-entry inputs in the turn card.
         el.addEventListener("change", (ev) => {
             const t = ev.target.closest?.("[data-action]");
@@ -2904,6 +3022,7 @@ const WayfarerPanel = (() => {
             if (!isGM) return; // remaining actions mutate world/scene state
             switch (action) {
                 case "set-party": await Canvasry.setPartyToken(); break;
+                case "toggle-music": await toggleMusic(); break;
                 case "reset-journey": case "end-journey": await endJourney(); break;
                 case "haul": await foragerHaul(); break;
                 case "restock": await restockSupplies(); break;
@@ -3020,6 +3139,24 @@ const WayfarerPanel = (() => {
     }
 
     // Reset the journey day counter (new leg between settlements / arrived at one).
+    // Header toggle — flip Maestro biome-driven ambience on/off in one click. ON snaps
+    // the current hex's ambience back in; OFF fades the environment + music out.
+    async function toggleMusic() {
+        const on = !game.settings.get(MOD, "musicEnabled");
+        await game.settings.set(MOD, "musicEnabled", on);
+        try {
+            Music.reset();
+            if (on) {
+                const tok = Travel.token || Canvasry.activeToken();
+                const cls = tok ? Canvasry.biomeForToken(tok) : null;
+                if (Camp.active) Music.camp(cls); else { Music.update(cls); Music.syncWeather(); }
+            } else {
+                await globalThis.Maestro?.fadeOutChannel?.("environment");
+                await globalThis.Maestro?.fadeOutChannel?.("music");
+            }
+        } catch (e) { warn("toggle music failed", e); }
+        render();
+    }
     async function endJourney() {
         const prev = Store.sceneState().day || 1;
         await Store.setSceneState({ day: 1, foraged: false, shortRest: false });
@@ -3090,7 +3227,7 @@ const WayfarerPanel = (() => {
         const chips = members.map(a => {
             const i = watch.indexOf(a.id);
             const on = i >= 0;
-            return `<button class="cwf-toggle ${on ? "on" : ""}" data-action="camp-watch" data-id="${a.id}" ${dis} title="Highest mod −${Danger.highestMod(a)}">${on ? `${i + 1}. ` : ""}${esc(a.name)} <span class="cwf-rr-sk">−${Danger.highestMod(a)}</span></button>`;
+            return `<button class="cwf-toggle ${on ? "on" : ""}" data-action="camp-watch" data-id="${a.id}" ${dis} title="Highest mod −${Danger.highestMod(a)}"><span class="cwf-watch-nm">${on ? `${i + 1}. ` : ""}${esc(a.name)}</span><span class="cwf-rr-sk">−${Danger.highestMod(a)}</span></button>`;
         }).join("");
         const rl = cwfWatchRestLabel(watch.length);
         const watchNote = watch.length
@@ -3128,6 +3265,7 @@ const WayfarerPanel = (() => {
         const st = Store.sceneState();
         const tok = Travel.token || Canvasry.activeToken();   // pin to the plot token while plotting
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
+        const hasMaestro = !!globalThis.Maestro?.play, musicOn = !!game.settings.get(MOD, "musicEnabled");
         const sup = Party.supplies();
         const bd = Party.breakdown();
         const size = Party.size();
@@ -3201,6 +3339,7 @@ const WayfarerPanel = (() => {
                 <i class="fa-solid fa-mountain-sun"></i>
                 <span class="cwf-title">${TITLE}</span>
                 <span class="cwf-day" title="Days travelling this journey">Day ${st.day}</span>
+                ${isGM && hasMaestro ? `<button class="cwf-icon ${musicOn ? "cwf-on" : ""}" data-action="toggle-music" title="${musicOn ? "Maestro ambience ON — biome drives the music. Click to mute · right-click to assign biomes." : "Maestro ambience OFF. Click to enable · right-click to assign biomes."}"><i class="fa-solid ${musicOn ? "fa-music" : "fa-volume-xmark"}"></i></button>` : ""}
                 ${isGM ? `<button class="cwf-icon" data-action="reset-journey" title="New journey — reset the day counter"><i class="fa-solid fa-rotate-left"></i></button>` : ""}
                 <button class="cwf-icon" data-action="collapse" title="Collapse/expand"><i class="fa-solid ${collapsedRef ? "fa-chevron-down" : "fa-chevron-up"}"></i></button>
                 <button class="cwf-icon" data-action="close" title="Close"><i class="fa-solid fa-xmark"></i></button>
@@ -3334,7 +3473,10 @@ Hooks.once("ready", () => {
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, _installed: true
     };
     // Phase-transition cinematics broadcast from the GM → every client plays them.
-    try { game.socket?.on(`module.${MOD}`, (msg) => { if (msg?.type === "cinematic") Cinematic.play(msg.spec || {}); }); }
+    try { game.socket?.on(`module.${MOD}`, (msg) => {
+        if (msg?.type === "cinematic") Cinematic.play(msg.spec || {});
+        else if (msg?.type === "flash") Cinematic.flash(msg.spec || {});
+    }); }
     catch (e) { warn("socket listener failed", e); }
     HexData.load().then(() => BiomeBadge.update());  // baumgart fallback index (hexlands)
     registerWayfarerToolbar();                        // Augur Tools group (preferred)
