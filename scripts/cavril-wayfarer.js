@@ -2661,7 +2661,7 @@ const Tables = (() => {
         try {
             const res = await tbl.draw({ displayChat: false });
             const r = res?.results?.[0];
-            const text = r?.text ?? r?.description ?? r?.name ?? "";
+            const text = r?.description ?? r?.name ?? r?.text ?? "";   // .description/.name first (V13); .text is the deprecated legacy getter
             const idx = (Array.isArray(r?.range) ? r.range[0] : 1) - 1;
             const e = def?.entries?.[idx];
             return { text: text || inline().text, effect: (e && typeof e === "object") ? e.effect : null };
@@ -2701,7 +2701,7 @@ const Tables = (() => {
             const tbl = await ensureEncounter(biomeKey, label);
             if (!tbl) return fallback;
             const res = await tbl.draw({ displayChat: false });
-            return res?.results?.[0]?.text || fallback;
+            { const r = res?.results?.[0]; return (r?.description ?? r?.name ?? r?.text) || fallback; }
         } catch (e) { warn("encounter draw failed", e); return fallback; }
     }
 
@@ -2768,7 +2768,7 @@ const Tables = (() => {
     }
     async function drawGeneric(key, entries) {
         const fb = entries[0];
-        try { const t = await ensureGeneric(key, entries); if (!t) return fb; const res = await t.draw({ displayChat: false }); return res?.results?.[0]?.text || fb; }
+        try { const t = await ensureGeneric(key, entries); if (!t) return fb; const res = await t.draw({ displayChat: false }); const r = res?.results?.[0]; return (r?.description ?? r?.name ?? r?.text) || fb; }
         catch (e) { warn("generic draw failed", e); return fb; }
     }
     const drawFlavor = () => drawGeneric("flavor", FLAVOR_ENTRIES);
