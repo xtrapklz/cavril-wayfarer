@@ -62,25 +62,30 @@
     hideGrid: true,                // staged maps: hide Foundry's grid overlay (CZEPEKU art has its own)
     lightColoration: 10,           // force every authored light to Foundry "Natural Light" technique (10); null = leave as-authored
     excludeVariantWords: ["rain", "storm", "downpour"], // never instantiate these variants — CZEPEKU's top-down rain clashes with our weather system
+    naturalizeMaps: true,      // combat path: prefer a map's "Natural"/"Empty" variant — strips the unique structures → generic biome terrain
+    noRepeatWindow: 8,         // remember the last N staged maps and avoid re-picking them, so a biome cycles through its pool
   };
 
   // biome → CZEPEKU candidate tags, strongest first. Data-driven: only tags that
   // actually exist in the live catalog contribute, so over-listing is harmless.
   // Run CavrilEncounterStage.audit() to see which of these hit real maps.
+  // Calibrated against the live 198-tag catalog (2026-06-21) — every tag here actually exists, so
+  // none are dead weight. Dead tags removed: grass/plains/pine/dune/ruins/ice/winter/glacier/sea/
+  // shipwreck/lake/reef/coast/void → remapped to real tags (meadow/tree/ruin/frozen/snow/shore/…).
   const BIOME_TAGS = {
-    temperate: ["forest", "clearing", "autumn", "green", "garden", "hill", "river", "grass", "plains"],
-    savanna:   ["drought", "clearing", "plains", "grass", "farm", "desert"],
-    boreal:    ["forest", "pine", "fog", "autumn", "clearing", "frozen"],
-    desert:    ["desert", "sand", "dune", "drought", "canyon", "crater", "oasis"],
-    wasteland: ["ash", "destruction", "abandoned", "drought", "bones", "corpse", "ruins", "crater"],
+    temperate: ["forest", "clearing", "autumn", "green", "garden", "hill", "river", "meadow", "tree"],
+    savanna:   ["drought", "clearing", "farm", "desert", "sand"],
+    boreal:    ["forest", "fog", "autumn", "clearing", "frozen", "snow"],
+    desert:    ["desert", "sand", "drought", "canyon", "crater", "oasis"],
+    wasteland: ["ash", "destruction", "abandoned", "drought", "bones", "corpse", "ruin", "crater", "wasteland"],
     jungle:    ["jungle", "fungi", "bioluminescent", "coral", "fey", "clearing", "swamp"],
     tainted:   ["infested", "blood", "corpse", "eldritch", "fungi", "infernal", "darkness", "graveyard"],
-    tundra:    ["frozen", "snow", "ice", "winter", "fog", "clearing"],
-    frozen:    ["frozen", "snow", "ice", "crystal", "aurora", "cavern", "glacier"],
+    tundra:    ["frozen", "snow", "fog", "clearing"],
+    frozen:    ["frozen", "snow", "crystal", "aurora", "cavern"],
     volcanic:  ["lava", "fire", "ash", "crater", "forge", "infernal", "volcano"],
-    void:      ["astral", "celestial", "dreamscape", "darkness", "eldritch", "void"],
-    unknown:   ["forest", "clearing", "hill", "fog", "ruins", "cavern"],
-    water:     ["ocean", "sea", "beach", "island", "coral", "docks", "ship", "shipwreck", "water", "lake", "reef", "coast"],
+    void:      ["astral", "celestial", "dreamscape", "darkness", "eldritch"],
+    unknown:   ["forest", "clearing", "hill", "fog", "cavern"],
+    water:     ["ocean", "beach", "island", "coral", "docks", "ship", "water", "shore", "underwater", "waterfall"],
   };
   // elevation / vegetation / hydrology overlays (added to the candidate set).
   const ELEV_TAGS = {
@@ -344,8 +349,10 @@
     return best;
   }
 
-  // Pick the best variant within an item for the current day/night + weather.
-  function pickVariant(item, { when = "day", weather = null, season = null } = {}) {
+  // Pick the best variant within an item for the current day/night + weather. When `natural` is set
+  // (the combat path), strongly prefer the map's "Natural"/"Empty" variant — CZEPEKU ships these as the
+  // building-stripped, generic-terrain version of a themed map (Viking Market → beach·natural).
+  function pickVariant(item, { when = "day", weather = null, season = null, natural = false } = {}) {
     const wantNight = when === "night";
     const wxWords = weather && VARIANT_WORDS[weather] ? VARIANT_WORDS[weather] : null;
     const seWords = season && VARIANT_WORDS[season] ? VARIANT_WORDS[season] : null;
@@ -358,10 +365,17 @@
       if (!wantNight && wordHit(v, VARIANT_WORDS.day)) s += 2;
       if (wxWords && wordHit(v, wxWords)) s += 3;
       if (seWords && wordHit(v, seWords)) s += 2;
+      if (natural) {                                              // naturalize: strip the unique structures
+        if (wordHit(v, ["natural", "empty"])) s += 6;            // the explicitly building-stripped variant
+        else if (wordHit(v, ["original"])) s += 1;               // the as-designed base (fallback)
+      }
       if (s > bestScore) { bestScore = s; best = v; }
     }
     return best;
   }
+  // Recently-staged map ids → cycle through a biome's pool instead of re-picking the same map run-to-run.
+  const _recent = new Set(), _recentQ = [];
+  function remember(id) { if (!id) return; _recent.add(id); _recentQ.push(id); while (_recentQ.length > (CFG.noRepeatWindow ?? 8)) _recent.delete(_recentQ.shift()); }
 
   // Full pick: classify → score catalog → check importability of the top-K → choose.
   async function pickMap(cls, ctx = {}) {
@@ -370,6 +384,7 @@
     const cat = await getCatalog();
     const candTags = candidateTags(cls, { type, season: ctx.season });
     const genericBias = (CFG.preferGenericMaps ?? true) && type !== "social";   // social WANTS built places
+    const vctx = { ...ctx, natural: genericBias && (CFG.naturalizeMaps ?? true) };   // combat → naturalized variant
     const scored = cat.items
       .filter(it => it.dataKey === dataKey && it.genre === "fantasy")
       .map(it => {
@@ -388,8 +403,13 @@
       .sort((a, b) => b.score - a.score);
     if (!scored.length) { warn(`no tag matches for biome '${effectiveBiome(cls)}' (${type})`); return null; }
 
+    // Cycle: skip maps staged in the last few encounters so a biome rotates through its pool —
+    // unless that would leave too few to choose from.
+    let ranked = scored;
+    if (genericBias && _recent.size) { const fresh = scored.filter(x => !_recent.has(x.it.id)); if (fresh.length >= 3) ranked = fresh; }
+
     // Consider a POOL of the top-scored maps (not just #1) and check importability.
-    const pool = scored.slice(0, CFG.candidatePool ?? 12);
+    const pool = ranked.slice(0, CFG.candidatePool ?? 12);
     const allKeys = pool.flatMap(x => x.it.variants.flatMap(v => [v.key, ...v.animated.map(a => a.key)]));
     let exist = {};
     try { exist = await importableFor(allKeys); } catch (e) { warn("importability check failed", e.message); }
@@ -397,7 +417,7 @@
     // Collect every importable candidate (each with a non-excluded, condition-matched variant).
     const candidates = [];
     for (const { it, score } of pool) {
-      const variant = pickVariant(it, ctx);
+      const variant = pickVariant(it, vctx);
       let variantKey = [variant.key, ...variant.animated.map(a => a.key)].find(k => exist[k]);
       let chosen = variant;
       if (!variantKey) {
@@ -411,19 +431,55 @@
     }
 
     if (candidates.length) {
-      if (!(CFG.randomizeMap ?? true) || candidates.length === 1) return candidates[0]; // deterministic best
-      // weighted-random by score: better matches are likelier, but you get variety run-to-run
-      const total = candidates.reduce((s, c) => s + c.score, 0);
-      let r = Math.random() * total;
-      for (const c of candidates) { if ((r -= c.score) < 0) return c; }
-      return candidates[candidates.length - 1];
+      let chosen = candidates[0]; // deterministic best
+      if ((CFG.randomizeMap ?? true) && candidates.length > 1) {
+        // weighted-random by score: better matches are likelier, but you get variety run-to-run
+        const total = candidates.reduce((s, c) => s + c.score, 0);
+        let r = Math.random() * total;
+        chosen = candidates.find(c => (r -= c.score) < 0) || candidates[candidates.length - 1];
+      }
+      remember(chosen.item.id);
+      return chosen;
     }
     // nothing importable in the pool → image-only fallback on the best-scored item
     if (CFG.allowImageFallback) {
-      const { it, score } = scored[0];
-      return { item: it, variant: pickVariant(it, ctx), variantKey: null, score, importable: false };
+      const { it, score } = ranked[0];
+      remember(it.id);
+      return { item: it, variant: pickVariant(it, vctx), variantKey: null, score, importable: false };
     }
     return null;
+  }
+
+  // The naturalized base variant of a map (building-stripped): Natural › Empty › Original.
+  function naturalBase(item) {
+    const vs = item.variants || [], f = (re) => vs.find(v => re.test((v.name || "").toLowerCase()));
+    return f(/natural/) || f(/empty/) || f(/original day/) || f(/original/) || vs[0] || null;
+  }
+  // Best-matching biome for a set of tags by BIOME_TAGS overlap.
+  function biomeOf(tags) {
+    const set = new Set((tags || []).map(t => String(t).toLowerCase()));
+    let best = "unknown", n = 0;
+    for (const [b, list] of Object.entries(BIOME_TAGS)) { let c = 0; for (const t of list) if (set.has(t)) c++; if (c > n) { n = c; best = b; } }
+    return n ? best : "unknown";
+  }
+  // Preview the curated biome pools: classify every battlemap by its NATURALIZED variant → biome +
+  // generic/specific. The live combat path already naturalizes + cycles through these; this just shows
+  // what's in each pool so you can eyeball the calibration. CavrilEncounterStage.previewBiomePools()
+  async function previewBiomePools() {
+    const cat = await getCatalog();
+    const maps = cat.items.filter(it => it.dataKey === "maps" && it.genre === "fantasy");
+    const pools = {};
+    for (const it of maps) {
+      const tags = (naturalBase(it)?.tags || []).map(t => String(t).toLowerCase());
+      const terrain = tags.filter(t => WILDERNESS_TAGS.has(t) || t === "natural").length;
+      const struct = tags.filter(t => STRUCTURE_TAGS.has(t)).length;
+      const generic = terrain > 0 && terrain >= struct;
+      (pools[biomeOf(tags)] ??= { generic: [], specific: [] })[generic ? "generic" : "specific"].push(it.name);
+    }
+    const table = {}; for (const [b, p] of Object.entries(pools)) table[b] = { generic: p.generic.length, specific: p.specific.length };
+    console.table(table); console.log("[EncounterStage] biome pools (generic map names):", pools);
+    ui.notifications?.info("Cavril: biome pool preview in console (F12) — generic vs specific counts per biome.");
+    return pools;
   }
 
   // ===== STAGING ===========================================================
@@ -1219,7 +1275,7 @@
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
-    getCatalog, pickMap, scenePayload, importableFor,
+    getCatalog, pickMap, scenePayload, importableFor, previewBiomePools,
     // Preview the top matches for a biome without creating anything.
     async preview(biome = "temperate", { type = "combat", when = "day", weather = null, n = 8 } = {}) {
       const cat = await getCatalog();
