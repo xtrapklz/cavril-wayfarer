@@ -248,9 +248,13 @@
     const sd = {
       name: `${item.name} — ${variant.name}`.trim(),
       width: w, height: h, padding: 0, navigation: false, active: false,
-      background: { src: rel }, grid: { size: g }, tokenVision: false,
+      grid: { size: g }, tokenVision: false,
       flags: { "cavril-wayfarer": { esFallback: true, esMapId: id } },
     };
+    // V14 stores the background under levels[]; older cores use Scene#background.
+    const gMaj = parseInt(String(game.version || "13").split(".")[0], 10);
+    if (gMaj >= 14) sd.levels = [{ name: "Level", background: { src: rel } }];
+    else sd.background = { src: rel };
     const scene = await Scene.create(sd);
     if (!scene) throw new Error("fallback Scene.create returned null");
     try { const th = await scene.createThumbnail(); const td = typeof th === "string" ? th : th?.thumb; if (td) await scene.update({ thumb: td }); } catch (e) {}
@@ -855,6 +859,8 @@
   const buildApi = () => ({
     _installed: true,
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
+    // Pure helpers exposed for the self-test harness + live debugging (no side effects).
+    _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, BIOME_CREATURES, TYPE_MUSIC, BIOME_TAGS },
     getCatalog, pickMap, scenePayload, importableFor,
     // Preview the top matches for a biome without creating anything.
     async preview(biome = "temperate", { type = "combat", when = "day", weather = null, n = 8 } = {}) {
