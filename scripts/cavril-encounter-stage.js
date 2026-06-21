@@ -49,12 +49,14 @@
     dropParty: true,               // place the party PC tokens in the centre
     partySpreadFt: 10,             // party scatters within this many feet of each other
     dropMonsters: true,            // place biome-appropriate monster tokens
-    foeStandoffFt: 25,             // foe clusters start this far from the party
+    foeMinFt: 15,                  // foes spawn at LEAST this far from the party
+    foeMaxFt: 40,                  // foes spawn at MOST this far from the party
     maxMonsters: 6,                // hard cap on bodies dropped
     encounterBudgetMul: 0.5,       // total CR budget ≈ partyLevel × partySize × this
     addToCombat: true,             // add party + foes to the tracker + roll NPC initiative
     documentEncounters: true,      // drop a journal pin on the overworld hex + a Return control on the battlemap
-    playCombatMusic: true,         // start the Maestro theme for the dominant creature type
+    tensionOnStage: true,          // at stage: shift current music tense + SFX + cinematic (NOT combat music yet)
+    playCombatMusic: true,         // start the dominant-foe-type combat theme when COMBAT begins
     startCombat: false,            // GM begins combat (then ddb-roll-cards automates)
     lightColoration: 10,           // force every authored light to Foundry "Natural Light" technique (10); null = leave as-authored
     excludeVariantWords: ["rain", "storm", "downpour"], // never instantiate these variants — CZEPEKU's top-down rain clashes with our weather system
@@ -482,6 +484,18 @@
     } catch (e) { warn("createCombat staging failed", e); ui.notifications?.error("Encounter Stage failed — see console."); }
   }
 
+  // Combat BEGINS (round 1) → swap the tension bed for the dominant-foe combat theme.
+  // Only on scenes we staged, so we don't hijack other combats. (If Cavril: Maestro's own
+  // auto-combat-music is on it plays the same theme — harmless.)
+  function onCombatStart(combat) {
+    try {
+      if (!game.user.isGM || !CFG.playCombatMusic) return;
+      if (!combat?.scene?.getFlag?.("cavril-wayfarer", "originScene")) return;
+      const foes = (combat.combatants?.contents || combat.combatants || []).map(c => c.actor).filter(a => a && !a.hasPlayerOwner);
+      if (foes.length) playCombatMusic(foes);
+    } catch (e) { warn("combat-start music failed", e); }
+  }
+
   // ===== INSTALL ===========================================================
   const hookIds = {};   // populated by install() on ready
 
@@ -708,22 +722,30 @@
     return placeTokens(scene, members, scatterPoints(members.length, center, radius, gs * 0.85));
   }
 
-  // Foes in 1–3 strategic clusters AROUND the party muster point.
+  // Foes in 1–3 strategic clusters AROUND the party, every body kept within the
+  // [foeMinFt, foeMaxFt] distance band from the party muster point.
   async function dropFoesAround(scene, actors, center) {
     if (!actors.length) return [];
     const gs = scene.grid?.size || CFG.fallbackGridSize;
+    const minR = ftToPx(scene, CFG.foeMinFt ?? 15);
+    const maxR = Math.max(minR + gs, ftToPx(scene, CFG.foeMaxFt ?? 40));
     const nClusters = actors.length <= 2 ? 1 : Math.min(3, Math.ceil(actors.length / 3));
-    const dist = ftToPx(scene, CFG.foeStandoffFt ?? 25);   // clusters stand off this far from the party
     const base = Math.random() * Math.PI * 2;
     const clusters = Array.from({ length: nClusters }, (_, i) => {
       const ang = base + (i / nClusters) * Math.PI * 2 + (Math.random() - 0.5) * 0.6;
+      const dist = minR + Math.random() * (maxR - minR);
       return { x: center.x + Math.cos(ang) * dist, y: center.y + Math.sin(ang) * dist };
     });
+    // Clamp a point's distance-from-party into [minR, maxR].
+    const clamp = (x, y) => { const dx = x - center.x, dy = y - center.y, d = Math.hypot(dx, dy) || 1, c = Math.max(minR, Math.min(maxR, d)); return { x: center.x + dx / d * c, y: center.y + dy / d * c }; };
     const pts = [];
     for (let i = 0; i < actors.length; i++) {
       const c = clusters[i % nClusters];
-      let p = scatterPoints(1, c, gs * 1.4, 0)[0], tries = 0;
-      while (tries < 12 && pts.some(q => Math.hypot(q.x - p.x, q.y - p.y) < gs * 0.85)) { p = scatterPoints(1, c, gs * 2, 0)[0]; tries++; }
+      const s0 = scatterPoints(1, c, gs * 1.4, 0)[0];
+      let p = clamp(s0.x, s0.y), tries = 0;
+      while (tries < 12 && pts.some(q => Math.hypot(q.x - p.x, q.y - p.y) < gs * 0.85)) {
+        const s = scatterPoints(1, c, gs * 2, 0)[0]; p = clamp(s.x, s.y); tries++;
+      }
       pts.push(p);
     }
     return placeTokens(scene, actors, pts);
@@ -777,6 +799,8 @@
 
   // ===== DOCUMENTATION + SCENE NAVIGATION ==================================
   const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
+  // Normalise a Maestro cue reference (bare ref or a pasted @Maestro[…] link); "" if blank.
+  const cwfRef = (s) => { s = String(s || "").trim(); const m = s.match(/^@Maestro\[(.+)\]$/i); return (m ? m[1] : s).trim(); };
   // Drop a journal pin on the OVERWORLD hex (documents the encounter + links both ways)
   // and flag the battlemap with its origin so the Return control can bring you home.
   async function documentEncounter(originScene, battleScene, ctx = {}) {
@@ -902,8 +926,14 @@
       combat = await buildCombat(scene, [...partyTokens, ...foeTokens]);
     }
 
-    // 5) Correct combat music (dominant foe type); Maestro re-affirms it on combat start.
-    if ((opts.playMusic ?? CFG.playCombatMusic) && actors.length) playCombatMusic(actors);
+    // 5) TENSION, not combat music yet — shift whatever's playing to its tense version,
+    //    fire an alert SFX + a cinematic. The real combat theme starts on combatStart.
+    if (opts.tension ?? CFG.tensionOnStage) {
+      try { globalThis.Maestro?.tension?.(); } catch (e) { warn("tension shift failed", e); }
+      const sfx = cwfRef(game.settings.get(MOD, "esEncounterSfx"));
+      if (sfx) { try { globalThis.Maestro?.triggerRef?.(sfx); } catch (e) { warn("encounter sfx failed", e); } }
+      try { globalThis.CavrilWayfarer?.Cinematic?.broadcast?.({ icon: "fa-dragon", title: "Ambush!", subtitle: cls?.label || ebiome, tone: "encounter" }); } catch (e) { warn("encounter cinematic failed", e); }
+    }
 
     // 6) Document it: a journal pin on the overworld hex + a Return control on the battlemap,
     //    so you can move in and out of the fight. Only when we staged a SEPARATE scene.
@@ -925,7 +955,10 @@
     reg("esDropParty",        { name: "  · Place the party", hint: "Drop the party's PC tokens in the centre of the staged map, scattered within ~10 ft.", scope: "world", config: true, type: Boolean, default: true });
     reg("esDropMonsters",     { name: "  · Drop foes", hint: "Place a CR-scaled, biome-appropriate group of monsters in strategic clusters around the party.", scope: "world", config: true, type: Boolean, default: true });
     reg("esAddToCombat",      { name: "  · Build the encounter", hint: "Add the party + foes to the combat tracker, roll NPC initiative, and call for initiative. You still press Begin Combat yourself.", scope: "world", config: true, type: Boolean, default: true });
-    reg("esCombatMusic",      { name: "  · Combat music", hint: "Start the Cavril: Maestro combat theme for the dominant foe type when foes are dropped.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esCombatMusic",      { name: "  · Combat music on Begin Combat", hint: "When COMBAT begins on a staged scene, start the Cavril: Maestro combat theme for the dominant foe type. (At stage time the current music just shifts tense — see below.)", scope: "world", config: true, type: Boolean, default: true });
+    reg("esEncounterSfx",     { name: "  · Encounter alert sound", hint: "Optional Cavril: Maestro cue played when an encounter stages (sfx:path / preset:tag / @Maestro[…]). Blank = no alert sound (the tension shift + cinematic still fire).", scope: "world", config: true, type: String, default: "" });
+    reg("esFoeMinFt",         { name: "  · Foe min distance (ft)", hint: "Foes spawn at LEAST this far from the party.", scope: "world", config: true, type: Number, default: 15, range: { min: 0, max: 120, step: 5 } });
+    reg("esFoeMaxFt",         { name: "  · Foe max distance (ft)", hint: "Foes spawn at MOST this far from the party.", scope: "world", config: true, type: Number, default: 40, range: { min: 5, max: 200, step: 5 } });
     reg("esMaxMonsters",      { name: "  · Max foes", hint: "Hard cap on bodies dropped per encounter.", scope: "world", config: true, type: Number, default: 6, range: { min: 1, max: 20, step: 1 } });
     reg("esBudgetMul",        { name: "  · Encounter budget ×", hint: "Total CR budget ≈ party level × party size × this.", scope: "world", config: true, type: Number, default: 0.5, range: { min: 0.1, max: 2, step: 0.1 } });
     reg("esMonsterPack",      { name: "  · Monster compendium", hint: "Actor compendium to draw foes from (e.g. dnd5e.monsters, or a DDB monsters pack).", scope: "world", config: true, type: String, default: "dnd5e.monsters" });
@@ -942,6 +975,8 @@
       CFG.addToCombat        = game.settings.get(MOD, "esAddToCombat");
       CFG.documentEncounters = game.settings.get(MOD, "esDocumentEncounters");
       CFG.playCombatMusic    = game.settings.get(MOD, "esCombatMusic");
+      CFG.foeMinFt           = Number(game.settings.get(MOD, "esFoeMinFt")) ?? CFG.foeMinFt;
+      CFG.foeMaxFt           = Number(game.settings.get(MOD, "esFoeMaxFt")) || CFG.foeMaxFt;
       CFG.maxMonsters        = Number(game.settings.get(MOD, "esMaxMonsters")) || CFG.maxMonsters;
       CFG.encounterBudgetMul = Number(game.settings.get(MOD, "esBudgetMul")) || CFG.encounterBudgetMul;
       CFG.monsterPack        = String(game.settings.get(MOD, "esMonsterPack") || CFG.monsterPack);
@@ -1004,7 +1039,7 @@
       log(`catalog has ${cat.allTags.size} tags. Missing tags above are candidates to remap.`);
       return rows;
     },
-    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); _returnBtn?.remove(); _returnBtn = null; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
+    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); _returnBtn?.remove(); _returnBtn = null; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
   });
 
   // ===== INSTALL ===========================================================
@@ -1015,6 +1050,7 @@
     hookIds.encounter = Hooks.on("cavril-wayfarer.encounter", onEncounter);
     hookIds.combat    = Hooks.on("createCombat", onCreateCombat);
     hookIds.canvas    = Hooks.on("canvasReady", refreshReturnControl);   // show/hide the Return-to-overworld button
+    hookIds.cStart    = Hooks.on("combatStart", onCombatStart);          // combat music starts when COMBAT begins
     globalThis.CavrilEncounterStage = buildApi();
     refreshReturnControl();   // in case we boot directly onto a staged battlemap
     log("installed. Hooks: cavril-wayfarer.encounter → pick, createCombat → stage.");
