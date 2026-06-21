@@ -436,6 +436,15 @@ const Store = (() => {
         g.register(MOD, "dangerCinematic", { name: "Pulse on danger change", hint: "When region danger rises or falls, flash a wordless colour pulse + tone to the whole table — they feel the shift without ever seeing the level.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "sfxDangerUp", { name: "Danger-rising cue (Maestro)", hint: "Optional Cavril: Maestro cue for when danger RISES — a reference like sfx:path/to/sound.ogg, music:<id>, preset:<tag>, or a pasted @Maestro[…] link. Maestro plays it to the whole table. Blank = a built-in low rising tone.", scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "sfxDangerDown", { name: "Danger-easing cue (Maestro)", hint: "Optional Cavril: Maestro cue for when danger FALLS (same reference format as above). Blank = a built-in low falling tone.", scope: "world", config: true, type: String, default: "" });
+        // A sound per cinematic BEAT. A Maestro reference, or a wildcard FOLDER ending in "/"
+        // (a random cue plays from it). Blank = silent. The GM triggers it; Maestro plays it to all.
+        const cineSfxHint = "Maestro cue or a wildcard folder ending in / (random cue). Blank = silent.";
+        g.register(MOD, "sfxCineEncounter", { name: "Cinematic sound — Encounter / Ambush", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxCineDusk",      { name: "Cinematic sound — Make Camp (dusk)", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxCineNight",     { name: "Cinematic sound — Night Watch", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxCineDawn",      { name: "Cinematic sound — Dawn", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxCineWeather",   { name: "Cinematic sound — Weather change", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxCineTravel",    { name: "Cinematic sound — Biome / road turn", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "autoResolveTurn", { name: "Auto-resolve travel turn", hint: "When every claimed role has rolled (in Foundry or from D&D Beyond), resolve the Travel Turn automatically — the players' rolls are the trigger, no Resolve click.", scope: "world", config: true, type: Boolean, default: true });
         // Token movement.
         g.register(MOD, "moveAnimMs", { name: "Hex move duration (ms)", hint: "How long the token takes to glide between hexes during travel. Higher = more gradual. Default 900.", scope: "world", config: true, type: Number, default: 900, range: { min: 100, max: 3000, step: 100 } });
@@ -1132,8 +1141,20 @@ const Cinematic = (() => {
         } catch (e) { warn("cinematic failed", e); }
     }
     // GM fires these; mirror to every client so the table sees the same beat.
+    // Each cinematic BEAT (tone) → its own configurable sound, played GM-side via Maestro
+    // (which broadcasts the audio to the table). A folder path ending in "/" plays a random
+    // cue from that wildcard folder; otherwise it's a Maestro reference.
+    const CINE_SFX_KEY = { encounter: "sfxCineEncounter", dawn: "sfxCineDawn", dusk: "sfxCineDusk", night: "sfxCineNight", weather: "sfxCineWeather", travel: "sfxCineTravel" };
+    function cineSfx(tone) {
+        if (!game.user.isGM) return;
+        const ref = cwfMaestroRef(game.settings.get(MOD, CINE_SFX_KEY[tone] || CINE_SFX_KEY.travel) || "");
+        if (!ref) return;
+        try { const M = globalThis.Maestro; if (ref.endsWith("/") && M?.playRandomInFolder) M.playRandomInFolder(ref); else M?.triggerRef?.(ref); }
+        catch (e) { warn("cinematic sfx failed", e); }
+    }
     function broadcast(spec) {
         try { game.socket?.emit(`module.${MOD}`, { type: "cinematic", spec }); } catch (e) { warn("cinematic broadcast failed", e); }
+        cineSfx(spec?.tone);
         play(spec);
     }
     // A short rising / falling tone for the danger pulse — synthesised so it needs no

@@ -41,7 +41,8 @@
     candidatePool: 12,         // randomize among the top-N importable maps (variety)
     randomizeMap: true,        // weighted-random pick from the pool instead of always the #1 match
     preferGenericMaps: true,   // random encounters → generic biome terrain, NOT specific places (villages/ruins/temples)
-    structurePenalty: 6,       // score subtracted from a "specific location" map on the combat path
+    structurePenalty: 10,      // score subtracted from a "specific location" map on the combat path
+    wildernessBoost: 4,        // score added to an open-wilderness map on the combat path
     whisperPicks: true,        // whisper the staged map to the GM
     catalogTtlMs: 5 * 60_000,
     // --- full encounter staging (stageEncounter) ---
@@ -105,6 +106,15 @@
   const hasStructure = (item) => {
     for (const v of (item.variants || [])) for (const t of (v.tags || [])) if (STRUCTURE_TAGS.has(String(t).toLowerCase())) return true;
     return STRUCTURE_NAME.test(item.name || "");
+  };
+  // Open WILDERNESS markers — boosted on the combat path so generic terrain is preferred.
+  const WILDERNESS_TAGS = new Set(["forest", "woods", "woodland", "clearing", "grass", "grassland", "plains", "meadow",
+    "field", "hill", "hills", "valley", "wilderness", "wild", "nature", "jungle", "desert", "dunes", "sand", "tundra",
+    "snow", "ice", "swamp", "marsh", "bog", "cliff", "canyon", "mountain", "river", "lake", "shore", "beach", "coast",
+    "coastline", "cave", "cavern", "crater", "lava", "volcano", "oasis", "wasteland", "badlands"]);
+  const isWilderness = (item) => {
+    for (const v of (item.variants || [])) for (const t of (v.tags || [])) if (WILDERNESS_TAGS.has(String(t).toLowerCase())) return true;
+    return false;
   };
   // condition → words we look for in a variant's NAME or tags to pick day/night/weather/season.
   const VARIANT_WORDS = {
@@ -362,9 +372,14 @@
       .filter(it => it.dataKey === dataKey && it.genre === "fantasy")
       .map(it => {
         const base = scoreItem(it, candTags);
-        // Sink "specific location" maps (villages/ruins/temples) below generic biome terrain
-        // on the combat path — they stay selectable as a fallback if nothing generic matches.
-        const score = genericBias && hasStructure(it) ? Math.max(0.5, base - (CFG.structurePenalty ?? 6)) : base;
+        let score = base;
+        // On the combat path: BOOST open wilderness maps and SINK "specific location" maps
+        // (villages/ruins/temples) — so random encounters land on generic terrain. Specific maps
+        // stay selectable (floored) as a fallback if nothing generic matches the biome.
+        if (genericBias) {
+          if (isWilderness(it)) score += (CFG.wildernessBoost ?? 4);
+          if (hasStructure(it)) score = Math.max(0.5, score - (CFG.structurePenalty ?? 10));
+        }
         return { it, base, score };
       })
       .filter(x => x.base > 0)
@@ -494,6 +509,19 @@
       const foes = (combat.combatants?.contents || combat.combatants || []).map(c => c.actor).filter(a => a && !a.hasPlayerOwner);
       if (foes.length) playCombatMusic(foes);
     } catch (e) { warn("combat-start music failed", e); }
+  }
+
+  // Dedup: a token ends up with 2+ combatants (our pre-added one + a player's manual / DDB
+  // initiative roll that made its own) → delete the OLDER copies, keep the just-created one
+  // (it carries the fresh roll). Scoped to our staged scenes so other combats are untouched.
+  async function onCombatantCreated(combatant) {
+    try {
+      if (!game.user.isGM || !combatant?.tokenId) return;
+      const combat = combatant.parent;
+      if (!combat?.scene?.getFlag?.("cavril-wayfarer", "originScene")) return;
+      const dupes = (combat.combatants?.contents || combat.combatants || []).filter(c => c.id !== combatant.id && c.tokenId === combatant.tokenId);
+      if (dupes.length) await combat.deleteEmbeddedDocuments("Combatant", dupes.map(c => c.id));
+    } catch (e) { warn("combatant dedup failed", e); }
   }
 
   // ===== INSTALL ===========================================================
@@ -805,15 +833,20 @@
     catch (e) { warn("token create failed", e); return []; }
   }
 
-  // Party PCs (from Wayfarer's group), scattered in the centre within ~10 ft of each other.
+  // Party PCs (from Wayfarer's group), scattered in the centre. Cluster scales with party size
+  // so everyone fits — a too-tight radius was dropping members on top of each other.
   async function dropParty(scene, center) {
     let members = [];
     try { members = globalThis.CavrilWayfarer?.Party?.members?.() || []; } catch { /* noop */ }
     if (!members.length) members = (game.actors?.filter(a => a.type === "character" && a.hasPlayerOwner)) || [];
+    members = members.filter(a => a && a.id);
     if (!members.length) { warn("no party members to place — set the party group / party marker token"); return []; }
     const gs = scene.grid?.size || CFG.fallbackGridSize;
-    const radius = Math.max(gs, ftToPx(scene, CFG.partySpreadFt ?? 10) * 0.5);   // ~10 ft cluster
-    return placeTokens(scene, members, scatterPoints(members.length, center, radius, gs * 0.85));
+    const radius = Math.max(ftToPx(scene, CFG.partySpreadFt ?? 10) * 0.5, gs * 0.7 * Math.sqrt(members.length));
+    const placed = await placeTokens(scene, members, scatterPoints(members.length, center, radius, gs * 0.7));
+    log(`placed ${placed.length}/${members.length} party tokens at centre.`);
+    if (placed.length < members.length) warn(`only ${placed.length}/${members.length} party tokens placed — check the named members are valid character actors.`);
+    return placed;
   }
 
   // Foes in 1–3 strategic clusters AROUND the party, every body kept within the
@@ -855,11 +888,10 @@
       if (!combat) combat = await Combat.create({ scene: scene.id });
       if (!combat) return null;
       const have = new Set(combat.combatants.map(c => c.tokenId));
-      // Add the FOES only. A player's manual / D&D Beyond initiative roll creates their OWN
-      // combatant, so pre-adding the party here doubles them in the tracker. Their tokens
-      // are already on the map; they join the tracker the moment they roll for initiative.
-      const add = list.filter(t => !have.has(t.id) && !t.actor?.hasPlayerOwner)
-        .map(t => ({ tokenId: t.id, sceneId: scene.id }));
+      // Add EVERYONE — party + foes — so the whole encounter is in the tracker from the start.
+      // A duplicate from a player's manual / D&D Beyond initiative roll is caught by the
+      // createCombatant dedup hook (onCombatantCreated), which keeps the one that has the roll.
+      const add = list.filter(t => !have.has(t.id)).map(t => ({ tokenId: t.id, sceneId: scene.id }));
       if (add.length) await combat.createEmbeddedDocuments("Combatant", add);
       try { await combat.activate?.(); } catch { /* noop */ }
       try { await combat.rollNPC?.(); } catch (e) { warn("rollNPC failed", e); }   // foe initiative; PCs roll their own
@@ -1090,7 +1122,7 @@
     _installed: true,
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
-    _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
+    _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
     getCatalog, pickMap, scenePayload, importableFor,
     // Preview the top matches for a biome without creating anything.
     async preview(biome = "temperate", { type = "combat", when = "day", weather = null, n = 8 } = {}) {
@@ -1154,7 +1186,7 @@
       log(`catalog has ${cat.allTags.size} tags. Missing tags above are candidates to remap.`);
       return rows;
     },
-    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); _returnBtn?.remove(); _returnBtn = null; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
+    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("createCombatant", hookIds.combatant); _returnBtn?.remove(); _returnBtn = null; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
   });
 
   // ===== INSTALL ===========================================================
@@ -1166,6 +1198,7 @@
     hookIds.combat    = Hooks.on("createCombat", onCreateCombat);
     hookIds.canvas    = Hooks.on("canvasReady", refreshReturnControl);   // show/hide the Return-to-overworld button
     hookIds.cStart    = Hooks.on("combatStart", onCombatStart);          // combat music starts when COMBAT begins
+    hookIds.combatant = Hooks.on("createCombatant", onCombatantCreated); // dedup duplicate PC combatants
     globalThis.CavrilEncounterStage = buildApi();
     refreshReturnControl();   // in case we boot directly onto a staged battlemap
     log("installed. Hooks: cavril-wayfarer.encounter → pick, createCombat → stage.");
