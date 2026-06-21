@@ -245,7 +245,7 @@
       name: `${item.name} — ${variant.name}`.trim(),
       width: w, height: h, padding: 0, navigation: false, active: false,
       background: { src: rel }, grid: { size: g }, tokenVision: false,
-      flags: { "cavril-encounter-stage": { fallback: true, mapId: id } },
+      flags: { "cavril-wayfarer": { esFallback: true, esMapId: id } },
     };
     const scene = await Scene.create(sd);
     if (!scene) throw new Error("fallback Scene.create returned null");
@@ -580,12 +580,12 @@
     const actors = [];
     for (const x of chosen) {
       const srcId = `${pack.collection}.${x.id}`;
-      let actor = game.actors?.find(a => a.getFlag?.("cavril-encounter-stage", "srcId") === srcId);
+      let actor = game.actors?.find(a => { try { return a.getFlag?.("cavril-wayfarer", "esSrcId") === srcId; } catch { return false; } });
       if (!actor) {
         try {
           const data = (await pack.getDocument(x.id)).toObject();
           data.folder = folder?.id ?? null;
-          foundry.utils.setProperty(data, "flags.cavril-encounter-stage.srcId", srcId);
+          foundry.utils.setProperty(data, "flags.cavril-wayfarer.esSrcId", srcId);
           actor = await Actor.create(data);
         } catch (err) { warn(`import "${x.name}" failed`, err); }
       }
