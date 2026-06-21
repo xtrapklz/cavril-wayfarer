@@ -40,6 +40,8 @@
     topK: 8,                   // (legacy) kept for compatibility
     candidatePool: 12,         // randomize among the top-N importable maps (variety)
     randomizeMap: true,        // weighted-random pick from the pool instead of always the #1 match
+    preferGenericMaps: true,   // random encounters → generic biome terrain, NOT specific places (villages/ruins/temples)
+    structurePenalty: 6,       // score subtracted from a "specific location" map on the combat path
     whisperPicks: true,        // whisper the staged map to the GM
     catalogTtlMs: 5 * 60_000,
     // --- full encounter staging (stageEncounter) ---
@@ -86,6 +88,21 @@
   // social encounters lean on built/inhabited scenes rather than open battlefields.
   const SOCIAL_TAGS = ["market", "tavern", "court", "courtyard", "camp", "library",
     "garden", "docks", "festivity", "building", "interior", "temple", "shop"];
+  // "Specific location" markers — built / inhabited / named places. On the COMBAT path we
+  // PENALISE these so random encounters land on generic archetypal biome terrain (a jungle,
+  // a forest), and the villages / ruins / temples are saved for purpose-built encounters.
+  const STRUCTURE_TAGS = new Set(["village", "town", "city", "settlement", "urban", "building", "buildings",
+    "interior", "indoor", "house", "hut", "tavern", "inn", "market", "shop", "smithy", "temple", "shrine",
+    "church", "cathedral", "monastery", "ruins", "ruin", "castle", "keep", "fort", "fortress", "palace",
+    "tower", "camp", "encampment", "dungeon", "crypt", "tomb", "sewer", "mine", "prison", "docks", "harbor",
+    "harbour", "port", "ship", "arena", "library", "laboratory", "throne", "factory", "mill", "graveyard",
+    "cemetery", "manor", "estate", "stronghold", "outpost", "hideout", "shipwreck", "sanctuary"]);
+  const STRUCTURE_NAME = /\b(village|town|city|temple|shrine|church|ruins?|castle|keep|fort(?:ress)?|palace|tower|camp|dungeon|crypt|tomb|mine|prison|docks?|harbou?r|port|tavern|inn|market|manor|estate|mill|factory|library|arena|throne|hideout|stronghold|outpost|monastery|cathedral|colosseum)\b/i;
+  // Does a map read as a SPECIFIC place (vs generic biome terrain)?
+  const hasStructure = (item) => {
+    for (const v of (item.variants || [])) for (const t of (v.tags || [])) if (STRUCTURE_TAGS.has(String(t).toLowerCase())) return true;
+    return STRUCTURE_NAME.test(item.name || "");
+  };
   // condition → words we look for in a variant's NAME or tags to pick day/night/weather/season.
   const VARIANT_WORDS = {
     night:  ["night", "dark", "dusk", "moon", "midnight"],
@@ -337,10 +354,17 @@
     const dataKey = type === "social" ? "scenes" : "maps";
     const cat = await getCatalog();
     const candTags = candidateTags(cls, { type, season: ctx.season });
+    const genericBias = (CFG.preferGenericMaps ?? true) && type !== "social";   // social WANTS built places
     const scored = cat.items
       .filter(it => it.dataKey === dataKey && it.genre === "fantasy")
-      .map(it => ({ it, score: scoreItem(it, candTags) }))
-      .filter(x => x.score > 0)
+      .map(it => {
+        const base = scoreItem(it, candTags);
+        // Sink "specific location" maps (villages/ruins/temples) below generic biome terrain
+        // on the combat path — they stay selectable as a fallback if nothing generic matches.
+        const score = genericBias && hasStructure(it) ? Math.max(0.5, base - (CFG.structurePenalty ?? 6)) : base;
+        return { it, base, score };
+      })
+      .filter(x => x.base > 0)
       .sort((a, b) => b.score - a.score);
     if (!scored.length) { warn(`no tag matches for biome '${effectiveBiome(cls)}' (${type})`); return null; }
 
@@ -837,6 +861,7 @@
     reg("esMaxMonsters",      { name: "  · Max foes", hint: "Hard cap on bodies dropped per encounter.", scope: "world", config: true, type: Number, default: 6, range: { min: 1, max: 20, step: 1 } });
     reg("esBudgetMul",        { name: "  · Encounter budget ×", hint: "Total CR budget ≈ party level × party size × this.", scope: "world", config: true, type: Number, default: 0.5, range: { min: 0.1, max: 2, step: 0.1 } });
     reg("esMonsterPack",      { name: "  · Monster compendium", hint: "Actor compendium to draw foes from (e.g. dnd5e.monsters, or a DDB monsters pack).", scope: "world", config: true, type: String, default: "dnd5e.monsters" });
+    reg("esGenericMaps",      { name: "  · Generic biome maps", hint: "Random encounters prefer generic archetypal terrain (a jungle, a forest) over specific places (villages, ruins, temples). Turn off to allow any matching map.", scope: "world", config: true, type: Boolean, default: true });
     reg("esImageFallback",    { name: "  · Image-only fallback", hint: "When a map has no pre-authored scene (~5%), still stage it as a wall-less image scene.", scope: "world", config: true, type: Boolean, default: true });
     reg("esActivateScene",    { name: "  · Switch to staged scene", hint: "Activate the new battlemap (vs. just creating it in the sidebar).", scope: "world", config: true, type: Boolean, default: true });
   }
@@ -850,6 +875,7 @@
       CFG.maxMonsters        = Number(game.settings.get(MOD, "esMaxMonsters")) || CFG.maxMonsters;
       CFG.encounterBudgetMul = Number(game.settings.get(MOD, "esBudgetMul")) || CFG.encounterBudgetMul;
       CFG.monsterPack        = String(game.settings.get(MOD, "esMonsterPack") || CFG.monsterPack);
+      CFG.preferGenericMaps  = game.settings.get(MOD, "esGenericMaps");
       CFG.allowImageFallback = game.settings.get(MOD, "esImageFallback");
       CFG.activateScene      = game.settings.get(MOD, "esActivateScene");
     } catch (e) { warn("syncCfg failed (using defaults)", e); }
@@ -860,7 +886,7 @@
     _installed: true,
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
-    _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, BIOME_CREATURES, TYPE_MUSIC, BIOME_TAGS },
+    _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, BIOME_CREATURES, TYPE_MUSIC, BIOME_TAGS },
     getCatalog, pickMap, scenePayload, importableFor,
     // Preview the top matches for a biome without creating anything.
     async preview(biome = "temperate", { type = "combat", when = "day", weather = null, n = 8 } = {}) {
