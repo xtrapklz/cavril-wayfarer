@@ -434,8 +434,8 @@ const Store = (() => {
         // between a transition resolving and the next one. "A couple of seconds."
         g.register(MOD, "universalDelay", { name: "Cinematic hold (seconds)", hint: "How long phase cinematics stay up, and the pause the module sits in a beat before moving on. Higher = more time to read/narrate. Default 2.5.", scope: "world", config: true, type: Number, default: 2.5, range: { min: 0.5, max: 8, step: 0.5 } });
         g.register(MOD, "dangerCinematic", { name: "Pulse on danger change", hint: "When region danger rises or falls, flash a wordless colour pulse + tone to the whole table — they feel the shift without ever seeing the level.", scope: "world", config: true, type: Boolean, default: true });
-        g.register(MOD, "sfxDangerUp", { name: "Danger-rising sound", hint: "Optional sound file played to all clients when danger RISES. Blank = a built-in rising tone.", scope: "world", config: true, type: String, default: "" });
-        g.register(MOD, "sfxDangerDown", { name: "Danger-easing sound", hint: "Optional sound file played to all clients when danger FALLS. Blank = a built-in falling tone.", scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxDangerUp", { name: "Danger-rising cue (Maestro)", hint: "Optional Cavril: Maestro cue for when danger RISES — a reference like sfx:path/to/sound.ogg, music:<id>, preset:<tag>, or a pasted @Maestro[…] link. Maestro plays it to the whole table. Blank = a built-in low rising tone.", scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxDangerDown", { name: "Danger-easing cue (Maestro)", hint: "Optional Cavril: Maestro cue for when danger FALLS (same reference format as above). Blank = a built-in low falling tone.", scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "autoResolveTurn", { name: "Auto-resolve travel turn", hint: "When every claimed role has rolled (in Foundry or from D&D Beyond), resolve the Travel Turn automatically — the players' rolls are the trigger, no Resolve click.", scope: "world", config: true, type: Boolean, default: true });
         // Token movement.
         g.register(MOD, "moveAnimMs", { name: "Hex move duration (ms)", hint: "How long the token takes to glide between hexes during travel. Higher = more gradual. Default 900.", scope: "world", config: true, type: Number, default: 900, range: { min: 100, max: 3000, step: 100 } });
@@ -829,8 +829,17 @@ const Party = (() => {
     const WATER_RE = /water[\s-]?skin/i;
 
     function groupActor() {
-        const a = Canvasry.activeToken()?.actor;
-        return a?.type === "group" ? a : null;
+        // Resolve the shared-stash actor INDEPENDENTLY of the momentary selection, so the
+        // stash steppers work no matter which token is currently controlled.
+        const a = Canvasry.activeToken()?.actor;          // 1. selection, if it IS the group
+        if (a?.type === "group") return a;
+        try {                                              // 2. the designated party marker's actor
+            const pid = canvas?.scene?.getFlag?.(MOD, "partyToken");
+            const pt = pid ? canvas?.tokens?.get?.(pid) : null;
+            if (pt?.actor?.type === "group") return pt.actor;
+        } catch { /* noop */ }
+        const groups = game.actors?.filter?.(x => x.type === "group") ?? [];   // 3. a lone group actor in the world
+        return groups.length === 1 ? groups[0] : null;
     }
     function members() {
         const g = groupActor();
@@ -1105,21 +1114,20 @@ const Cinematic = (() => {
             const ac = new Ctx(); try { ac.resume?.(); } catch { /* noop */ }   // players may have a suspended context
             const o = ac.createOscillator(), g = ac.createGain();
             o.type = "sine"; o.connect(g); g.connect(ac.destination);
-            const now = ac.currentTime, up = dir === "up", end = up ? 0.62 : 0.88;
-            if (up) { o.frequency.setValueAtTime(190, now); o.frequency.exponentialRampToValueAtTime(540, now + 0.5); }
-            else { o.frequency.setValueAtTime(440, now); o.frequency.exponentialRampToValueAtTime(150, now + 0.7); }
+            const now = ac.currentTime, up = dir === "up", end = up ? 0.9 : 1.05;
+            // Low, felt-not-heard bass swells — rising for danger up, sinking for down.
+            if (up) { o.frequency.setValueAtTime(58, now); o.frequency.exponentialRampToValueAtTime(132, now + 0.75); }
+            else { o.frequency.setValueAtTime(120, now); o.frequency.exponentialRampToValueAtTime(48, now + 0.9); }
             g.gain.setValueAtTime(0.0001, now);
-            g.gain.exponentialRampToValueAtTime(0.15, now + 0.05);
+            g.gain.exponentialRampToValueAtTime(0.04, now + 0.12);   // ~¼ the old level — subtle
             g.gain.exponentialRampToValueAtTime(0.0001, now + end);
             o.start(now); o.stop(now + end + 0.05);
             o.onended = () => { try { ac.close(); } catch { /* noop */ } };
         } catch { /* noop */ }
     }
-    function flashSound(dir) {
-        const path = String(game.settings.get(MOD, dir === "up" ? "sfxDangerUp" : "sfxDangerDown") || "").trim();
-        if (path) { try { const a = new Audio(path); a.volume = 0.6; a.play().catch(() => { }); return; } catch { /* fall through to tone */ } }
-        dangerTone(dir);
-    }
+    // The local fallback bass tone. A configured Maestro cue (played GM-side, broadcast
+    // by Maestro to the whole table) takes precedence and suppresses this — see setDanger.
+    function flashSound(dir) { dangerTone(dir); }
     // A text-FREE danger pulse: a coloured vignette (red rising / cool falling) plus a
     // tone. No number, no label — the table FEELS danger move without being told the level.
     function flash({ dir = "up", color = "", sound = true } = {}) {
@@ -1640,6 +1648,9 @@ async function cwfPromptNumber(title, current = 0) {
 
 // camelCase id → "Title Case" label for biome keys + Maestro arrangement ids.
 const cwfPrettyId = (id) => String(id || "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/^./, c => c.toUpperCase());
+// Normalise a Maestro reference: accept a bare ref (music:id / sfx:path / preset:tag / id)
+// or a full @Maestro[…] link pasted from a journal; "" if blank.
+const cwfMaestroRef = (s) => { s = String(s || "").trim(); const m = s.match(/^@Maestro\[(.+)\]$/i); return (m ? m[1] : s).trim(); };
 // emberEnvironment arrangement ids straight from Maestro (cached — list() console.tables).
 let _cwfArrCache = null;
 function cwfMaestroArrangements() {
@@ -2837,7 +2848,13 @@ const Camp = (() => {
         const v = Math.max(0, Math.min(5, n | 0)), prev = dangerScore();
         Store.setSceneState({ danger: v });
         if (v !== prev && game.user.isGM && game.settings.get(MOD, "dangerCinematic")) {
-            Cinematic.broadcastFlash({ dir: v > prev ? "up" : "down" });   // text-free colour pulse + tone — never shows the level
+            const dir = v > prev ? "up" : "down";
+            // If a Maestro cue is assigned, the GM triggers it (Maestro broadcasts the audio
+            // to every client) and we suppress the per-client fallback tone. Else clients
+            // play the built-in bass tone locally.
+            const cue = cwfMaestroRef(game.settings.get(MOD, dir === "up" ? "sfxDangerUp" : "sfxDangerDown"));
+            if (cue) { try { globalThis.Maestro?.triggerRef?.(cue); } catch (e) { warn("danger cue trigger failed", e); } }
+            Cinematic.broadcastFlash({ dir, sound: !cue });   // wordless colour pulse — never shows the level
         }
         WayfarerPanel.render();
         cwfCampRefresh();
