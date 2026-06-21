@@ -262,7 +262,10 @@
     const scene = await Scene.create(sd);
     if (!scene) throw new Error("Scene.create returned null");
     try { const th = await scene.createThumbnail(); const td = typeof th === "string" ? th : th?.thumb; if (td) await scene.update({ thumb: td }); } catch (e) {}
-    if (activate ?? CFG.activateScene) await scene.activate(); else scene.view?.();
+    // "create" = background stage: leave it in the sidebar and DON'T view it, so the GM stays on the
+    // overworld until they press "Enter encounter" (which activates + reveals together).
+    if (activate === "create") { /* background — no activate, no view */ }
+    else if (activate ?? CFG.activateScene) await scene.activate(); else scene.view?.();
     return scene;
   }
 
@@ -295,7 +298,10 @@
     const scene = await Scene.create(sd);
     if (!scene) throw new Error("fallback Scene.create returned null");
     try { const th = await scene.createThumbnail(); const td = typeof th === "string" ? th : th?.thumb; if (td) await scene.update({ thumb: td }); } catch (e) {}
-    if (activate ?? CFG.activateScene) await scene.activate(); else scene.view?.();
+    // "create" = background stage: leave it in the sidebar and DON'T view it, so the GM stays on the
+    // overworld until they press "Enter encounter" (which activates + reveals together).
+    if (activate === "create") { /* background — no activate, no view */ }
+    else if (activate ?? CFG.activateScene) await scene.activate(); else scene.view?.();
     return scene;
   }
 
@@ -1140,7 +1146,7 @@
           log(`map: ${describePick(pick)}`);
           ui.notifications?.info(`Encounter Stage: building "${pick.item.name}" in the background…`);
           // Build the scene WITHOUT viewing it (unless auto-enter). The GM enters when ready.
-          scene = await stagePick(pick, { activate: autoEnter && (opts.activate ?? CFG.activateScene) });
+          scene = await stagePick(pick, { activate: autoEnter ? (opts.activate ?? CFG.activateScene) : "create" });
         } else {
           ui.notifications?.warn(`Encounter Stage: no CZEPEKU map matched ${ebiome} — dropping foes on the current map.`);
         }
