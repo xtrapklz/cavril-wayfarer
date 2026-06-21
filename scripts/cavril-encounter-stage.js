@@ -854,10 +854,19 @@
     return pts;
   }
   // Create tokens for actors at the given {x,y} points.
+  // Foundry token rotation: 0° = up (north), increasing clockwise. Angle that makes a token centred
+  // at (px,py) face the point (tx,ty).
+  function faceAngle(px, py, tx, ty) {
+    const dx = tx - px, dy = ty - py;
+    if (!dx && !dy) return 0;
+    return (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+  }
   // Build token data straight from each actor's PROTOTYPE token (robust across V14 — getTokenDocument
-  // had quirks that were silently dropping the party). Strip the id, set position + actorId.
-  async function placeTokens(scene, actors, points) {
+  // had quirks that were silently dropping the party). Strip the id, set position + actorId. When a
+  // faceTarget point is given (the party muster point for foes), rotate each token to face it.
+  async function placeTokens(scene, actors, points, faceTarget = null) {
     const data = [];
+    const gs = scene.grid?.size || CFG.fallbackGridSize;
     for (let i = 0; i < actors.length; i++) {
       const a = actors[i]; if (!a?.id) continue;
       const x = Math.round(points[i].x), y = Math.round(points[i].y);
@@ -866,6 +875,12 @@
         delete proto._id;
         proto.x = x; proto.y = y; proto.actorId = a.id; proto.hidden = false;
         if (!proto.name) proto.name = a.name;
+        if (faceTarget) {
+          // Face from the token's CENTRE (x,y is the top-left corner). Clear lockRotation so it shows.
+          const cx = x + (proto.width || 1) * gs / 2, cy = y + (proto.height || 1) * gs / 2;
+          proto.rotation = Math.round(faceAngle(cx, cy, faceTarget.x, faceTarget.y));
+          proto.lockRotation = false;
+        }
         data.push(proto);
       } catch (e) { warn(`token data for ${a?.name} failed`, e); }
     }
@@ -923,7 +938,8 @@
       }
       pts.push(p);
     }
-    return placeTokens(scene, actors, pts);
+    // faceTarget = the party muster point → every foe spawns facing the party.
+    return placeTokens(scene, actors, pts, center);
   }
 
   // Build the encounter: add party + foes as combatants, roll NPC initiative, call for

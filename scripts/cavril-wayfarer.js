@@ -2897,8 +2897,11 @@ const Turn = (() => {
         for (const [k, v] of claimedRoles()) {
             const sk = CONFIG.DND5E?.skills?.[v.skillId]?.label || v.skillId;
             body += `<div class="cwf-rr">
-                <div class="cwf-rr-top"><i class="fa-solid ${ROLE_ICON[k]}"></i> <span class="cwf-rr-role">${ROLE_LABEL[k]}</span> <span class="cwf-tier-badge cwf-tier-${v.outcome}">${v.total} · ${TIER_LABEL[v.outcome]}</span></div>
-                <div class="cwf-rr-sub"><span class="cwf-rr-who">${v.actorName || "—"}</span> · <span class="cwf-rr-sk">${sk}</span></div>
+                <div class="cwf-rr-top">
+                    <span class="cwf-rr-role"><i class="fa-solid ${ROLE_ICON[k]}"></i> ${ROLE_LABEL[k]}</span>
+                    <span class="cwf-rr-sub"><span class="cwf-rr-who">${v.actorName || "—"}</span> · <span class="cwf-rr-sk">${sk}</span></span>
+                    <span class="cwf-tier-badge cwf-tier-${v.outcome}">${v.total} · ${TIER_LABEL[v.outcome]}</span>
+                </div>
                 <div class="cwf-rr-b">${v.result}</div>
             </div>`;
         }
@@ -3345,12 +3348,11 @@ const WayfarerPanel = (() => {
             const advTag = rs.mode === "advantage" ? `<span class="cwf-adv">ADV</span>` : rs.mode === "disadvantage" ? `<span class="cwf-dis">DIS</span>` : "";
             const tier = Turn.outcomeFor(s);
             const badge = s.total != null ? `<span class="cwf-tier cwf-${tier}">${s.total} · ${TIER_LABEL[tier]}</span>` : "";
-            const adj = s.total != null ? `<span class="cwf-stepper"><button class="cwf-step-btn" data-action="turn-adjust" data-role="${k}" data-d="-1" title="−1 to the total" ${dis}>−</button><button class="cwf-step-btn" data-action="turn-adjust" data-role="${k}" data-d="1" title="+1 to the total" ${dis}>+</button></span>` : "";
             const rollRow = s.actorId ? `
                 <div class="cwf-roll-row">
                     <button class="cwf-btn cwf-roll" data-action="turn-roll" data-role="${k}" ${dis}><i class="fa-solid fa-dice-d20"></i> Roll</button>
-                    <input class="cwf-enter" data-action="turn-enter" data-role="${k}" type="number" placeholder="#" title="Type a d20 total (manual / in-person)" value="${s.total ?? ""}" ${dis}>
-                    ${adj}${badge}
+                    <input class="cwf-enter" data-action="turn-enter" data-role="${k}" type="number" placeholder="#" title="Type a d20 total (manual / in-person) — edit freely" value="${s.total ?? ""}" ${dis}>
+                    ${badge}
                 </div>` : "";
             return `
                 <div class="cwf-role ${s.actorId ? "claimed" : ""}">
