@@ -1157,6 +1157,13 @@ const Cinematic = (() => {
         cineSfx(spec?.tone);
         play(spec);
     }
+    // Match Cavril: Maestro's "Sound Effects" volume slider so this module's own synthesised cues sit at the SAME
+    // level as the rest of the table's SFX. Maestro plays our FILE cues at this level already (playOneShot/triggerRef
+    // read its sfxVolume); this lets the built-in tones follow it too. Falls back to Maestro's own 0.8 default.
+    function maestroSfxVolume() {
+        try { const v = Number(game.settings.get("cavril-maestro", "sfxVolume")); return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0.8; }
+        catch { return 0.8; }
+    }
     // A short rising / falling tone for the danger pulse — synthesised so it needs no
     // asset and plays on EVERY client. A configured sfxDanger* file overrides it.
     function dangerTone(dir) {
@@ -1170,7 +1177,8 @@ const Cinematic = (() => {
             if (up) { o.frequency.setValueAtTime(58, now); o.frequency.exponentialRampToValueAtTime(132, now + 0.75); }
             else { o.frequency.setValueAtTime(120, now); o.frequency.exponentialRampToValueAtTime(48, now + 0.9); }
             g.gain.setValueAtTime(0.0001, now);
-            g.gain.exponentialRampToValueAtTime(0.04, now + 0.12);   // ~¼ the old level — subtle
+            // Peak tracks Maestro's SFX volume (0.05 × vol → the old 0.04 at Maestro's default 0.8); silent at 0.
+            g.gain.exponentialRampToValueAtTime(Math.max(0.0002, 0.05 * maestroSfxVolume()), now + 0.12);
             g.gain.exponentialRampToValueAtTime(0.0001, now + end);
             o.start(now); o.stop(now + end + 0.05);
             o.onended = () => { try { ac.close(); } catch { /* noop */ } };
