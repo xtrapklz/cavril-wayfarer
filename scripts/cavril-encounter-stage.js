@@ -53,6 +53,7 @@
     maxMonsters: 6,                // hard cap on bodies dropped
     encounterBudgetMul: 0.5,       // total CR budget ≈ partyLevel × partySize × this
     addToCombat: true,             // add party + foes to the tracker + roll NPC initiative
+    documentEncounters: true,      // drop a journal pin on the overworld hex + a Return control on the battlemap
     playCombatMusic: true,         // start the Maestro theme for the dominant creature type
     startCombat: false,            // GM begins combat (then ddb-roll-cards automates)
     lightColoration: 10,           // force every authored light to Foundry "Natural Light" technique (10); null = leave as-authored
@@ -770,6 +771,59 @@
     catch (e) { warn("Maestro.play failed", e); return null; }
   }
 
+  // ===== DOCUMENTATION + SCENE NAVIGATION ==================================
+  const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
+  // Drop a journal pin on the OVERWORLD hex (documents the encounter + links both ways)
+  // and flag the battlemap with its origin so the Return control can bring you home.
+  async function documentEncounter(originScene, battleScene, ctx = {}) {
+    try {
+      const { cls, foes = [], pick, notePos, label } = ctx;
+      const ebiome = effectiveBiome(cls);
+      const foeList = foes.length ? foes.map(a => `${a.name}${a.system?.details?.cr != null ? ` (CR ${a.system.details.cr})` : ""}`).join(", ") : "—";
+      const title = `⚔ ${cls?.label || ebiome} encounter${label ? ` · ${label}` : ""}`;
+      const content = `<p><strong>Biome:</strong> ${esc(ebiome)}${cls?.elevation ? ` / ${esc(cls.elevation)}` : ""}${cls?.river ? " · river" : ""}${cls?.coast ? " · coast" : ""}</p>
+        <p><strong>Battlemap:</strong> ${pick ? esc(pick.item.name) : "current scene"}</p>
+        <p><strong>Foes:</strong> ${esc(foeList)}</p><hr>
+        <p>@UUID[Scene.${battleScene.id}]{⚔ Enter the battlemap}</p>
+        <p>@UUID[Scene.${originScene.id}]{← Back to the overworld}</p>`;
+      let journal = null;
+      try { journal = await JournalEntry.create({ name: title, pages: [{ name: "Encounter", type: "text", text: { content } }], flags: { "cavril-wayfarer": { encounter: true } } }); }
+      catch (e) { warn("encounter journal create failed", e); }
+      try { await battleScene.setFlag("cavril-wayfarer", "originScene", originScene.id); } catch (e) { warn("origin flag failed", e); }
+      if (journal) { try { await battleScene.setFlag("cavril-wayfarer", "encounterJournal", journal.id); } catch { /* noop */ } }
+      if (journal && notePos) {
+        try {
+          await originScene.createEmbeddedDocuments("Note", [{
+            entryId: journal.id, x: Math.round(notePos.x), y: Math.round(notePos.y),
+            texture: { src: "icons/svg/combat.svg" }, iconSize: 40, text: title, fontSize: 16,
+          }]);
+          log(`pinned encounter on the overworld hex.`);
+        } catch (e) { warn("overworld note drop failed", e); }
+      }
+      refreshReturnControl();
+      return journal;
+    } catch (e) { warn("documentEncounter failed", e); return null; }
+  }
+
+  // A one-click "Return to overworld" button, shown whenever the GM is viewing a scene we
+  // staged (flagged with its origin). Mirrors how Augur lets you move in/out of a location.
+  let _returnBtn = null;
+  function refreshReturnControl() {
+    try {
+      _returnBtn?.remove(); _returnBtn = null;
+      if (!game.user?.isGM) return;
+      const origin = canvas?.scene?.getFlag?.("cavril-wayfarer", "originScene");
+      if (!origin || !game.scenes?.get(origin)) return;
+      const b = document.createElement("button");
+      b.id = "cwf-return-overworld";
+      b.innerHTML = `<i class="fa-solid fa-mountain-sun"></i> Return to overworld`;
+      Object.assign(b.style, { position: "fixed", top: "6px", left: "50%", transform: "translateX(-50%)", zIndex: "61", padding: "7px 14px", borderRadius: "8px", border: "1px solid #bda9e8", background: "rgba(23,24,28,.94)", color: "#f4f4f4", cursor: "pointer", fontFamily: "Signika, sans-serif", fontWeight: "600", fontSize: "13px", boxShadow: "0 4px 14px rgba(0,0,0,.5)", backdropFilter: "blur(4px)" });
+      b.addEventListener("click", async () => { const s = game.scenes.get(origin); if (s) { try { await s.activate(); } catch (e) { warn("return failed", e); } } });
+      document.body.appendChild(b);
+      _returnBtn = b;
+    } catch (e) { warn("return control failed", e); }
+  }
+
   // THE command: read the selected token's hex → pick the map → build the scene →
   // drop biome-appropriate foes → start the matching combat music.
   async function stageEncounter(opts = {}) {
@@ -783,6 +837,8 @@
     const W = globalThis.CavrilWayfarer;
     const token = opts.token ?? canvas.tokens?.controlled?.[0] ?? W?.Canvasry?.activeToken?.();
     if (!token) return warn("select a token standing on a hex first");
+    const originScene = canvas?.scene || null;   // the overworld we're leaving (capture before we activate the battlemap)
+    const notePos = token ? { x: token.center?.x ?? token.x, y: token.center?.y ?? token.y } : null;
     const cls = (() => { try { return W?.Canvasry?.biomeForToken?.(token) ?? null; } catch (e) { return null; } })() || { biome: "unknown" };
     const when = timeOfDay(), season = currentSeason(), weather = liveWeather();
     const type = opts.type || "combat";
@@ -845,8 +901,16 @@
     // 5) Correct combat music (dominant foe type); Maestro re-affirms it on combat start.
     if ((opts.playMusic ?? CFG.playCombatMusic) && actors.length) playCombatMusic(actors);
 
+    // 6) Document it: a journal pin on the overworld hex + a Return control on the battlemap,
+    //    so you can move in and out of the fight. Only when we staged a SEPARATE scene.
+    let journal = null;
+    if ((opts.document ?? CFG.documentEncounters) && originScene && scene && scene.id !== originScene.id) {
+      const label = [when, season, weather].filter(Boolean).join(" · ");
+      journal = await documentEncounter(originScene, scene, { cls, foes: actors, pick, notePos, label });
+    }
+
     ui.notifications?.info(`Encounter ready: ${pick ? `"${pick.item.name}" · ` : ""}${partyTokens.length} party + ${actors.length} foe${actors.length === 1 ? "" : "s"} — roll for initiative, then begin combat.`);
-    return { scene, actors, foeTokens, partyTokens, combat, pick, cls, when, season, weather, fallback: onFallback };
+    return { scene, actors, foeTokens, partyTokens, combat, journal, pick, cls, when, season, weather, fallback: onFallback };
   }
 
   // ===== SETTINGS ==========================================================
@@ -861,6 +925,7 @@
     reg("esMaxMonsters",      { name: "  · Max foes", hint: "Hard cap on bodies dropped per encounter.", scope: "world", config: true, type: Number, default: 6, range: { min: 1, max: 20, step: 1 } });
     reg("esBudgetMul",        { name: "  · Encounter budget ×", hint: "Total CR budget ≈ party level × party size × this.", scope: "world", config: true, type: Number, default: 0.5, range: { min: 0.1, max: 2, step: 0.1 } });
     reg("esMonsterPack",      { name: "  · Monster compendium", hint: "Actor compendium to draw foes from (e.g. dnd5e.monsters, or a DDB monsters pack).", scope: "world", config: true, type: String, default: "dnd5e.monsters" });
+    reg("esDocumentEncounters", { name: "  · Pin + document encounters", hint: "Drop a journal pin on the overworld hex where the fight happened (links both ways), and show a Return-to-overworld button on the battlemap.", scope: "world", config: true, type: Boolean, default: true });
     reg("esGenericMaps",      { name: "  · Generic biome maps", hint: "Random encounters prefer generic archetypal terrain (a jungle, a forest) over specific places (villages, ruins, temples). Turn off to allow any matching map.", scope: "world", config: true, type: Boolean, default: true });
     reg("esImageFallback",    { name: "  · Image-only fallback", hint: "When a map has no pre-authored scene (~5%), still stage it as a wall-less image scene.", scope: "world", config: true, type: Boolean, default: true });
     reg("esActivateScene",    { name: "  · Switch to staged scene", hint: "Activate the new battlemap (vs. just creating it in the sidebar).", scope: "world", config: true, type: Boolean, default: true });
@@ -871,6 +936,7 @@
       CFG.dropParty          = game.settings.get(MOD, "esDropParty");
       CFG.dropMonsters       = game.settings.get(MOD, "esDropMonsters");
       CFG.addToCombat        = game.settings.get(MOD, "esAddToCombat");
+      CFG.documentEncounters = game.settings.get(MOD, "esDocumentEncounters");
       CFG.playCombatMusic    = game.settings.get(MOD, "esCombatMusic");
       CFG.maxMonsters        = Number(game.settings.get(MOD, "esMaxMonsters")) || CFG.maxMonsters;
       CFG.encounterBudgetMul = Number(game.settings.get(MOD, "esBudgetMul")) || CFG.encounterBudgetMul;
@@ -934,7 +1000,7 @@
       log(`catalog has ${cat.allTags.size} tags. Missing tags above are candidates to remap.`);
       return rows;
     },
-    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); delete globalThis.CavrilEncounterStage; log("uninstalled"); },
+    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); _returnBtn?.remove(); _returnBtn = null; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
   });
 
   // ===== INSTALL ===========================================================
@@ -944,7 +1010,9 @@
     syncCfg();
     hookIds.encounter = Hooks.on("cavril-wayfarer.encounter", onEncounter);
     hookIds.combat    = Hooks.on("createCombat", onCreateCombat);
+    hookIds.canvas    = Hooks.on("canvasReady", refreshReturnControl);   // show/hide the Return-to-overworld button
     globalThis.CavrilEncounterStage = buildApi();
+    refreshReturnControl();   // in case we boot directly onto a staged battlemap
     log("installed. Hooks: cavril-wayfarer.encounter → pick, createCombat → stage.");
     log("Select a token + run CavrilEncounterStage.stageEncounter() — biome → map → foes → music. Also .audit() · .preview('jungle').");
     // Surface tag-mapping quality once the catalog loads (no-op if CZEPEKU isn't connected).
