@@ -1929,6 +1929,12 @@ const Music = (() => {
     async function combat(on) {
         if (!game.user.isGM || !game.settings.get(MOD, "musicEnabled") || !active()) return;
         try { on ? await globalThis.Maestro.tension?.() : await globalThis.Maestro.calm?.(); } catch (e) { warn("maestro combat mood failed", e); }
+        // A hostile encounter during camp ends the 'Wilderness Camp' ambience — it shouldn't keep
+        // crackling under the fight. Travel encounters keep their biome ambience (Camp.active is
+        // false there). _last is cleared so the ambience replays cleanly at dawn / next update.
+        if (on && Camp?.active) {
+            try { await globalThis.Maestro.fadeOutChannel?.("environment"); _last = null; } catch (e) { warn("camp ambience fade failed", e); }
+        }
     }
     return { active, update, camp, syncWeather, travelSfx, combat, arrangementFor, reset: () => { _last = null; }, DEFAULTS };
 })();
