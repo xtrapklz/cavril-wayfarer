@@ -739,10 +739,14 @@
       if (!combat) combat = await Combat.create({ scene: scene.id });
       if (!combat) return null;
       const have = new Set(combat.combatants.map(c => c.tokenId));
-      const add = list.filter(t => !have.has(t.id)).map(t => ({ tokenId: t.id, sceneId: scene.id }));
+      // Add the FOES only. A player's manual / D&D Beyond initiative roll creates their OWN
+      // combatant, so pre-adding the party here doubles them in the tracker. Their tokens
+      // are already on the map; they join the tracker the moment they roll for initiative.
+      const add = list.filter(t => !have.has(t.id) && !t.actor?.hasPlayerOwner)
+        .map(t => ({ tokenId: t.id, sceneId: scene.id }));
       if (add.length) await combat.createEmbeddedDocuments("Combatant", add);
       try { await combat.activate?.(); } catch { /* noop */ }
-      try { await combat.rollNPC?.(); } catch (e) { warn("rollNPC failed", e); }   // PCs roll their own (DDB)
+      try { await combat.rollNPC?.(); } catch (e) { warn("rollNPC failed", e); }   // foe initiative; PCs roll their own
       ChatMessage.create({ content: `<div style="text-align:center;padding:.4em;font-family:'Modesto Condensed','Signika',serif;font-size:1.35em;font-weight:700;letter-spacing:.05em;color:#e0824d;text-shadow:0 0 12px rgba(224,130,77,.4)"><i class="fa-solid fa-dice-d20"></i> Roll for initiative!</div>` });
       return combat;
     } catch (e) { warn("build combat failed", e); ui.notifications?.warn("Encounter Stage: couldn't set up the combat tracker."); return null; }
