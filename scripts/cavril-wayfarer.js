@@ -3657,6 +3657,7 @@ function wireCardButtons(root) {
                 if (act === "dawn") { advanceToDawn(); return; }
                 if (!game.user.isGM) return;
                 if (act === "stage") { await globalThis.CavrilEncounterStage?.stageEncounter?.(); }   // build CZEPEKU map + foes + music
+                else if (act === "enter-encounter") { await globalThis.CavrilEncounterStage?.enterEncounter?.(el.dataset.scene); }   // move to the staged scene
                 else if (act === "step") await cwfDoHexStep();
                 else if (act === "auto") await cwfMontage();
                 else if (act === "pause") { if (cwfTrek) cwfTrek.running = false; }
@@ -3717,24 +3718,37 @@ Hooks.on("updateSetting", (setting) => {
 // Party supplies are summed from sheets — refresh the panel when an item changes.
 for (const h of ["createItem", "updateItem", "deleteItem"]) Hooks.on(h, () => WayfarerPanel.renderExternal());
 
-// Fallback toolbar button in the Token Controls group, only when Augur: Nexus is
-// absent (otherwise the Augur Tools group above carries it). Handles the V12
-// array shape and the V13/V14 record shape.
+// Return to the scene that generated THIS one (the originScene flag EncounterStage sets on
+// a staged battlemap, or any nested scene). Replaces the old floating button, which collided
+// with crlngn-ui / Mini Calendar HUDs.
+async function returnToOrigin() {
+    const origin = canvas?.scene?.getFlag?.(MOD, "originScene");
+    const s = origin && game.scenes?.get(origin);
+    if (s) { try { await s.activate(); } catch (e) { warn("return-to-origin failed", e); } }
+    else ui.notifications?.info(`${TITLE}: this scene has no recorded origin to return to.`);
+}
+function returnTool() {
+    const has = !!canvas?.scene?.getFlag?.(MOD, "originScene");
+    return {
+        name: "wayfarer-return", title: "Return to the scene that generated this one",
+        icon: "fa-solid fa-circle-left", button: true, order: 98,
+        visible: has, isVisible: () => has,
+        onClick: () => returnToOrigin(), onChange: () => returnToOrigin(),
+    };
+}
+// Always put Wayfarer (and, on a staged scene, the Return tool) in the main Token Controls
+// group — in ADDITION to the Augur Tools group. Handles the V12 array + V13/V14 record shapes.
 Hooks.on("getSceneControlButtons", (controls) => {
-    if (_toolbarViaAugur) return;
-    const { isVisible, ...tool } = wayfarerTool();
+    const tools = [(() => { const { isVisible, ...t } = wayfarerTool(); return t; })()];
+    if (canvas?.scene?.getFlag?.(MOD, "originScene")) { const { isVisible, ...rt } = returnTool(); tools.push(rt); }
     try {
-        if (Array.isArray(controls)) {
-            const grp = controls.find(c => c.name === "token" || c.name === "tokens");
-            if (Array.isArray(grp?.tools)) grp.tools.push(tool);
-        } else if (controls && typeof controls === "object") {
-            const grp = controls.tokens || controls.token
-                || Object.values(controls).find(c => c?.name === "tokens" || c?.name === "token");
-            if (grp) {
-                grp.tools ??= {};
-                if (Array.isArray(grp.tools)) grp.tools.push(tool);
-                else grp.tools[tool.name] = tool;
-            }
-        }
+        let grp = null;
+        if (Array.isArray(controls)) grp = controls.find(c => c.name === "token" || c.name === "tokens");
+        else if (controls && typeof controls === "object") grp = controls.tokens || controls.token || Object.values(controls).find(c => c?.name === "tokens" || c?.name === "token");
+        if (!grp) return;
+        grp.tools ??= (Array.isArray(grp.tools) ? grp.tools : {});
+        for (const t of tools) { if (Array.isArray(grp.tools)) grp.tools.push(t); else grp.tools[t.name] = t; }
     } catch (e) { warn("could not add toolbar button", e); }
 });
+// Refresh the controls when the scene changes so the Return tool appears/disappears.
+Hooks.on("canvasReady", () => { try { ui.controls?.render?.(true); } catch { /* noop */ } });

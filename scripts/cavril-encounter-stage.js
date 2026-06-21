@@ -59,6 +59,7 @@
     tensionOnStage: true,          // at stage: shift current music tense + SFX + cinematic (NOT combat music yet)
     playCombatMusic: true,         // start the dominant-foe-type combat theme when COMBAT begins
     startCombat: false,            // GM begins combat (then ddb-roll-cards automates)
+    hideGrid: true,                // staged maps: hide Foundry's grid overlay (CZEPEKU art has its own)
     lightColoration: 10,           // force every authored light to Foundry "Natural Light" technique (10); null = leave as-authored
     excludeVariantWords: ["rain", "storm", "downpour"], // never instantiate these variants — CZEPEKU's top-down rain clashes with our weather system
   };
@@ -252,6 +253,7 @@
     // CZEPEKU bakes a coloration technique that reads badly; force "Natural Light" (10) on every light.
     if (CFG.lightColoration != null) for (const l of (sd.lights || [])) { l.config = l.config || {}; l.config.coloration = CFG.lightColoration; }
     sd.active = false; sd.navigation = false; sd.tokens = [];
+    if (CFG.hideGrid ?? true) sd.grid = { ...(sd.grid || {}), alpha: 0 };   // CZEPEKU art has a baked grid — hide Foundry's overlay
     const scene = await Scene.create(sd);
     if (!scene) throw new Error("Scene.create returned null");
     try { const th = await scene.createThumbnail(); const td = typeof th === "string" ? th : th?.thumb; if (td) await scene.update({ thumb: td }); } catch (e) {}
@@ -278,7 +280,7 @@
     const sd = {
       name: `${item.name} — ${variant.name}`.trim(),
       width: w, height: h, padding: 0, navigation: false, active: false,
-      grid: { size: g }, tokenVision: false,
+      grid: { size: g, alpha: (CFG.hideGrid ?? true) ? 0 : 1 }, tokenVision: false,
       flags: { "cavril-wayfarer": { esFallback: true, esMapId: id } },
     };
     // V14 stores the background under levels[]; older cores use Scene#background.
@@ -840,7 +842,10 @@
     try { members = globalThis.CavrilWayfarer?.Party?.members?.() || []; } catch { /* noop */ }
     if (!members.length) members = (game.actors?.filter(a => a.type === "character" && a.hasPlayerOwner)) || [];
     members = members.filter(a => a && a.id);
-    if (!members.length) { warn("no party members to place — set the party group / party marker token"); return []; }
+    if (!members.length) {
+      const m = "no party members to place. Set your party as a Group actor (Wayfarer's party marker), or make sure the PCs are player-owned characters.";
+      warn(m); ui.notifications?.warn(`Encounter Stage: ${m}`, { permanent: true }); return [];
+    }
     const gs = scene.grid?.size || CFG.fallbackGridSize;
     const radius = Math.max(ftToPx(scene, CFG.partySpreadFt ?? 10) * 0.5, gs * 0.7 * Math.sqrt(members.length));
     const placed = await placeTokens(scene, members, scatterPoints(members.length, center, radius, gs * 0.7));
@@ -941,8 +946,10 @@
         <p>@UUID[Scene.${battleScene.id}]{⚔ Enter the battlemap}</p>
         <p>@UUID[Scene.${originScene.id}]{← Back to the overworld}</p>`;
       let journal = null;
-      try { journal = await JournalEntry.create({ name: title, pages: [{ name: "Encounter", type: "text", text: { content } }], flags: { "cavril-wayfarer": { encounter: true } } }); }
-      catch (e) { warn("encounter journal create failed", e); }
+      try {
+        const jf = await ensureFolder("Encounters", "JournalEntry");   // group them for recall
+        journal = await JournalEntry.create({ name: title, folder: jf?.id ?? null, pages: [{ name: "Encounter", type: "text", text: { content } }], flags: { "cavril-wayfarer": { encounter: true, biome: ebiome, when: label || "", at: notePos || null } } });
+      } catch (e) { warn("encounter journal create failed", e); }
       try { await battleScene.setFlag("cavril-wayfarer", "originScene", originScene.id); } catch (e) { warn("origin flag failed", e); }
       if (journal) { try { await battleScene.setFlag("cavril-wayfarer", "encounterJournal", journal.id); } catch { /* noop */ } }
       if (journal && notePos) {
@@ -959,23 +966,14 @@
     } catch (e) { warn("documentEncounter failed", e); return null; }
   }
 
-  // A one-click "Return to overworld" button, shown whenever the GM is viewing a scene we
-  // staged (flagged with its origin). Mirrors how Augur lets you move in/out of a location.
+  // The Return-to-origin control now lives in the Token Controls TOOLBAR (the main module's
+  // returnTool, driven by the originScene flag we set) — that avoids colliding with the
+  // crlngn-ui / Mini Calendar HUDs the old floating button overlapped. This just clears any
+  // stale floating button and nudges the toolbar to re-render.
   let _returnBtn = null;
   function refreshReturnControl() {
-    try {
-      _returnBtn?.remove(); _returnBtn = null;
-      if (!game.user?.isGM) return;
-      const origin = canvas?.scene?.getFlag?.("cavril-wayfarer", "originScene");
-      if (!origin || !game.scenes?.get(origin)) return;
-      const b = document.createElement("button");
-      b.id = "cwf-return-overworld";
-      b.innerHTML = `<i class="fa-solid fa-mountain-sun"></i> Return to overworld`;
-      Object.assign(b.style, { position: "fixed", top: "6px", left: "50%", transform: "translateX(-50%)", zIndex: "61", padding: "7px 14px", borderRadius: "8px", border: "1px solid #bda9e8", background: "rgba(23,24,28,.94)", color: "#f4f4f4", cursor: "pointer", fontFamily: "Signika, sans-serif", fontWeight: "600", fontSize: "13px", boxShadow: "0 4px 14px rgba(0,0,0,.5)", backdropFilter: "blur(4px)" });
-      b.addEventListener("click", async () => { const s = game.scenes.get(origin); if (s) { try { await s.activate(); } catch (e) { warn("return failed", e); } } });
-      document.body.appendChild(b);
-      _returnBtn = b;
-    } catch (e) { warn("return control failed", e); }
+    try { _returnBtn?.remove(); _returnBtn = null; document.getElementById("cwf-return-overworld")?.remove(); ui.controls?.render?.(true); }
+    catch (e) { warn("return control refresh failed", e); }
   }
 
   // THE command: read the selected token's hex → pick the map → build the scene →
@@ -1002,14 +1000,17 @@
 
     // 1) Try to stage a CZEPEKU battlemap. If CZEPEKU isn't connected (or nothing matches),
     //    DON'T abort — fall back to the current scene so the SRD foes still get built.
+    const autoEnter = opts.autoEnter ?? CFG.autoEnter ?? false;   // OFF = stage in background, enter manually
     let scene = null, pick = null, onFallback = false;
     if (opts.map ?? true) {
       try {
+        ui.notifications?.info(`Encounter Stage: matching a ${cls?.label || ebiome} battlemap…`);
         pick = await pickMap(cls, { type, when, weather, season });
         if (pick) {
           log(`map: ${describePick(pick)}`);
-          ui.notifications?.info(`Encounter Stage: staging "${pick.item.name}"…`);
-          scene = await stagePick(pick, { activate: opts.activate ?? CFG.activateScene });
+          ui.notifications?.info(`Encounter Stage: building "${pick.item.name}" in the background…`);
+          // Build the scene WITHOUT viewing it (unless auto-enter). The GM enters when ready.
+          scene = await stagePick(pick, { activate: autoEnter && (opts.activate ?? CFG.activateScene) });
         } else {
           ui.notifications?.warn(`Encounter Stage: no CZEPEKU map matched ${ebiome} — dropping foes on the current map.`);
         }
@@ -1052,25 +1053,49 @@
       combat = await buildCombat(scene, [...partyTokens, ...foeTokens]);
     }
 
-    // 5) TENSION, not combat music yet — shift whatever's playing to its tense version,
-    //    fire an alert SFX + a cinematic. The real combat theme starts on combatStart.
-    if (opts.tension ?? CFG.tensionOnStage) {
-      try { globalThis.Maestro?.tension?.(); } catch (e) { warn("tension shift failed", e); }
-      const sfx = cwfRef(game.settings.get(MOD, "esEncounterSfx"));
-      if (sfx) { try { globalThis.Maestro?.triggerRef?.(sfx); } catch (e) { warn("encounter sfx failed", e); } }
-      try { globalThis.CavrilWayfarer?.Cinematic?.broadcast?.({ icon: "fa-dragon", title: "Ambush!", subtitle: cls?.label || ebiome, tone: "encounter" }); } catch (e) { warn("encounter cinematic failed", e); }
-    }
-
-    // 6) Document it: a journal pin on the overworld hex + a Return control on the battlemap,
-    //    so you can move in and out of the fight. Only when we staged a SEPARATE scene.
+    // 5) Document it (journal pin on the overworld hex + originScene flag for the Return tool),
+    //    and remember the biome for the reveal cinematic on entry.
     let journal = null;
     if ((opts.document ?? CFG.documentEncounters) && originScene && scene && scene.id !== originScene.id) {
       const label = [when, season, weather].filter(Boolean).join(" · ");
       journal = await documentEncounter(originScene, scene, { cls, foes: actors, pick, notePos, label });
     }
+    try { if (!onFallback) await scene.setFlag("cavril-wayfarer", "encounterBiome", cls?.label || ebiome); } catch { /* noop */ }
 
-    ui.notifications?.info(`Encounter ready: ${pick ? `"${pick.item.name}" · ` : ""}${partyTokens.length} party + ${actors.length} foe${actors.length === 1 ? "" : "s"} — roll for initiative, then begin combat.`);
+    // 6) ENTER. Auto-enter → reveal now (tension + SFX + cinematic). Otherwise the scene is
+    //    built in the background and a chat card lets you move there when you're ready.
+    const ready = `${pick ? `"${pick.item.name}" · ` : ""}${partyTokens.length} party + ${actors.length} foe${actors.length === 1 ? "" : "s"}`;
+    if (autoEnter || onFallback) {
+      revealEncounter(cls?.label || ebiome);
+      ui.notifications?.info(`Encounter ready: ${ready} — roll for initiative, then begin combat.`);
+    } else {
+      const foeList = actors.map(a => esc(a.name)).join(", ") || "—";
+      ChatMessage.create({ content: cwfEnterCard(scene.id, pick?.item.name || "Encounter", ready, foeList), whisper: game.users.filter(u => u.isGM).map(u => u.id) }).catch(() => {});
+      ui.notifications?.info(`Encounter staged in the background — click "Enter encounter" when you're ready.`);
+    }
     return { scene, actors, foeTokens, partyTokens, combat, journal, pick, cls, when, season, weather, fallback: onFallback };
+  }
+
+  // Tension + alert SFX + the Ambush cinematic — the dramatic reveal as you move into the fight.
+  function revealEncounter(biomeLabel) {
+    if (!(CFG.tensionOnStage ?? true)) return;
+    try { globalThis.Maestro?.tension?.(); } catch (e) { warn("tension shift failed", e); }
+    const sfx = cwfRef(game.settings.get(MOD, "esEncounterSfx"));
+    if (sfx) { try { globalThis.Maestro?.triggerRef?.(sfx); } catch (e) { warn("encounter sfx failed", e); } }
+    try { globalThis.CavrilWayfarer?.Cinematic?.broadcast?.({ icon: "fa-dragon", title: "Ambush!", subtitle: biomeLabel || "", tone: "encounter" }); } catch (e) { warn("encounter cinematic failed", e); }
+  }
+  const cwfEnterCard = (sceneId, mapName, ready, foes) => `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-dragon"></i> <span>Encounter staged</span></div>
+    <div class="cwf-card-bd"><div class="cwf-card-row"><span class="cwf-card-l">Map</span><span class="cwf-card-v">${esc(mapName)}</span></div>
+    <div class="cwf-card-row"><span class="cwf-card-l">Ready</span><span class="cwf-card-v">${esc(ready)}</span></div>
+    <div class="cwf-card-row"><span class="cwf-card-l">Foes</span><span class="cwf-card-v">${foes}</span></div></div>
+    <div class="cwf-card-foot"><div class="cwf-cardbtns"><button class="cwf-cardbtn cwf-primary" data-cwf="enter-encounter" data-scene="${sceneId}"><i class="fa-solid fa-door-open"></i> Enter encounter</button></div></div></div>`;
+  // Move to a staged scene on demand (the chat-card button), then fire the reveal.
+  async function enterEncounter(sceneId) {
+    if (!game.user.isGM) return;
+    const scene = game.scenes?.get(sceneId);
+    if (!scene) { ui.notifications?.warn("Encounter Stage: that staged scene is gone."); return; }
+    try { await scene.activate(); } catch (e) { warn("enter (activate) failed", e); }
+    revealEncounter(scene.getFlag?.("cavril-wayfarer", "encounterBiome") || "");
   }
 
   // ===== SETTINGS ==========================================================
@@ -1094,6 +1119,8 @@
     reg("esGenericMaps",      { name: "  · Generic biome maps", hint: "Random encounters prefer generic archetypal terrain (a jungle, a forest) over specific places (villages, ruins, temples). Turn off to allow any matching map.", scope: "world", config: true, type: Boolean, default: true });
     reg("esImageFallback",    { name: "  · Image-only fallback", hint: "When a map has no pre-authored scene (~5%), still stage it as a wall-less image scene.", scope: "world", config: true, type: Boolean, default: true });
     reg("esActivateScene",    { name: "  · Switch to staged scene", hint: "Activate the new battlemap (vs. just creating it in the sidebar).", scope: "world", config: true, type: Boolean, default: true });
+    reg("esHideGrid",         { name: "  · Hide grid on staged maps", hint: "Hide Foundry's grid overlay on imported battlemaps (CZEPEKU art already has its own grid). Tokens still snap.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esAutoEnter",        { name: "  · Enter scene automatically", hint: "OFF (recommended): stage the encounter in the background and show an 'Enter encounter' button so you move there when ready. ON: jump to the battlemap immediately.", scope: "world", config: true, type: Boolean, default: false });
   }
   function syncCfg() {
     try {
@@ -1114,6 +1141,8 @@
       CFG.preferGenericMaps  = game.settings.get(MOD, "esGenericMaps");
       CFG.allowImageFallback = game.settings.get(MOD, "esImageFallback");
       CFG.activateScene      = game.settings.get(MOD, "esActivateScene");
+      CFG.hideGrid           = game.settings.get(MOD, "esHideGrid");
+      CFG.autoEnter          = game.settings.get(MOD, "esAutoEnter");
     } catch (e) { warn("syncCfg failed (using defaults)", e); }
   }
 
@@ -1167,6 +1196,7 @@
     peekPending: () => pending,
     // The headline command: stage a full encounter from the selected token's hex.
     stageEncounter,
+    enterEncounter,
     encounterHere: (opts) => stageEncounter(opts),
     rollMonsters, dropTokens, playCombatMusic, currentSeason, timeOfDay, partyContext, diagnoseMonsters,
     BIOME_CREATURES, TYPE_MUSIC,
