@@ -558,6 +558,66 @@
     water:     ["beast", "monstrosity", "elemental", "aberration", "dragon"],
     unknown:   ["beast", "humanoid", "monstrosity"],
   };
+
+  // ===== BIOME ENCOUNTER ROSTERS (open SRD creatures, original ecological grouping) =======
+  // Per biome: `pool` = rank-and-file (mixed CR so the band filter finds tier-right picks),
+  // `apex` = leaders / big solo threats. Names are matched against the monster pack by name;
+  // misses are skipped, so over-listing is safe. Your Primus creatures layer on via LORE_ROSTER.
+  const BIOME_ROSTER = {
+    temperate: { pool: ["Wolf", "Boar", "Black Bear", "Giant Spider", "Bandit", "Scout", "Giant Wasp", "Stirge", "Giant Rat", "Giant Eagle", "Awakened Tree", "Sprite"], apex: ["Dire Wolf", "Owlbear", "Brown Bear", "Bandit Captain", "Ogre", "Druid", "Green Hag", "Werewolf"] },
+    boreal:    { pool: ["Wolf", "Worg", "Boar", "Black Bear", "Goblin", "Giant Owl", "Giant Elk", "Scout"], apex: ["Dire Wolf", "Brown Bear", "Owlbear", "Ogre", "Troll", "Werebear", "Green Hag"] },
+    jungle:    { pool: ["Giant Centipede", "Giant Boar", "Ape", "Giant Wasp", "Constrictor Snake", "Giant Frog", "Panther", "Giant Poisonous Snake", "Flying Snake", "Velociraptor", "Swarm of Insects"], apex: ["Giant Ape", "Tiger", "Giant Constrictor Snake", "Giant Crocodile", "Allosaurus", "Yuan-ti Malison"] },
+    desert:    { pool: ["Jackal", "Giant Lizard", "Hyena", "Vulture", "Giant Vulture", "Scout", "Bandit", "Cultist", "Swarm of Insects"], apex: ["Giant Scorpion", "Giant Hyena", "Lion", "Lamia", "Mummy", "Salamander", "Gnoll Pack Lord"] },
+    savanna:   { pool: ["Hyena", "Jackal", "Gnoll", "Boar", "Giant Vulture", "Lion", "Scout"], apex: ["Giant Hyena", "Lion", "Rhinoceros", "Elephant", "Triceratops", "Gnoll Fang of Yeenoghu"] },
+    frozen:    { pool: ["Wolf", "Worg", "Polar Bear", "Ice Mephit", "Giant Goat"], apex: ["Polar Bear", "Yeti", "Winter Wolf", "Mammoth", "Abominable Yeti", "Young White Dragon"] },
+    tundra:    { pool: ["Wolf", "Worg", "Giant Elk", "Polar Bear", "Giant Goat"], apex: ["Mammoth", "Winter Wolf", "Saber-Toothed Tiger", "Yeti", "Frost Giant"] },
+    volcanic:  { pool: ["Magma Mephit", "Fire Snake", "Magmin", "Hell Hound"], apex: ["Salamander", "Fire Elemental", "Azer", "Young Red Dragon"] },
+    wasteland: { pool: ["Jackal", "Giant Vulture", "Zombie", "Skeleton", "Ghoul", "Bandit", "Cultist", "Giant Scorpion"], apex: ["Wight", "Ghast", "Manticore", "Cult Fanatic", "Mummy", "Ogre"] },
+    tainted:   { pool: ["Zombie", "Skeleton", "Ghoul", "Cultist", "Shadow", "Stirge", "Swarm of Insects"], apex: ["Ghast", "Wight", "Specter", "Cult Fanatic", "Carrion Crawler", "Otyugh", "Gibbering Mouther"] },
+    void:      { pool: ["Shadow", "Specter", "Will-o'-Wisp", "Cultist", "Nothic"], apex: ["Wraith", "Wight", "Invisible Stalker", "Gibbering Mouther", "Chuul"] },
+    water:     { pool: ["Reef Shark", "Giant Crab", "Merfolk", "Swarm of Quippers", "Crocodile", "Constrictor Snake", "Giant Octopus"], apex: ["Hunter Shark", "Giant Shark", "Giant Crocodile", "Plesiosaurus", "Water Elemental", "Sea Hag", "Killer Whale"] },
+    unknown:   { pool: ["Wolf", "Bandit", "Giant Spider", "Scout"], apex: ["Ogre", "Dire Wolf", "Bandit Captain"] },
+  };
+  // Encounter COMPOSITIONS — how the staged foes are shaped (vs a flat budget fill).
+  const COMPOSITIONS = [
+    { id: "pack",       weight: 3, slots: [["pool", 3, 6]] },                 // a swarm of rank-and-file
+    { id: "packLeader", weight: 3, slots: [["pool", 2, 4], ["apex", 1, 1]] }, // minions + a leader/brute
+    { id: "ambush",     weight: 2, slots: [["pool", 2, 3]] },                 // a small group from cover
+    { id: "skirmish",   weight: 2, slots: [["pool", 2, 4]] },
+    { id: "solo",       weight: 1, slots: [["apex", 1, 1]] },                 // one big threat
+    { id: "mixed",      weight: 2, slots: [["pool", 2, 4], ["apex", 1, 1]] },
+  ];
+  // Your Primus creatures, merged OVER the SRD roster (biome → {pool,apex} of names). Loaded
+  // from the esLoreRostersJSON setting so you can feature signature monsters per biome.
+  let LORE_ROSTER = {};
+  function mergedRoster(biome) {
+    const base = BIOME_ROSTER[biome] || BIOME_ROSTER.unknown, lore = LORE_ROSTER[biome] || {};
+    return { pool: [...(base.pool || []), ...(lore.pool || [])], apex: [...(base.apex || []), ...(lore.apex || [])] };
+  }
+  const pickWeighted = (arr) => { const tot = arr.reduce((s, c) => s + (c.weight || 1), 0); let r = Math.random() * tot; for (const c of arr) { if ((r -= (c.weight || 1)) < 0) return c; } return arr[arr.length - 1]; };
+
+  // Compose an encounter from the biome roster + a composition template, within the CR band.
+  // Returns [{id,cr,name}] or null (→ caller falls back to the type-based pool).
+  function composeEncounter(biome, index, crLo, crHi, level, size) {
+    const roster = mergedRoster(biome);
+    const byName = new Map();
+    for (const e of index) { const cr = crOfEntry(e); if (cr == null || cr < crLo || cr > crHi) continue; const k = (e.name || "").toLowerCase(); (byName.get(k) || byName.set(k, []).get(k)).push({ id: e._id, cr, name: e.name }); }
+    const fromList = (names) => { const o = []; for (const n of names || []) { const m = byName.get(String(n).toLowerCase()); if (m) o.push(...m); } return o; };
+    const poolOpts = fromList(roster.pool), apexOpts = fromList(roster.apex);
+    if (!poolOpts.length && !apexOpts.length) return null;   // roster has nothing in this CR band → fall back
+    const comp = pickWeighted(COMPOSITIONS);
+    const budget = Math.max(1, Math.round(level * size * (CFG.encounterBudgetMul ?? 0.5)));
+    const chosen = []; let spent = 0;
+    const take = (opts, n) => { for (let i = 0; i < n && opts.length; i++) { if (chosen.length >= (CFG.maxMonsters ?? 6)) return; const x = opts[Math.floor(Math.random() * opts.length)]; chosen.push(x); spent += (x.cr || 0.25) + 1; if (spent >= budget && chosen.length >= 1) return; } };
+    for (const [slot, lo, hi] of comp.slots) {
+      const n = lo + Math.floor(Math.random() * (hi - lo + 1));
+      const opts = slot === "apex" ? (apexOpts.length ? apexOpts : poolOpts) : (poolOpts.length ? poolOpts : apexOpts);
+      take(opts, n);
+      if (spent >= budget || chosen.length >= (CFG.maxMonsters ?? 6)) break;
+    }
+    return chosen.length ? { chosen, comp: comp.id } : null;
+  }
+
   // D&D 5e creature type → Maestro combat soundscape id (mirrors cavril-maestro/combat.mjs).
   const TYPE_MUSIC = {
     aberration: "mutagenicCombat", beast: "beastCombat", celestial: "celestialCombat",
@@ -617,12 +677,21 @@
       warn(m); ui.notifications?.warn(`Encounter Stage: ${m}`, { permanent: true }); return [];
     }
     const budget = Math.max(1, Math.round(level * size * CFG.encounterBudgetMul));
-    const shuffled = pool.map(x => [Math.random(), x]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
-    const chosen = []; let spent = 0;
-    for (const x of shuffled) {
-      if (chosen.length >= CFG.maxMonsters) break;
-      chosen.push(x); spent += (x.cr || 0.25) + 1;
-      if (spent >= budget && chosen.length >= 1) break;
+    // Prefer a curated biome ROSTER + composition (pack / leader / ambush / solo). Falls back
+    // to the random budget-fill of the type-pool when the roster has nothing in this CR band.
+    let chosen = [], compId = null;
+    if (CFG.encounterTables ?? true) {
+      const composed = composeEncounter(ebiome, index, crLo, crHi, level, size);
+      if (composed) { chosen = composed.chosen; compId = composed.comp; }
+    }
+    if (!chosen.length) {
+      const shuffled = pool.map(x => [Math.random(), x]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
+      let spent = 0;
+      for (const x of shuffled) {
+        if (chosen.length >= CFG.maxMonsters) break;
+        chosen.push(x); spent += (x.cr || 0.25) + 1;
+        if (spent >= budget && chosen.length >= 1) break;
+      }
     }
     const folder = await ensureFolder("Encounter Monsters", "Actor");
     const actors = [];
@@ -639,7 +708,7 @@
       }
       if (actor) actors.push(actor);
     }
-    log(`rolled ${actors.length} foes for ${ebiome} (CR ${crLo}–${crHi}, budget ${budget}): ${actors.map(a => `${a.name}(CR ${a.system?.details?.cr ?? "?"})`).join(", ")}`);
+    log(`rolled ${actors.length} foes for ${ebiome}${compId ? ` [${compId}]` : ""} (CR ${crLo}–${crHi}, budget ${budget}): ${actors.map(a => `${a.name}(CR ${a.system?.details?.cr ?? "?"})`).join(", ")}`);
     return actors;
   }
 
@@ -954,6 +1023,8 @@
     reg("esAutoStageOnCombat",{ name: "  · Stage on combat start", hint: "When a combat is created, build + activate the map the last encounter staged.", scope: "world", config: true, type: Boolean, default: true });
     reg("esDropParty",        { name: "  · Place the party", hint: "Drop the party's PC tokens in the centre of the staged map, scattered within ~10 ft.", scope: "world", config: true, type: Boolean, default: true });
     reg("esDropMonsters",     { name: "  · Drop foes", hint: "Place a CR-scaled, biome-appropriate group of monsters in strategic clusters around the party.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esEncounterTables",  { name: "  · Biome encounter rosters", hint: "Build foes from curated per-biome rosters + encounter compositions (pack / leader / ambush / solo), not just any creature in the CR band. Off = the older type-based fill.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esLoreRostersJSON",  { name: "  · Primus lore rosters (JSON)", hint: 'Add your own creatures per biome, merged over the SRD rosters. JSON: {"jungle":{"pool":["My Beast"],"apex":["My Warlord"]}}. Names must exist in the monster compendium.', scope: "world", config: true, type: String, default: "" });
     reg("esAddToCombat",      { name: "  · Build the encounter", hint: "Add the party + foes to the combat tracker, roll NPC initiative, and call for initiative. You still press Begin Combat yourself.", scope: "world", config: true, type: Boolean, default: true });
     reg("esCombatMusic",      { name: "  · Combat music on Begin Combat", hint: "When COMBAT begins on a staged scene, start the Cavril: Maestro combat theme for the dominant foe type. (At stage time the current music just shifts tense — see below.)", scope: "world", config: true, type: Boolean, default: true });
     reg("esEncounterSfx",     { name: "  · Encounter alert sound", hint: "Optional Cavril: Maestro cue played when an encounter stages (sfx:path / preset:tag / @Maestro[…]). Blank = no alert sound (the tension shift + cinematic still fire).", scope: "world", config: true, type: String, default: "" });
@@ -973,7 +1044,10 @@
       CFG.dropParty          = game.settings.get(MOD, "esDropParty");
       CFG.dropMonsters       = game.settings.get(MOD, "esDropMonsters");
       CFG.addToCombat        = game.settings.get(MOD, "esAddToCombat");
+      CFG.encounterTables    = game.settings.get(MOD, "esEncounterTables");
       CFG.documentEncounters = game.settings.get(MOD, "esDocumentEncounters");
+      try { LORE_ROSTER = JSON.parse(game.settings.get(MOD, "esLoreRostersJSON") || "{}") || {}; }
+      catch (e) { warn("esLoreRostersJSON invalid — ignoring", e); LORE_ROSTER = {}; }
       CFG.playCombatMusic    = game.settings.get(MOD, "esCombatMusic");
       CFG.foeMinFt           = Number(game.settings.get(MOD, "esFoeMinFt")) ?? CFG.foeMinFt;
       CFG.foeMaxFt           = Number(game.settings.get(MOD, "esFoeMaxFt")) || CFG.foeMaxFt;
@@ -991,7 +1065,7 @@
     _installed: true,
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
-    _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, BIOME_CREATURES, TYPE_MUSIC, BIOME_TAGS },
+    _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
     getCatalog, pickMap, scenePayload, importableFor,
     // Preview the top matches for a biome without creating anything.
     async preview(biome = "temperate", { type = "combat", when = "day", weather = null, n = 8 } = {}) {
