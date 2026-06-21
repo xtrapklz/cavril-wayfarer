@@ -522,6 +522,57 @@
     ui.notifications?.info("Cavril: biome pool preview in console (F12).");
     return pools;
   }
+  // Review/curate panel: see the per-biome pools and recategorize — move a map to another biome, flip
+  // generic↔specific, or exclude it. Saved as overrides that survive a rebuild. CavrilEncounterStage.openBiomeReview()
+  async function openBiomeReview() {
+    if (!game.user.isGM) return;
+    const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
+    let rows = biomeIndexRows();
+    if (!rows) {
+      const go = await foundry.applications.api.DialogV2.confirm({ window: { title: "Cavril — Biome Index" }, content: "<p>No biome index built yet. Build it from your CZEPEKU catalog now?</p>" }).catch(() => false);
+      if (!go) return;
+      await buildBiomeIndex(); rows = biomeIndexRows();
+      if (!rows) { ui.notifications?.warn("Cavril: couldn't build the index — is CZEPEKU connected?"); return; }
+    }
+    const base = {}; try { for (const m of (game.settings.get(MOD, "esBiomeIndex")?.maps || [])) base[m.id] = m; } catch { /* noop */ }
+    const BIOMES = Object.keys(BIOME_TAGS);
+    const byBiome = {}; for (const m of rows) (byBiome[m.biome] ??= []).push(m);
+    const opt = (m) => BIOMES.map(b => `<option value="${b}" ${b === m.biome ? "selected" : ""}>${b}</option>`).join("");
+    const rowHTML = (m) => `<div class="czr-row" data-id="${esc(m.id)}"><span class="czr-nm" title="natural variant: ${esc(m.natVar || "?")}">${esc(m.name)}</span>`
+      + `<select class="czr-b">${opt(m)}</select>`
+      + `<label class="czr-t"><input type="checkbox" class="czr-g" ${m.generic ? "checked" : ""}> generic</label>`
+      + `<label class="czr-t"><input type="checkbox" class="czr-x" ${m.exclude ? "checked" : ""}> exclude</label></div>`;
+    const sections = BIOMES.filter(b => byBiome[b]?.length).map(b => {
+      const ms = byBiome[b].slice().sort((a, c) => (Number(c.generic) - Number(a.generic)) || String(a.name).localeCompare(String(c.name)));
+      const g = ms.filter(m => m.generic && !m.exclude).length, s = ms.filter(m => !m.generic && !m.exclude).length;
+      return `<details><summary><b>${b}</b> <span class="czr-c">${g} generic · ${s} specific</span></summary>${ms.map(rowHTML).join("")}</details>`;
+    }).join("");
+    const content = `<style>.czr{max-height:62vh;overflow:auto;font-size:12px}.czr details{border:1px solid #8884;border-radius:5px;margin:4px 0;padding:2px 7px}.czr summary{cursor:pointer;padding:3px 0}.czr-c{color:#888;margin-left:6px}.czr-row{display:grid;grid-template-columns:1fr 7em auto auto;gap:8px;align-items:center;padding:2px 0}.czr-nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.czr-t{font-size:11px;white-space:nowrap}</style><div class="czr">${sections || "<p>No maps classified.</p>"}</div>`;
+    const save = (root) => {
+      const ov = {};
+      for (const row of root.querySelectorAll(".czr-row")) {
+        const id = row.dataset.id, b0 = base[id];
+        const biome = row.querySelector(".czr-b").value, generic = row.querySelector(".czr-g").checked, exclude = row.querySelector(".czr-x").checked;
+        const o = {};
+        if (b0) { if (biome !== b0.biome) o.biome = biome; if (generic !== b0.generic) o.generic = generic; }
+        else { o.biome = biome; o.generic = generic; }
+        if (exclude) o.exclude = true;
+        if (Object.keys(o).length) ov[id] = o;
+      }
+      game.settings.set(MOD, "esBiomeOverrides", ov);
+      ui.notifications?.info(`Cavril: saved ${Object.keys(ov).length} biome override(s) — encounters use them immediately.`);
+    };
+    new foundry.applications.api.DialogV2({
+      window: { title: "Cavril — Biome Map Review", resizable: true },
+      position: { width: 580 },
+      content,
+      buttons: [
+        { action: "save", label: "Save overrides", icon: "fa-solid fa-floppy-disk", default: true, callback: (e, btn, dlg) => save(dlg.element) },
+        { action: "rebuild", label: "Rebuild from catalog", icon: "fa-solid fa-arrows-rotate", callback: async () => { await buildBiomeIndex(); ui.notifications?.info("Cavril: rebuilt — reopen the panel to review."); } },
+        { action: "close", label: "Close", icon: "fa-solid fa-xmark" },
+      ],
+    }).render({ force: true });
+  }
 
   // ===== STAGING ===========================================================
   let pending = null;   // { pick, cls, ctx, paths?, ts }
@@ -1337,7 +1388,7 @@
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
-    getCatalog, pickMap, scenePayload, importableFor, previewBiomePools, buildBiomeIndex, biomeIndexStatus,
+    getCatalog, pickMap, scenePayload, importableFor, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview,
     // Preview the top matches for a biome without creating anything.
     async preview(biome = "temperate", { type = "combat", when = "day", weather = null, n = 8 } = {}) {
       const cat = await getCatalog();
