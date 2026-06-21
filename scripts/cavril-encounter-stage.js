@@ -569,6 +569,21 @@
     } catch (e) { warn("combat-start music failed", e); }
   }
 
+  // When a combat we staged ends (the GM deletes it), post a GM-whispered card with a one-click
+  // Return-to-overworld button — the reliable path that doesn't depend on the finicky toolbar control.
+  function onCombatEnd(combat) {
+    try {
+      if (!game.user.isGM) return;
+      const sc = combat?.scene;
+      const origin = sc?.getFlag?.("cavril-wayfarer", "originScene");
+      if (!origin) return;
+      const overworld = game.scenes?.get(origin);
+      const card = `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-flag-checkered"></i> <span>Encounter resolved</span></div>`
+        + `<div class="cwf-card-foot"><div class="cwf-cardbtns"><button class="cwf-cardbtn cwf-primary" data-cwf="return-overworld" data-scene="${origin}"><i class="fa-solid fa-circle-left"></i> Return to ${overworld?.name || "the overworld"}</button></div></div></div>`;
+      ChatMessage.create({ content: card, whisper: game.users.filter(u => u.isGM).map(u => u.id) }).catch(() => {});
+    } catch (e) { warn("combat-end return card failed", e); }
+  }
+
   // Dedup by ACTOR (not just token). A player rolling initiative — via the tracker or DDB —
   // can spawn a SECOND combatant for the same character on a DIFFERENT (or no) token than our
   // pre-added one, so two instances with two initiative values appear. On the roll, we collapse
@@ -1174,6 +1189,8 @@
     // (this used to live inside documentEncounter, so disabling docs silently killed the return button).
     if (originScene && scene && scene.id !== originScene.id) {
       try { await scene.setFlag("cavril-wayfarer", "originScene", originScene.id); } catch (e) { warn("origin flag failed", e); }
+      // Also stamp the world setting so Return works even if the per-scene flag is ever lost.
+      try { await game.settings.set("cavril-wayfarer", "lastOverworld", originScene.id); } catch { /* noop */ }
     }
     let journal = null;
     if ((opts.document ?? CFG.documentEncounters) && originScene && scene && scene.id !== originScene.id) {
@@ -1339,7 +1356,7 @@
       log(`catalog has ${cat.allTags.size} tags. Missing tags above are candidates to remap.`);
       return rows;
     },
-    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("updateCombatant", hookIds.combatant); _returnBtn?.remove(); _returnBtn = null; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
+    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("updateCombatant", hookIds.combatant); Hooks.off("deleteCombat", hookIds.cEnd); _returnBtn?.remove(); _returnBtn = null; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
   });
 
   // ===== INSTALL ===========================================================
@@ -1352,6 +1369,7 @@
     hookIds.canvas    = Hooks.on("canvasReady", refreshReturnControl);   // show/hide the Return-to-overworld button
     hookIds.cStart    = Hooks.on("combatStart", onCombatStart);          // combat music starts when COMBAT begins
     hookIds.combatant = Hooks.on("updateCombatant", onCombatantRolled); // dedup duplicate PC combatants on the roll
+    hookIds.cEnd      = Hooks.on("deleteCombat", onCombatEnd);          // encounter ends → post the Return-to-overworld card
     globalThis.CavrilEncounterStage = buildApi();
     refreshReturnControl();   // in case we boot directly onto a staged battlemap
     log("installed. Hooks: cavril-wayfarer.encounter → pick, createCombat → stage.");

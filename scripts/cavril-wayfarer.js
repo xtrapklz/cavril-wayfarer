@@ -407,6 +407,7 @@ const Store = (() => {
         g.register(MOD, "campMapJSON", { name: "Biome → camp ambience (advanced)", hint: 'Optional JSON of biome → Maestro arrangement for camp. Blank = "campVista" for all.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "openCityOnArrival", { name: "Open CityHUD on settlement arrival", hint: "When you enter a site whose scene is a Cavril CityHUD city, raise its CityHUD automatically — the road→town handoff in one motion. No effect if CityHUD isn't installed.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "lastWatch", { scope: "world", config: false, type: Array, default: [] });
+        g.register(MOD, "lastOverworld", { scope: "world", config: false, type: String, default: "" });   // the overworld we left for an encounter — the robust Return target
         // Per-hex travel events: a roll on every hex entered → mostly mundane flavor,
         // a danger-scaled chance of a real event (combat/puzzle/site) that halts the day.
         g.register(MOD, "travelEvents", { name: "Per-hex travel events", hint: "As the party crosses each hex, roll for an event — mostly mundane flavor, with a danger-scaled chance of a real encounter that halts the day. Whispered to the GM to narrate.", scope: "world", config: true, type: Boolean, default: true });
@@ -3716,6 +3717,7 @@ function wireCardButtons(root) {
                 if (!game.user.isGM) return;
                 if (act === "stage") { await globalThis.CavrilEncounterStage?.stageEncounter?.(); }   // build CZEPEKU map + foes + music
                 else if (act === "enter-encounter") { await globalThis.CavrilEncounterStage?.enterEncounter?.(el.dataset.scene); }   // move to the staged scene
+                else if (act === "return-overworld") { await returnToOrigin(el.dataset.scene); }   // back to the overworld after the fight
                 else if (act === "step") await cwfDoHexStep();
                 else if (act === "auto") await cwfMontage();
                 else if (act === "pause") { if (cwfTrek) cwfTrek.running = false; }
@@ -3779,11 +3781,18 @@ for (const h of ["createItem", "updateItem", "deleteItem"]) Hooks.on(h, () => Wa
 // Return to the scene that generated THIS one (the originScene flag EncounterStage sets on
 // a staged battlemap, or any nested scene). Replaces the old floating button, which collided
 // with crlngn-ui / Mini Calendar HUDs.
-async function returnToOrigin() {
-    const origin = canvas?.scene?.getFlag?.(MOD, "originScene");
-    const s = origin && game.scenes?.get(origin);
-    if (s) { try { await s.activate(); } catch (e) { warn("return-to-origin failed", e); } }
-    else ui.notifications?.info(`${TITLE}: this scene has no recorded origin to return to.`);
+async function returnToOrigin(explicitId = null) {
+    // Resolve the overworld to return to from the most specific source down: an explicit id (chat button)
+    // → this scene's recorded origin flag → the last overworld we left (a world setting EncounterStage
+    // stamps on every stage). Robust even when the per-scene flag is missing or the toolbar is flaky.
+    let id = (typeof explicitId === "string" && explicitId) ? explicitId : null;
+    id = id || canvas?.scene?.getFlag?.(MOD, "originScene") || null;
+    if (!id) { try { id = game.settings.get(MOD, "lastOverworld") || null; } catch { /* noop */ } }
+    const s = id && game.scenes?.get(id);
+    if (!s) { ui.notifications?.warn(`${TITLE}: no overworld scene recorded to return to.`); return; }
+    if (s.id === canvas?.scene?.id) { ui.notifications?.info(`${TITLE}: already on “${s.name}”.`); return; }
+    try { if (game.user.isGM) await s.activate(); else s.view(); log(`returned to overworld “${s.name}”.`); }
+    catch (e) { warn("return-to-origin failed", e); ui.notifications?.error(`${TITLE}: couldn't return — ${e.message}`); }
 }
 function returnTool() {
     const has = !!canvas?.scene?.getFlag?.(MOD, "originScene");
