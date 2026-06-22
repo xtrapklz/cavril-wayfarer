@@ -340,3 +340,27 @@ button.cwf-pm-v:hover { background: rgba(189,169,232,.18); color: #fff; }
 /* clickable travel-log hex line — pings/pans to that hex */
 .cwf-hexline { cursor: pointer; border-radius: 4px; }
 .cwf-hexline:hover { background: rgba(189,169,232,.12); }
+
+/* ---------- Universal "Advance" button (lower-centre, surfaces the next pending GM step) ---------- */
+#cavril-advance {
+    position: fixed; left: 50%; bottom: 18vh; transform: translateX(-50%);
+    z-index: 70; display: inline-flex; align-items: center; gap: 9px;
+    padding: 11px 22px; border-radius: 24px;
+    border: 1px solid var(--cwf-accent, #bda9e8);
+    background: color-mix(in srgb, var(--cwf-accent, #bda9e8) 26%, rgba(20, 20, 26, 0.92));
+    color: #fff; font-family: "Signika", sans-serif; font-size: 14px; font-weight: 700; letter-spacing: 0.02em;
+    cursor: pointer; white-space: nowrap;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55), 0 0 0 4px color-mix(in srgb, var(--cwf-accent, #bda9e8) 16%, transparent);
+    backdrop-filter: blur(6px);
+    animation: cavril-advance-in 0.2s ease;
+}
+#cavril-advance:hover { background: color-mix(in srgb, var(--cwf-accent, #bda9e8) 42%, rgba(20, 20, 26, 0.92)); }
+#cavril-advance:active { transform: translateX(-50%) scale(0.97); }
+#cavril-advance[disabled] { opacity: 0.55; cursor: default; }
+#cavril-advance i { font-size: 13px; opacity: 0.95; }
+#cavril-advance.danger {
+    border-color: var(--cwf-hard, #e0554d);
+    background: color-mix(in srgb, var(--cwf-hard, #e0554d) 30%, rgba(20, 20, 26, 0.92));
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55), 0 0 0 4px color-mix(in srgb, var(--cwf-hard, #e0554d) 18%, transparent);
+}
+@keyframes cavril-advance-in { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }

@@ -688,7 +688,9 @@
   // auto-combat-music is on it plays the same theme — harmless.)
   function onCombatStart(combat) {
     try {
-      if (!game.user.isGM || !CFG.playCombatMusic) return;
+      if (!game.user.isGM) return;
+      CavrilAdvance.clear("es-begin");   // combat begun (our button or the tracker) → drop the Begin-combat prompt
+      if (!CFG.playCombatMusic) return;
       if (!combat?.scene?.getFlag?.("cavril-wayfarer", "originScene")) return;
       // Already started on map entry (the usual flow) → stay in it, don't restart on Begin Combat.
       if (_combatMusicScene && combat.scene?.id === _combatMusicScene) return;
@@ -707,6 +709,8 @@
       const origin = sc?.getFlag?.("cavril-wayfarer", "originScene");
       if (!origin) return;
       const overworld = game.scenes?.get(origin);
+      CavrilAdvance.clear("es-begin");
+      CavrilAdvance.push({ id: "es-return", label: `Return to ${overworld?.name || "the overworld"}`, icon: "fa-circle-left", priority: 20, run: () => { CavrilAdvance.clear("es-return"); return game.scenes?.get(origin)?.activate?.(); } });
       const card = `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-flag-checkered"></i> <span>Encounter resolved</span></div>`
         + `<div class="cwf-card-foot"><div class="cwf-cardbtns"><button class="cwf-cardbtn cwf-primary" data-cwf="return-overworld" data-scene="${origin}"><i class="fa-solid fa-circle-left"></i> Return to ${overworld?.name || "the overworld"}</button></div></div></div>`;
       ChatMessage.create({ content: card, whisper: game.users.filter(u => u.isGM).map(u => u.id) }).catch(() => {});
@@ -1246,9 +1250,44 @@
   // crlngn-ui / Mini Calendar HUDs the old floating button overlapped. This just clears any
   // stale floating button and nudges the toolbar to re-render.
   let _returnBtn = null;
+
+  // ===== Universal "Advance" button ===================================================================
+  // One clean centre-bottom floating button that surfaces the next pending GM step (enter encounter → begin combat
+  // → return…). Modules push one-shot actions; the highest-priority shows; a click runs it then clears it. Exposed
+  // as globalThis.CavrilAdvance so Core / the tracker can feed the SAME button (saves, damage, next turn) later.
+  const CavrilAdvance = (() => {
+    const q = new Map();   // id → { id, label, icon, priority, tone, run }
+    let el = null;
+    const topAction = () => { let b = null; for (const a of q.values()) if (!b || (a.priority ?? 0) >= (b.priority ?? 0)) b = a; return b; };
+    function render() {
+      const a = topAction();
+      if (!a || !game.user?.isGM) { if (el) el.style.display = "none"; return; }
+      if (!el) { el = document.createElement("button"); el.type = "button"; el.id = "cavril-advance"; el.addEventListener("click", onClick); document.body.appendChild(el); }
+      el.className = "cavril-advance" + (a.tone ? " " + a.tone : "");
+      el.innerHTML = `<i class="fa-solid ${a.icon || "fa-forward"}"></i> <span>${esc(a.label || "Advance")}</span>`;
+      el.disabled = false; el.style.display = "inline-flex";
+    }
+    async function onClick() {
+      const a = topAction(); if (!a) return;
+      try { if (el) el.disabled = true; await a.run?.(); } catch (e) { warn("advance action failed", e); }
+      q.delete(a.id); render();
+    }
+    return {
+      push(a) { if (a?.id && a?.run) { q.set(a.id, a); render(); } },
+      clear(id) { if (q.delete(id)) render(); },
+      has(id) { return q.has(id); },
+      clearAll() { q.clear(); render(); },
+      destroy() { q.clear(); el?.remove(); el = null; },
+      refresh: render,
+    };
+  })();
+  globalThis.CavrilAdvance = CavrilAdvance;
+
   function refreshReturnControl() {
     try { _returnBtn?.remove(); _returnBtn = null; document.getElementById("cwf-return-overworld")?.remove(); ui.controls?.render?.(true); }
     catch (e) { warn("return control refresh failed", e); }
+    // Back on a non-generated scene → drop the Advance "Return" prompt (we're no longer mid-encounter there).
+    try { if (!isStagedScene(canvas?.scene)) CavrilAdvance.clear("es-return"); } catch (e) {}
   }
 
   // THE command: read the selected token's hex → pick the map → build the scene →
@@ -1350,10 +1389,12 @@
     const ready = `${pick ? `"${pick.item.name}" · ` : ""}${partyTokens.length} party + ${actors.length} foe${actors.length === 1 ? "" : "s"}`;
     if (autoEnter || onFallback) {
       revealEncounter(cls?.label || ebiome);
+      { const _c = (game.combats?.contents || []).find(x => x.scene?.id === scene.id); if (_c && !_c.started) CavrilAdvance.push({ id: "es-begin", label: "Begin combat", icon: "fa-swords", priority: 20, tone: "danger", run: () => (game.combats?.contents || []).find(x => x.scene?.id === scene.id)?.startCombat?.() }); }
       ui.notifications?.info(`Encounter ready: ${ready} — roll for initiative, then begin combat.`);
     } else {
       const foeList = actors.map(a => esc(a.name)).join(", ") || "—";
       ChatMessage.create({ content: cwfEnterCard(scene.id, pick?.item.name || "Encounter", ready, foeList), whisper: game.users.filter(u => u.isGM).map(u => u.id) }).catch(() => {});
+      CavrilAdvance.push({ id: "es-enter", label: "Enter encounter", icon: "fa-door-open", priority: 20, run: () => enterEncounter(scene.id) });
       ui.notifications?.info(`Encounter staged in the background — click "Enter encounter" when you're ready.`);
     }
     return { scene, actors, foeTokens, partyTokens, combat, journal, pick, cls, when, season, weather, fallback: onFallback };
@@ -1394,6 +1435,8 @@
         if (foes.length) { playCombatMusic(foes); _combatMusicScene = scene.id; }
       }
     } catch (e) { warn("enter combat music failed", e); }
+    CavrilAdvance.clear("es-enter");   // we're in → drop the Enter button, offer Begin combat next
+    if (cb && !cb.started) CavrilAdvance.push({ id: "es-begin", label: "Begin combat", icon: "fa-swords", priority: 20, tone: "danger", run: () => (game.combats?.contents || []).find(x => x.scene?.id === scene.id)?.startCombat?.() });
     revealEncounter(scene.getFlag?.("cavril-wayfarer", "encounterBiome") || "");
   }
 
@@ -1571,7 +1614,7 @@
       log(`catalog has ${cat.allTags.size} tags. Missing tags above are candidates to remap.`);
       return rows;
     },
-    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("updateCombatant", hookIds.combatant); Hooks.off("deleteCombat", hookIds.cEnd); Hooks.off("preCreateScene", hookIds.preScene); _returnBtn?.remove(); _returnBtn = null; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
+    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("updateCombatant", hookIds.combatant); Hooks.off("deleteCombat", hookIds.cEnd); Hooks.off("preCreateScene", hookIds.preScene); _returnBtn?.remove(); _returnBtn = null; try { CavrilAdvance.destroy(); } catch (e) {} delete globalThis.CavrilAdvance; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
   });
 
   // ===== INSTALL ===========================================================
