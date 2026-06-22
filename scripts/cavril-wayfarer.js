@@ -1418,6 +1418,7 @@ async function cwfStartTravel(tok, route, { pace = "normal", boat = false, scout
     if (!game.user.isGM || !tok) return;
     try { CourseOverlay.stop(); cwfCourseBroadcast(null); } catch { /* noop */ }
     Music.combat(false);   // clear any lingering encounter tension as a fresh trek starts
+    try { globalThis.CavrilAdvance?.clear?.("cwf-enter-settlement"); } catch (e) {}   // drop any stale "Enter <town>" prompt from the last arrival
     cwfTrek = { tokId: tok.id, route: (route || []).slice(), idx: 0, pace, boat, scoutGood, acc: 0, prev: Hex.offsetOf(tok.center), lines: [], header, title, icon, sub, halted: false, done: false, lostHours, marchHTML: "", marchSub: "", tod: cwfTimeOfDay().key, lastBiome: (Hex.classifyAt(Hex.offsetOf(tok.center))?.label || null), leg: null, running: false };
     const msg = await ChatMessage.create({ content: cwfTrekCardHTML(), whisper: cwfGmIds() }).catch(() => null);
     cwfTrek.msgId = msg?.id;
@@ -1535,6 +1536,22 @@ async function cwfFinishTravel() {
     await cwfTrekRefresh();
     WayfarerPanel.renderExternal(); BiomeBadge.update();
     cwfRefreshVision();   // travel ended (maybe at dusk/night) → recompute vision now so the map never stays black
+    try { cwfMaybeOfferSettlement(); } catch (e) { warn("settlement arrival check failed", e); }
+}
+
+// On arrival, if the destination sits on an Augur site whose linked scene is a Cavril CityHUD city,
+// offer "Enter <town>" on the centre Advance button — the road→town handoff in one click, mirroring the
+// encounter "Enter encounter" flow. The click runs Augur.enterSite (scene transition → raises the CityHUD
+// via maybeOpenCity + town ambience). Gated on the same openCityOnArrival toggle; GM-only; self-clearing.
+function cwfMaybeOfferSettlement() {
+    const ADV = globalThis.CavrilAdvance; if (!ADV?.push) return;
+    const drop = () => ADV.clear?.("cwf-enter-settlement");
+    if (!game.user.isGM || !game.settings.get(MOD, "openCityOnArrival")) return drop();
+    let site = null; try { site = Canvasry.augurSiteUnder(Canvasry.activeToken()); } catch (e) {}
+    const scene = site?.sceneId ? game.scenes?.get(site.sceneId) : null;
+    const w = scene?.flags?.world || {};
+    if (!scene || scene.id === canvas?.scene?.id || !(w.cavrilImport || w.cityJournalId)) return drop();
+    ADV.push({ id: "cwf-enter-settlement", label: `Enter ${site.name || scene.name || "settlement"}`, icon: "fa-city", priority: 20, run: () => Augur.enterSite(site) });
 }
 
 // ---- INTERACTIVE CAMP CARD — set the danger, pick the watch, resolve the night, all
