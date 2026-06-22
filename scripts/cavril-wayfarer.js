@@ -432,6 +432,7 @@ const Store = (() => {
         // Rest & D&D Beyond re-sync.
         g.register(MOD, "longRestAtDawn", { name: "Long rest at dawn", hint: "When the night resolves to dawn, run a dnd5e long rest for the party (HP, spell slots, hit dice). Exhaustion stays under Wayfarer's watch rules.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "resyncAtDawn", { name: "Offer DDB re-sync at dawn", hint: "After the dawn long rest, prompt to re-sync the party's sheets from D&D Beyond (you confirm each time). Off = use the Re-sync button when you're ready.", scope: "world", config: true, type: Boolean, default: false });
+        g.register(MOD, "resyncSilent", { name: "  · Re-sync silently at dawn", hint: "When dawn re-sync above is on, skip the confirmation and just pull the sheets — for long sessions where the prompt is repetitive. The manual Re-sync button still confirms.", scope: "world", config: true, type: Boolean, default: false });
         // Universal cinematic delay — how long phase cinematics hold, and the pause
         // between a transition resolving and the next one. "A couple of seconds."
         g.register(MOD, "universalDelay", { name: "Cinematic hold (seconds)", hint: "How long phase cinematics stay up, and the pause the module sits in a beat before moving on. Higher = more time to read/narrate. Default 2.5.", scope: "world", config: true, type: Number, default: 2.5, range: { min: 0.5, max: 8, step: 0.5 } });
@@ -1268,7 +1269,7 @@ async function advanceToDawn() {
     Cinematic.broadcast({ icon: "fa-sun", title: "Dawn", subtitle: `Day ${nextDay}`, tone: "dawn" });
     ChatMessage.create({ content: cwfCardShell("fa-sun", `Dawn — Day ${nextDay}`, cwfRow("Morning", "The watch ends and a new day begins.")) });
     if (game.settings.get(MOD, "longRestAtDawn")) await cwfPartyRest("long", { newDay: true, silent: true });
-    if (game.settings.get(MOD, "resyncAtDawn")) cwfResyncSheets();
+    if (game.settings.get(MOD, "resyncAtDawn")) cwfResyncSheets({ silent: game.settings.get(MOD, "resyncSilent") });
 }
 
 // Effective travel weather: Mini Calendar's live weather if present, else scene state.
@@ -1865,15 +1866,17 @@ async function cwfEditMember(actorId, field) {
 
 // Prompted re-sync of every DDB-linked party member via ddb-importer (DDB → Foundry,
 // pulling players' sheet edits back). Confirmed first so live state isn't clobbered.
-async function cwfResyncSheets() {
+async function cwfResyncSheets({ silent = false } = {}) {
     if (!game.user.isGM) return;
     const imp = game.modules.get("ddb-importer");
     if (!imp?.active) { ui.notifications?.warn(`${TITLE}: ddb-importer is not installed/active.`); return; }
     const mem = Party.members().filter(a => a.flags?.ddbimporter?.dndbeyond?.characterId);
     if (!mem.length) { ui.notifications?.warn(`${TITLE}: no party members are linked to D&D Beyond.`); return; }
-    const ok = await cwfConfirm("Re-sync sheets from D&D Beyond?",
-        `Pull the latest D&D Beyond data into Foundry for: <b>${mem.map(a => foundry.utils.escapeHTML?.(a.name) ?? a.name).join(", ")}</b>. This OVERWRITES each Foundry sheet with its current DDB state — make sure everyone has finished editing first.`);
-    if (!ok) return;
+    if (!silent) {
+        const ok = await cwfConfirm("Re-sync sheets from D&D Beyond?",
+            `Pull the latest D&D Beyond data into Foundry for: <b>${mem.map(a => foundry.utils.escapeHTML?.(a.name) ?? a.name).join(", ")}</b>. This OVERWRITES each Foundry sheet with its current DDB state — make sure everyone has finished editing first.`);
+        if (!ok) return;
+    }
     const mgr = imp.api?.DDBCharacterManager;
     if (!mgr?.importCharacter) { ui.notifications?.error(`${TITLE}: couldn't find ddb-importer's re-import API (DDBCharacterManager.importCharacter).`); return; }
     ui.notifications?.info(`${TITLE}: re-syncing ${mem.length} character${mem.length === 1 ? "" : "s"} from D&D Beyond…`);
@@ -3155,7 +3158,7 @@ const Camp = (() => {
         if (pendingMsg) { const m = game.messages.get(pendingMsg); if (m) { try { await m.update({ content: cwfCardShell("fa-moon", "Night Watch", `<div class="cwf-muted2">Resolved — dawn breaks on Day ${nextDay}.</div>`) }); } catch { /* noop */ } } }
         await cwfCampFinalize(`Resolved — dawn breaks on Day ${nextDay}.`);
         WayfarerPanel.render(); BiomeBadge.update();
-        if (game.settings.get(MOD, "resyncAtDawn")) cwfResyncSheets();   // prompted; players' DDB edits → Foundry
+        if (game.settings.get(MOD, "resyncAtDawn")) cwfResyncSheets({ silent: game.settings.get(MOD, "resyncSilent") });   // prompted; players' DDB edits → Foundry
     }
     function cancel() { active = false; nightDawnPending = null; Music.combat(false); cwfCampFinalize("Camp struck — back on the road."); WayfarerPanel.render(); }
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
