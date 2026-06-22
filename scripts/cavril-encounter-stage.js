@@ -704,6 +704,7 @@
   function onCombatEnd(combat) {
     try {
       if (!game.user.isGM) return;
+      try { globalThis.CavrilAdvance?.clear?.("next-turn"); } catch (e) {}      // combat over → drop the Next-turn prompt
       if (combat?.scene?.id === _combatMusicScene) _combatMusicScene = null;   // a future encounter on this scene restarts the music
       const sc = combat?.scene;
       const origin = sc?.getFlag?.("cavril-wayfarer", "originScene");
@@ -715,6 +716,17 @@
         + `<div class="cwf-card-foot"><div class="cwf-cardbtns"><button class="cwf-cardbtn cwf-primary" data-cwf="return-overworld" data-scene="${origin}"><i class="fa-solid fa-circle-left"></i> Return to ${overworld?.name || "the overworld"}</button></div></div></div>`;
       ChatMessage.create({ content: card, whisper: game.users.filter(u => u.isGM).map(u => u.id) }).catch(() => {});
     } catch (e) { warn("combat-end return card failed", e); }
+  }
+
+  // Surface a low-priority "Next turn" on the universal Advance button while a combat runs, so the GM advances the
+  // tracker from the same button once nothing else is pending (Core's card steps outrank this at priority 40).
+  function refreshNextTurn() {
+    try {
+      const ADV = globalThis.CavrilAdvance; if (!ADV?.push) return;
+      const c = game.combats?.active;
+      if (game.user.isGM && c?.started && c.combatant) ADV.push({ id: "next-turn", label: "Next turn", icon: "fa-forward-step", priority: 10, run: () => game.combats?.active?.nextTurn?.() });
+      else ADV.clear("next-turn");
+    } catch (e) {}
   }
 
   // Dedup by ACTOR (not just token). A player rolling initiative — via the tracker or DDB —
@@ -1288,6 +1300,7 @@
     catch (e) { warn("return control refresh failed", e); }
     // Back on a non-generated scene → drop the Advance "Return" prompt (we're no longer mid-encounter there).
     try { if (!isStagedScene(canvas?.scene)) CavrilAdvance.clear("es-return"); } catch (e) {}
+    try { refreshNextTurn(); } catch (e) {}   // re-evaluate the Next-turn prompt for the scene we just arrived on
   }
 
   // THE command: read the selected token's hex → pick the map → build the scene →
@@ -1614,7 +1627,7 @@
       log(`catalog has ${cat.allTags.size} tags. Missing tags above are candidates to remap.`);
       return rows;
     },
-    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("updateCombatant", hookIds.combatant); Hooks.off("deleteCombat", hookIds.cEnd); Hooks.off("preCreateScene", hookIds.preScene); _returnBtn?.remove(); _returnBtn = null; try { CavrilAdvance.destroy(); } catch (e) {} delete globalThis.CavrilAdvance; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
+    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("updateCombatant", hookIds.combatant); Hooks.off("deleteCombat", hookIds.cEnd); Hooks.off("updateCombat", hookIds.advTurn); Hooks.off("preCreateScene", hookIds.preScene); _returnBtn?.remove(); _returnBtn = null; try { CavrilAdvance.destroy(); } catch (e) {} delete globalThis.CavrilAdvance; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
   });
 
   // ===== INSTALL ===========================================================
@@ -1628,6 +1641,7 @@
     hookIds.cStart    = Hooks.on("combatStart", onCombatStart);          // combat music starts when COMBAT begins
     hookIds.combatant = Hooks.on("updateCombatant", onCombatantRolled); // dedup duplicate PC combatants on the roll
     hookIds.cEnd      = Hooks.on("deleteCombat", onCombatEnd);          // encounter ends → post the Return-to-overworld card
+    hookIds.advTurn   = Hooks.on("updateCombat", refreshNextTurn);      // surface "Next turn" on the Advance button during combat
     hookIds.preScene  = Hooks.on("preCreateScene", (scene, data) => {   // default new scenes to the configured grid (Foundry's Square default → our grid)
       try { if (CFG.defaultNewSceneGrid && (data?.grid?.type ?? scene.grid?.type) === 1 && scene.grid?.type !== CFG.gridType) scene.updateSource({ "grid.type": CFG.gridType }); } catch (e) {}
     });
