@@ -1271,8 +1271,27 @@
   const CavrilAdvance = (() => {
     const q = new Map();   // id → { id, label, icon, priority, tone, run }
     let el = null;
-    const topAction = () => { let b = null; for (const a of q.values()) if (!b || (a.priority ?? 0) >= (b.priority ?? 0)) b = a; return b; };
+    // Staleness escape-hatch: when the top step sits unchanged for STALE_MS while a "next-turn" is
+    // queued behind it, surface Next turn so the combat loop never stalls on a step the GM already
+    // handled another way (rolled on the sheet, applied on the chat card, etc). The clock is keyed
+    // to when the RAW top last changed, so Core re-pushing the same step every few ms can't reset it.
+    const STALE_MS = 5000;
+    let rawTopId = null, rawTopAt = 0, staleTimer = null;
+    const rawTop = () => { let b = null; for (const a of q.values()) if (!b || (a.priority ?? 0) >= (b.priority ?? 0)) b = a; return b; };
+    const topAction = () => {
+      const b = rawTop();
+      if (b && b.id !== "next-turn" && q.has("next-turn") && rawTopId === b.id && (Date.now() - rawTopAt) >= STALE_MS) return q.get("next-turn");
+      return b;
+    };
     function render() {
+      const raw = rawTop();
+      const rid = raw?.id ?? null;
+      if (rid !== rawTopId) { rawTopId = rid; rawTopAt = Date.now(); }   // top changed → restart the staleness clock
+      clearTimeout(staleTimer); staleTimer = null;
+      if (raw && raw.id !== "next-turn" && q.has("next-turn")) {         // schedule one re-render at the staleness mark
+        const due = Math.max(0, STALE_MS - (Date.now() - rawTopAt)) + 60;
+        staleTimer = setTimeout(() => { staleTimer = null; render(); }, due);
+      }
       const a = topAction();
       if (!a || !game.user?.isGM) { if (el) el.style.display = "none"; return; }
       if (!el) { el = document.createElement("button"); el.type = "button"; el.id = "cavril-advance"; el.addEventListener("click", onClick); document.body.appendChild(el); }
@@ -1283,14 +1302,14 @@
     async function onClick() {
       const a = topAction(); if (!a) return;
       try { if (el) el.disabled = true; await a.run?.(); } catch (e) { warn("advance action failed", e); }
-      q.delete(a.id); render();
+      q.delete(a.id); rawTopId = null; render();   // null the clock so whatever surfaces next gets a fresh 5s window
     }
     return {
       push(a) { if (a?.id && a?.run) { q.set(a.id, a); render(); } },
       clear(id) { if (q.delete(id)) render(); },
       has(id) { return q.has(id); },
       clearAll() { q.clear(); render(); },
-      destroy() { q.clear(); el?.remove(); el = null; },
+      destroy() { clearTimeout(staleTimer); q.clear(); el?.remove(); el = null; },
       refresh: render,
     };
   })();
