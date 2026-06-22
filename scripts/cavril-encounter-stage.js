@@ -705,6 +705,7 @@
     try {
       if (!game.user.isGM) return;
       try { globalThis.CavrilAdvance?.clear?.("next-turn"); } catch (e) {}      // combat over → drop the Next-turn prompt
+      try { markEncounterResolved(combat?.scene?.id); } catch (e) {}            // mark this scene's ledger entry resolved
       if (combat?.scene?.id === _combatMusicScene) _combatMusicScene = null;   // a future encounter on this scene restarts the music
       const sc = combat?.scene;
       const origin = sc?.getFlag?.("cavril-wayfarer", "originScene");
@@ -1597,12 +1598,18 @@
       await game.settings.set(MOD, "esEncounterLog", log);
     } catch (e) { warn("encounter log failed", e); }
   }
+  async function markEncounterResolved(sceneId, outcome = "resolved") {
+    try {
+      if (!sceneId) return; let log = encounterLog();
+      for (let i = log.length - 1; i >= 0; i--) { if (log[i].sceneId === sceneId && !log[i].outcome) { log[i].outcome = outcome; await game.settings.set(MOD, "esEncounterLog", log); return; } }
+    } catch (e) { warn("mark encounter resolved failed", e); }
+  }
   function showEncounterLog(n = 20) {
     try {
       const log = encounterLog().slice(-Math.max(1, n)).reverse();
       if (!log.length) { ui.notifications?.info("Cavril: no encounters logged yet."); return; }
       const day = (wt) => Math.floor((wt || 0) / 86400) + 1;
-      const rows = log.map(e => `<div class="cwf-card-row" style="align-items:flex-start"><span class="cwf-card-l">Day ${day(e.wt)}${e.when ? " · " + esc(e.when) : ""}</span><span class="cwf-card-v">${esc(e.biome)} — ${e.foes?.length ? esc(e.foes.slice(0, 4).join(", ")) + (e.foes.length > 4 ? ` +${e.foes.length - 4}` : "") : "—"}<span style="opacity:.6"> · ${esc(e.map || "")}</span></span></div>`).join("");
+      const rows = log.map(e => `<div class="cwf-card-row" style="align-items:flex-start"><span class="cwf-card-l">Day ${day(e.wt)}${e.when ? " · " + esc(e.when) : ""}</span><span class="cwf-card-v">${esc(e.biome)} — ${e.foes?.length ? esc(e.foes.slice(0, 4).join(", ")) + (e.foes.length > 4 ? ` +${e.foes.length - 4}` : "") : "—"}<span style="opacity:.6"> · ${esc(e.map || "")}</span>${e.outcome ? `<span style="color:#5fbf7f;font-size:10px"> · ✓ ${esc(e.outcome)}</span>` : ""}</span></div>`).join("");
       ChatMessage.create({ content: `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-scroll"></i> <span>Encounter Log</span><span class="cwf-card-sub">last ${log.length}</span></div><div class="cwf-card-bd">${rows}</div></div>`, whisper: game.users.filter(u => u.isGM).map(u => u.id) }).catch(() => {});
     } catch (e) { warn("show encounter log failed", e); }
   }
@@ -1614,7 +1621,7 @@
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
     getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview,
     purgeStagedScenes, isStagedScene,   // cleanup: delete encounter-generated scenes (CavrilEncounterStage.purgeStagedScenes())
-    encounterLog, showEncounterLog, logEncounter,   // ledger: CavrilEncounterStage.showEncounterLog()
+    encounterLog, showEncounterLog, logEncounter, markEncounterResolved,   // ledger: CavrilEncounterStage.showEncounterLog()
     // Preview the top matches for a biome without creating anything.
     async preview(biome = "temperate", { type = "combat", when = "day", weather = null, n = 8 } = {}) {
       const cat = await getCatalog();
