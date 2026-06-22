@@ -364,3 +364,16 @@ button.cwf-pm-v:hover { background: rgba(189,169,232,.18); color: #fff; }
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55), 0 0 0 4px color-mix(in srgb, var(--cwf-hard, #e0554d) 18%, transparent);
 }
 @keyframes cavril-advance-in { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* ---------- Read-aloud boxed text on encounter cards ---------- */
+.cwf-readaloud {
+    font-style: italic; color: #e9e3d6;
+    background: rgba(189, 169, 232, 0.09);
+    border-left: 3px solid var(--cwf-accent, #bda9e8);
+    border-radius: 0 6px 6px 0;
+    padding: 7px 10px; margin: 0 0 8px; line-height: 1.45;
+}
+.cwf-readaloud-tag {
+    display: block; font-style: normal; font-size: 9px; text-transform: uppercase;
+    letter-spacing: 0.1em; color: var(--cwf-accent, #bda9e8); font-weight: 700; margin-bottom: 3px;
+}

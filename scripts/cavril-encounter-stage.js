@@ -1400,13 +1400,16 @@
     // 6) ENTER. Auto-enter → reveal now (tension + SFX + cinematic). Otherwise the scene is
     //    built in the background and a chat card lets you move there when you're ready.
     const ready = `${pick ? `"${pick.item.name}" · ` : ""}${partyTokens.length} party + ${actors.length} foe${actors.length === 1 ? "" : "s"}`;
+    const hook = encounterHook(cls, actors);
+    const gmIds = game.users.filter(u => u.isGM).map(u => u.id);
     if (autoEnter || onFallback) {
+      if (hook) ChatMessage.create({ content: `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-dragon"></i> <span>Encounter</span></div><div class="cwf-card-bd">${cwfReadAloud(hook)}</div></div>`, whisper: gmIds }).catch(() => {});
       revealEncounter(cls?.label || ebiome);
       { const _c = (game.combats?.contents || []).find(x => x.scene?.id === scene.id); if (_c && !_c.started) CavrilAdvance.push({ id: "es-begin", label: "Begin combat", icon: "fa-swords", priority: 20, tone: "danger", run: () => (game.combats?.contents || []).find(x => x.scene?.id === scene.id)?.startCombat?.() }); }
       ui.notifications?.info(`Encounter ready: ${ready} — roll for initiative, then begin combat.`);
     } else {
       const foeList = actors.map(a => esc(a.name)).join(", ") || "—";
-      ChatMessage.create({ content: cwfEnterCard(scene.id, pick?.item.name || "Encounter", ready, foeList), whisper: game.users.filter(u => u.isGM).map(u => u.id) }).catch(() => {});
+      ChatMessage.create({ content: cwfEnterCard(scene.id, pick?.item.name || "Encounter", ready, foeList, hook), whisper: gmIds }).catch(() => {});
       CavrilAdvance.push({ id: "es-enter", label: "Enter encounter", icon: "fa-door-open", priority: 20, run: () => enterEncounter(scene.id) });
       ui.notifications?.info(`Encounter staged in the background — click "Enter encounter" when you're ready.`);
     }
@@ -1424,8 +1427,34 @@
     try { Cine?.broadcast?.({ icon: "fa-dragon", title: "Ambush!", subtitle: biomeLabel || "", tone: "encounter" }); } catch (e) { warn("encounter cinematic failed", e); }
     try { setTimeout(() => { try { Cine?.broadcast?.({ icon: "fa-dice-d20", title: "Roll for Initiative!", subtitle: "", tone: "initiative" }); } catch { /* noop */ } }, 2600); } catch { /* noop */ }
   }
-  const cwfEnterCard = (sceneId, mapName, ready, foes) => `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-dragon"></i> <span>Encounter staged</span></div>
-    <div class="cwf-card-bd"><div class="cwf-card-row"><span class="cwf-card-l">Map</span><span class="cwf-card-v">${esc(mapName)}</span></div>
+  // A short read-aloud "boxed text" hook for an encounter, generated from the biome + the rolled foes. Generic and
+  // socketable — sets the scene without assuming campaign specifics; the GM reads it to the table.
+  function encounterHook(cls, actors) {
+    try {
+      const list = (actors || []).filter(Boolean); if (!list.length) return "";
+      const cap = (s) => String(s).charAt(0).toUpperCase() + String(s).slice(1);
+      const art = (s) => (/^[aeiou]/i.test(String(s)) ? "an " : "a ") + s;
+      const biome = (cls?.label || "wilderness").toLowerCase();
+      const n = list.length;
+      const names = [...new Set(list.map(a => a.name))];
+      const byCr = [...list].sort((a, b) => (Number(b.system?.details?.cr) || 0) - (Number(a.system?.details?.cr) || 0));
+      const lead = byCr[0]?.name || names[0];
+      const maxCr = Number(byCr[0]?.system?.details?.cr) || 0;
+      const minions = list.filter(a => (Number(a.system?.details?.cr) || 0) < Math.max(0.5, maxCr * 0.5)).length;
+      const env = ({ temperate: "between the trees", jungle: "through the undergrowth", desert: "across the dunes", boreal: "among the frosted pines", tundra: "across the open snow", frozen: "over the ice", savanna: "through the tall grass", wasteland: "across the broken ground", volcanic: "across the scorched rock", water: "from the water", tainted: "out of the gloom", void: "out of the dark" })[(cls?.biome || "").toLowerCase()] || `across the ${biome}`;
+      const single = names.length === 1;
+      let lines;
+      if (n === 1) lines = [`The ${biome} falls silent — then ${art(lead)} steps into your path, blocking the way ahead.`, `Something stirs ${env}. ${cap(art(lead))} rises to bar your passage.`];
+      else if (single && n >= 4) lines = [`The ${biome} seems to come alive — ${n} ${lead}s surge ${env}, closing from every side.`, `A swarm of ${lead}s pours ${env}, too many to count at a glance.`];
+      else if (single) lines = [`Movement ${env}: ${n} ${lead}s fan out around the party, cutting off retreat.`, `You're not alone out here — a pack of ${n} ${lead}s closes in ${env}.`];
+      else if (minions >= 2 && maxCr > 0) lines = [`${cap(art(lead))} stands at the head of its band, ${n - 1} lesser creatures at its side, and gives the order to attack.`, `Drawn up ${env}: ${art(lead)} commanding a pack of ${n - 1}. It bares its teeth.`];
+      else lines = [`Trouble ${env} — ${names.slice(0, 3).join(", ")}${names.length > 3 ? " and more" : ""}, ${n} in all, moving to surround you.`, `A mixed band bars the way ${env}: ${names.slice(0, 3).join(", ")}. They've already seen you.`];
+      return lines[Math.floor(Math.random() * lines.length)];
+    } catch (e) { return ""; }
+  }
+  const cwfReadAloud = (hook) => hook ? `<div class="cwf-readaloud"><span class="cwf-readaloud-tag">Read aloud</span>${esc(hook)}</div>` : "";
+  const cwfEnterCard = (sceneId, mapName, ready, foes, hook) => `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-dragon"></i> <span>Encounter staged</span></div>
+    <div class="cwf-card-bd">${cwfReadAloud(hook)}<div class="cwf-card-row"><span class="cwf-card-l">Map</span><span class="cwf-card-v">${esc(mapName)}</span></div>
     <div class="cwf-card-row"><span class="cwf-card-l">Ready</span><span class="cwf-card-v">${esc(ready)}</span></div>
     <div class="cwf-card-row"><span class="cwf-card-l">Foes</span><span class="cwf-card-v">${foes}</span></div></div>
     <div class="cwf-card-foot"><div class="cwf-cardbtns"><button class="cwf-cardbtn cwf-primary" data-cwf="enter-encounter" data-scene="${sceneId}"><i class="fa-solid fa-door-open"></i> Enter encounter</button></div></div></div>`;
