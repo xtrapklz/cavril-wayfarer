@@ -1290,7 +1290,11 @@ function cwfAvgPartyLevel() {
 // to the editable per-biome RollTable, then a generic line.
 async function cwfEncounterText(cls, { when = "day", surprised = false } = {}) {
     const biome = cls?.biome || "unknown", label = cls?.label || "Wilderness";
-    const ctx = { module: MOD, when, biome, biomeLabel: label, partyLevel: cwfAvgPartyLevel(), surprised, text: null, handled: false };
+    // Carry the EXACT hex's terrain features so the encounter generator can bias map + foes (road → travellers/bandits,
+    // river → fords + aquatic) off the precise tile the encounter fired on, not a re-read that might land a hex away.
+    const ctx = { module: MOD, when, biome, biomeLabel: label, partyLevel: cwfAvgPartyLevel(), surprised,
+        road: !!cls?.infrastructure, river: !!cls?.river, water: !!cls?.water, dc: cls?.dc ?? null, terrain: cls?.terrainKey || null,
+        text: null, handled: false };
     try { Hooks.callAll("cavril-wayfarer.encounter", ctx); } catch (e) { warn("encounter hook failed", e); }
     if (ctx.handled && ctx.text) return ctx.text;
     return await Tables.drawEncounter(biome, label);

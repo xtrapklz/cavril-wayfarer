@@ -610,6 +610,11 @@
     try {
       if (!game.user.isGM) return;
       const cls = liveClassification(ctx?.biome);
+      // Overlay the EXACT hex features the encounter fired on (Wayfarer ctx, v0.55.9+) so map + foe selection matches
+      // the precise tile even if the live re-read drifts a hex. Falls back to the live read on older Wayfarer.
+      if (ctx?.river !== undefined) cls.river = !!ctx.river;
+      if (ctx?.road !== undefined) cls.infrastructure = !!ctx.road;
+      if (ctx?.water !== undefined) cls.water = !!ctx.water;
       const when = ctx?.when || "day";
       const weather = liveWeather();
       const season = currentSeason();
@@ -626,10 +631,11 @@
       }
       if (CFG.whisperPicks) {
         const gmIds = game.users.filter(u => u.isGM).map(u => u.id);
+        const feat = [cls.river && "river", cls.infrastructure && "road", cls.coast && "coast"].filter(Boolean).join(" · ");
         ChatMessage.create({
           whisper: gmIds,
           content: `<div style="border-left:3px solid #caa6ff;padding:.3em .6em">
-            <b>Encounter Stage</b><br>Biome: <b>${cls.biome}</b> · ${when}${weather ? " · " + weather : ""}<br>
+            <b>Encounter Stage</b><br>Biome: <b>${cls.biome}</b>${feat ? ` · <b>${feat}</b>` : ""} · ${when}${weather ? " · " + weather : ""}<br>
             Battlemap: <b>${pick.item.name}</b> — ${pick.variant.name}${pick.importable ? "" : " <i>(image-only)</i>"}<br>
             <small>Pulls automatically when combat begins.</small></div>`,
         });
