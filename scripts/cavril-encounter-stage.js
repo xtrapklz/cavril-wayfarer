@@ -1413,6 +1413,7 @@
       CavrilAdvance.push({ id: "es-enter", label: "Enter encounter", icon: "fa-door-open", priority: 20, run: () => enterEncounter(scene.id) });
       ui.notifications?.info(`Encounter staged in the background — click "Enter encounter" when you're ready.`);
     }
+    try { await logEncounter({ scene, actors, cls, when, weather, pick, fallback: onFallback }); } catch (e) {}
     return { scene, actors, foeTokens, partyTokens, combat, journal, pick, cls, when, season, weather, fallback: onFallback };
   }
 
@@ -1511,6 +1512,7 @@
     reg("esAutoEnter",        { name: "  · Enter scene automatically", hint: "OFF (recommended): stage the encounter in the background and show an 'Enter encounter' button so you move there when ready. ON: jump to the battlemap immediately.", scope: "world", config: true, type: Boolean, default: false });
     reg("esUseBiomeIndex",    { name: "  · Use curated biome map pools", hint: "When a biome index has been built (run CavrilEncounterStage.buildBiomeIndex() once after connecting CZEPEKU), pull combat maps from the curated per-biome generic pools. Falls back to live scoring if none is built.", scope: "world", config: true, type: Boolean, default: true });
     reg("esBiomeIndex",       { scope: "world", config: false, type: Object, default: {} });   // the built per-biome classification {builtAt,count,maps:[{id,name,biome,generic,natVar}]}
+    reg("esEncounterLog",     { scope: "world", config: false, type: Array, default: [] });    // ledger of staged encounters [{wt,ts,biome,when,weather,foes,map,sceneId}]
     reg("esBiomeOverrides",   { scope: "world", config: false, type: Object, default: {} });   // GM review-panel overrides {id→{biome?,generic?,exclude?}}
   }
   function syncCfg() {
@@ -1586,6 +1588,25 @@
     return ids.length;
   }
 
+  // ── Encounter ledger — a capped, persistent log of every staged encounter, for reviewing the journey ──
+  function encounterLog() { try { return game.settings.get(MOD, "esEncounterLog") || []; } catch (e) { return []; } }
+  async function logEncounter(rec) {
+    try {
+      const entry = { wt: Number(game.time?.worldTime) || 0, ts: Date.now(), biome: rec?.cls?.label || "?", when: rec?.when || "", weather: rec?.weather || "", foes: (rec?.actors || []).map(a => a.name), map: rec?.pick?.item?.name || (rec?.fallback ? "(image scene)" : "(current scene)"), sceneId: rec?.scene?.id || null };
+      let log = encounterLog(); log.push(entry); if (log.length > 200) log = log.slice(-200);
+      await game.settings.set(MOD, "esEncounterLog", log);
+    } catch (e) { warn("encounter log failed", e); }
+  }
+  function showEncounterLog(n = 20) {
+    try {
+      const log = encounterLog().slice(-Math.max(1, n)).reverse();
+      if (!log.length) { ui.notifications?.info("Cavril: no encounters logged yet."); return; }
+      const day = (wt) => Math.floor((wt || 0) / 86400) + 1;
+      const rows = log.map(e => `<div class="cwf-card-row" style="align-items:flex-start"><span class="cwf-card-l">Day ${day(e.wt)}${e.when ? " · " + esc(e.when) : ""}</span><span class="cwf-card-v">${esc(e.biome)} — ${e.foes?.length ? esc(e.foes.slice(0, 4).join(", ")) + (e.foes.length > 4 ? ` +${e.foes.length - 4}` : "") : "—"}<span style="opacity:.6"> · ${esc(e.map || "")}</span></span></div>`).join("");
+      ChatMessage.create({ content: `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-scroll"></i> <span>Encounter Log</span><span class="cwf-card-sub">last ${log.length}</span></div><div class="cwf-card-bd">${rows}</div></div>`, whisper: game.users.filter(u => u.isGM).map(u => u.id) }).catch(() => {});
+    } catch (e) { warn("show encounter log failed", e); }
+  }
+
   const buildApi = () => ({
     _installed: true,
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
@@ -1593,6 +1614,7 @@
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
     getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview,
     purgeStagedScenes, isStagedScene,   // cleanup: delete encounter-generated scenes (CavrilEncounterStage.purgeStagedScenes())
+    encounterLog, showEncounterLog, logEncounter,   // ledger: CavrilEncounterStage.showEncounterLog()
     // Preview the top matches for a biome without creating anything.
     async preview(biome = "temperate", { type = "combat", when = "day", weather = null, n = 8 } = {}) {
       const cat = await getCatalog();
