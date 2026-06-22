@@ -1386,9 +1386,20 @@ async function cwfTrekRefresh() {
     const msg = game.messages.get(t.msgId);
     if (msg) { try { await msg.update({ content: cwfTrekCardHTML() }); } catch (e) { warn("trek card update failed", e); } }
 }
+// Pan every client's camera (GM locally + players via socket) so the whole table's view glides WITH the party token
+// as it travels — instead of the GM watching the move alone and the transition cutting in over an unseen glide.
+function cwfPanAll(x, y, duration = 900) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    try { canvas?.animatePan?.({ x, y, duration }); } catch { /* noop */ }
+    try { game.socket?.emit(`module.${MOD}`, { type: "pan", x, y, duration }); } catch { /* noop */ }
+}
+// Mirror the plotted course onto every player's canvas (route = list of offsets, or null to clear it).
+function cwfCourseBroadcast(route, opts = {}) {
+    try { game.socket?.emit(`module.${MOD}`, { type: "course", route: route ? route.slice() : null, opts }); } catch { /* noop */ }
+}
 async function cwfStartTravel(tok, route, { pace = "normal", boat = false, scoutGood = false, lostHours = 0, header = "", title = "Travel", icon = "fa-person-walking-arrow-right", sub = "" } = {}) {
     if (!game.user.isGM || !tok) return;
-    try { CourseOverlay.stop(); } catch { /* noop */ }
+    try { CourseOverlay.stop(); cwfCourseBroadcast(null); } catch { /* noop */ }
     Music.combat(false);   // clear any lingering encounter tension as a fresh trek starts
     cwfTrek = { tokId: tok.id, route: (route || []).slice(), idx: 0, pace, boat, scoutGood, acc: 0, prev: Hex.offsetOf(tok.center), lines: [], header, title, icon, sub, halted: false, done: false, lostHours, marchHTML: "", marchSub: "", tod: cwfTimeOfDay().key, lastBiome: (Hex.classifyAt(Hex.offsetOf(tok.center))?.label || null), leg: null, running: false };
     const msg = await ChatMessage.create({ content: cwfTrekCardHTML(), whisper: cwfGmIds() }).catch(() => null);
@@ -1417,6 +1428,7 @@ async function cwfAdvanceHex(auto) {
             const dur = Math.max(0, Number(game.settings.get(MOD, "moveAnimMs")) || 900);
             Music.travelSfx(cls, t.boat);   // footsteps / cart / boat as the party moves
             cwfMoving = true;
+            cwfPanAll(c.x, c.y, dur);   // the whole table's camera glides WITH the token; the transition then lands on the new hex
             await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true, animation: { duration: dur } });
         } catch (e) { warn("step move failed", e); }
         finally { cwfMoving = false; }
@@ -1449,6 +1461,7 @@ async function cwfAdvanceHex(auto) {
     // SIGNAL (or a manual Step) → flush the leg, ONE combined transition cinematic, the hex line.
     cwfFlushLeg();
     if (biomeChanged || weatherChanged || todChanged) {
+        await new Promise(res => setTimeout(res, 180));   // let the glide settle on the new hex for a beat before the transition curtain covers it
         const bits = []; if (biomeChanged) bits.push(biome); if (todChanged) bits.push(tod.label); if (weatherChanged && weatherLabel) bits.push(weatherLabel);
         const icon = todChanged ? tod.icon : weatherChanged ? (Domain.WEATHER[wxAfter]?.icon || "fa-cloud") : (cls?.icon || "fa-mountain-sun");
         Cinematic.broadcast({ icon, title: bits[0] || "The road turns", subtitle: bits.slice(1).join(" · ") || `${biome} · ${t.pace} pace`, tone: todChanged ? tod.tone : "weather" });
@@ -2451,6 +2464,17 @@ const CourseOverlay = (() => {
             gfx.lineStyle(3, color, 0.95).drawCircle(c.x, c.y, (canvas.grid.size || 100) * r);
         } catch { /* noop */ }
     }
+    // Bright connecting line through a list of hex offsets so the PATH reads at a glance, not just scattered fills.
+    function line(offs) {
+        try {
+            const pts = (offs || []).filter(Boolean).map(o => canvas.grid.getCenterPoint(o));
+            if (pts.length < 2) return;
+            if (!gfx) { gfx = new PIXI.Graphics(); (canvas.interface || canvas.stage).addChild(gfx); }
+            const trace = (w, color, alpha) => { gfx.lineStyle(w, color, alpha); gfx.moveTo(pts[0].x, pts[0].y); for (let i = 1; i < pts.length; i++) gfx.lineTo(pts[i].x, pts[i].y); };
+            trace(7, 0x10301f, 0.45);   // dark underlay for contrast on any terrain
+            trace(3.5, 0x8fffc6, 0.95); // bright green path on top
+        } catch { /* noop */ }
+    }
 
     // reachMap = hexes selectable from the current anchor (the glowing RANGE);
     // routeArr = the committed course; opts.waypoints = picked stops; opts.anchor
@@ -2463,6 +2487,8 @@ const CourseOverlay = (() => {
             if (!routeKeys.has(Hex.key(off))) mark(off, 0x6fd0ff, 0.22); // selectable range — clearly visible
         }
         for (const off of (routeArr || [])) mark(off, 0x5fd08a, 0.42);    // committed route
+        line([opts.start, ...(routeArr || [])]);                          // bright path line so the course reads as a route at a glance
+        if (opts.start) ring(opts.start, 0x9fe0ff, 0.20);                 // where the party stands now
         for (const wp of (opts.waypoints || [])) ring(wp, 0xffd34d);      // remembered waypoints (gold)
         if (opts.anchor) ring(opts.anchor, 0x6fd0ff, 0.34);               // next-leg start
     }
@@ -2509,7 +2535,7 @@ const Travel = (() => {
 
     function recompute() {
         const tok = startToken();
-        if (!tok) { reachMap = null; routeArr = []; anchor = null; CourseOverlay.draw(null, [], {}); return; }
+        if (!tok) { reachMap = null; routeArr = []; anchor = null; CourseOverlay.draw(null, [], {}); cwfCourseBroadcast(null); return; }
         const start = Hex.offsetOf(tok.center);
         const total = budget();
         // Walk the committed waypoints leg by leg, locking each least-cost path and
@@ -2527,6 +2553,7 @@ const Travel = (() => {
         // Range = what's reachable from the anchor with the budget still in hand.
         reachMap = Hex.reachable(a, Math.max(0, total - spent), { boat });
         CourseOverlay.draw(reachMap, routeArr, { anchor: a, start, waypoints: kept });
+        cwfCourseBroadcast(routeArr, { start, anchor: a, waypoints: kept });   // players watch the course form in real time
     }
 
     function startPlot() {
@@ -2537,6 +2564,7 @@ const Travel = (() => {
         plotting = true; waypoints = []; routeArr = []; anchor = null; shortRest = false;
         CourseOverlay.start(onPick);
         recompute();
+        try { const c = tok.center; cwfPanAll(c.x, c.y, 600); } catch { /* noop */ }   // bring the whole table's view to the party so players see the course being plotted
         WayfarerPanel.render();
     }
     // Selected a different token while plotting (e.g. you started on the wrong one) →
@@ -2585,7 +2613,7 @@ const Travel = (() => {
         waypoints = []; routeArr = []; reachMap = null; anchor = null; plotTok = null;
         WayfarerPanel.render(); BiomeBadge.update();
     }
-    function cancel() { plotting = false; waypoints = []; routeArr = []; reachMap = null; anchor = null; plotTok = null; CourseOverlay.stop(); WayfarerPanel.render(); }
+    function cancel() { plotting = false; waypoints = []; routeArr = []; reachMap = null; anchor = null; plotTok = null; CourseOverlay.stop(); cwfCourseBroadcast(null); WayfarerPanel.render(); }
 
     return {
         startPlot, reanchor, onPick, undo, setPace, setBoat, setShortRest, confirmMove, cancel, governing,
@@ -3714,6 +3742,8 @@ Hooks.once("ready", () => {
     try { game.socket?.on(`module.${MOD}`, (msg) => {
         if (msg?.type === "cinematic") Cinematic.play(msg.spec || {});
         else if (msg?.type === "flash") Cinematic.flash(msg.spec || {});
+        else if (msg?.type === "pan") { try { if (Number.isFinite(msg.x) && Number.isFinite(msg.y)) canvas?.animatePan?.({ x: msg.x, y: msg.y, duration: msg.duration || 900 }); } catch { /* noop */ } }   // players' view follows the party token
+        else if (msg?.type === "course") { try { if (msg.route) CourseOverlay.draw(null, msg.route, msg.opts || {}); else CourseOverlay.clear(); } catch { /* noop */ } }   // players see the course being plotted
     }); }
     catch (e) { warn("socket listener failed", e); }
     HexData.load().then(() => BiomeBadge.update());  // baumgart fallback index (hexlands)
