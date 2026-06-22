@@ -3404,6 +3404,12 @@ const WayfarerPanel = (() => {
         const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
         const dc = Turn.governing?.dc ?? 10;
         const govLabel = Turn.governing?.label || "—";
+        // Show the DC SPREAD across the route, not just the governing (worst) DC — so the GM sees at a glance the
+        // day runs e.g. "DC 10–17" (easy plains into hard mountains), not a single number that hides the easy legs.
+        const _routeDcs = (Turn.route || []).map(off => Hex.classifyAt(off)?.dc).filter(d => d != null);
+        const _loDc = _routeDcs.length ? Math.min(..._routeDcs) : dc;
+        const _hiDc = _routeDcs.length ? Math.max(..._routeDcs) : dc;
+        const dcLabel = _loDc !== _hiDc ? `DC ${_loDc}–${_hiDc}` : `DC ${dc}`;
         const members = Turn.partyMembers();
         const memberOpts = (sel) => `<option value="">— unclaimed —</option>` + members.map(a => `<option value="${a.id}" ${sel === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("");
         const skillOpts = (role, sel) => ROLE_SKILLS[role].map(s => `<option value="${s}" ${sel === s ? "selected" : ""}>${CONFIG.DND5E?.skills?.[s]?.label || s}</option>`).join("");
@@ -3439,7 +3445,7 @@ const WayfarerPanel = (() => {
 
         return `
             <div class="cwf-section cwf-turn">
-                <div class="cwf-label">Travel Turn · <b>DC ${dc}</b> <span class="cwf-muted2">${govLabel} · ${Turn.route.length} hex${Turn.route.length === 1 ? "" : "es"}</span></div>
+                <div class="cwf-label">Travel Turn · <b>${dcLabel}</b> <span class="cwf-muted2">${govLabel} · ${Turn.route.length} hex${Turn.route.length === 1 ? "" : "es"}</span></div>
                 ${cwfRouteBreakdownHTML(Turn.route, dc)}
                 <div class="cwf-roles">${cards}</div>
                 <div class="cwf-actions">${footer}</div>
