@@ -366,15 +366,20 @@
     const wantNight = when === "night";
     const wxWords = weather && VARIANT_WORDS[weather] ? VARIANT_WORDS[weather] : null;
     const seWords = season && VARIANT_WORDS[season] ? VARIANT_WORDS[season] : null;
-    const allowed = item.variants.filter(v => !isExcluded(v));
-    const pool = allowed.length ? allowed : item.variants; // if every variant is excluded, fall back to all
+    let allowed = item.variants.filter(v => !isExcluded(v));
+    if (!allowed.length) allowed = item.variants;               // if every variant is excluded, fall back to all
+    // ENFORCE time-of-day first: at night restrict to night-named variants when any exist; by day drop the night
+    // variants. Only this hard filter guarantees the muffle of a wrong-time map — the natural/weather boosts below
+    // are soft and would otherwise let a "Natural Day" version win a night fight. Falls back to all if it'd empty.
+    const isNight = (v) => wordHit(v, VARIANT_WORDS.night);
+    const tod = wantNight ? allowed.filter(isNight) : allowed.filter(v => !isNight(v));
+    const pool = tod.length ? tod : allowed;
     let best = pool[0], bestScore = -1;
     for (const v of pool) {
       let s = 0;
-      if (wantNight && wordHit(v, VARIANT_WORDS.night)) s += 4;
-      if (!wantNight && wordHit(v, VARIANT_WORDS.day)) s += 2;
-      if (wxWords && wordHit(v, wxWords)) s += 3;
-      if (seWords && wordHit(v, seWords)) s += 2;
+      if (!wantNight && wordHit(v, VARIANT_WORDS.day)) s += 2;   // within the day pool, nudge toward an explicit dawn/noon variant
+      if (wxWords && wordHit(v, wxWords)) s += 3;                // weather match (rain/snow/fog) — soft
+      if (seWords && wordHit(v, seWords)) s += 2;                // season match — soft tiebreaker (e.g. a "Snow Natural" beats plain "Natural")
       if (natural) {                                              // naturalize: strip the unique structures
         if (wordHit(v, ["natural", "empty"])) s += 6;            // the explicitly building-stripped variant
         else if (wordHit(v, ["original"])) s += 1;               // the as-designed base (fallback)
@@ -509,6 +514,22 @@
     ui.notifications?.info(`Cavril: biome index built — ${maps.length} maps. Encounters now pull from the curated per-biome pools.`);
     return index;
   }
+  // Auto-build the index ONCE per session when it's empty and CZEPEKU is connected, so the curated per-biome pools come
+  // online without the GM running buildBiomeIndex() by hand. Fire-and-forget — the triggering encounter still stages off
+  // live scoring; subsequent ones use the freshly-built pools.
+  let _autoBuildTried = false;
+  function maybeAutoBuildIndex() {
+    try {
+      if (_autoBuildTried) return;
+      if (!(CFG.useBiomeIndex ?? true)) return;            // curated pools disabled → nothing to build
+      if (biomeIndexRows()) return;                         // already built
+      let sid = null; try { sid = game.settings.get("czepeku", "sessionId"); } catch { sid = null; }
+      if (!sid) return;                                     // CZEPEKU not connected → can't fetch the catalog
+      _autoBuildTried = true;
+      log("biome index empty — auto-building in the background…");
+      buildBiomeIndex().catch(e => warn("auto-build failed", e));
+    } catch (e) { /* noop */ }
+  }
   function biomeIndexStatus() {
     const rows = biomeIndexRows();
     if (!rows) return { built: false, hint: "run CavrilEncounterStage.buildBiomeIndex()" };
@@ -613,6 +634,7 @@
   async function onEncounter(ctx) {
     try {
       if (!game.user.isGM) return;
+      maybeAutoBuildIndex();   // first encounter on a fresh world → kick off the curated-pool build in the background
       const cls = liveClassification(ctx?.biome);
       // Overlay the EXACT hex features the encounter fired on (Wayfarer ctx, v0.55.9+) so map + foe selection matches
       // the precise tile even if the live re-read drifts a hex. Falls back to the live read on older Wayfarer.
@@ -1233,6 +1255,7 @@
   }
   async function _stageEncounterImpl(opts = {}) {
     if (!game.user.isGM) return warn("GM only");
+    maybeAutoBuildIndex();   // ensure the curated-pool build has been kicked off
     pending = null;   // this IS the staging — don't let a later createCombat double-stage
     const W = globalThis.CavrilWayfarer;
     const token = opts.token ?? canvas.tokens?.controlled?.[0] ?? W?.Canvasry?.activeToken?.();
