@@ -682,6 +682,7 @@
     } catch (e) { warn("createCombat staging failed", e); ui.notifications?.error("Encounter Stage failed — see console."); }
   }
 
+  let _combatMusicScene = null;   // scene id whose combat music already started (on map entry) → onCombatStart won't restart it
   // Combat BEGINS (round 1) → swap the tension bed for the dominant-foe combat theme.
   // Only on scenes we staged, so we don't hijack other combats. (If Cavril: Maestro's own
   // auto-combat-music is on it plays the same theme — harmless.)
@@ -689,8 +690,10 @@
     try {
       if (!game.user.isGM || !CFG.playCombatMusic) return;
       if (!combat?.scene?.getFlag?.("cavril-wayfarer", "originScene")) return;
+      // Already started on map entry (the usual flow) → stay in it, don't restart on Begin Combat.
+      if (_combatMusicScene && combat.scene?.id === _combatMusicScene) return;
       const foes = (combat.combatants?.contents || combat.combatants || []).map(c => c.actor).filter(a => a && !a.hasPlayerOwner);
-      if (foes.length) playCombatMusic(foes);
+      if (foes.length) { playCombatMusic(foes); _combatMusicScene = combat.scene?.id || null; }
     } catch (e) { warn("combat-start music failed", e); }
   }
 
@@ -699,6 +702,7 @@
   function onCombatEnd(combat) {
     try {
       if (!game.user.isGM) return;
+      if (combat?.scene?.id === _combatMusicScene) _combatMusicScene = null;   // a future encounter on this scene restarts the music
       const sc = combat?.scene;
       const origin = sc?.getFlag?.("cavril-wayfarer", "originScene");
       if (!origin) return;
@@ -1379,7 +1383,17 @@
     try { await scene.activate(); } catch (e) { warn("enter (activate) failed", e); }
     // Now that its scene is the viewed one, make the staged combat active (deferred from build time so the
     // tracker never renders a combat for a scene we aren't looking at).
-    try { const cb = (game.combats?.contents || []).find(c => c.scene?.id === scene.id); if (cb && !cb.active) await cb.activate(); } catch (e) { warn("enter (combat activate) failed", e); }
+    let cb = null;
+    try { cb = (game.combats?.contents || []).find(c => c.scene?.id === scene.id); if (cb && !cb.active) await cb.activate(); } catch (e) { warn("enter (combat activate) failed", e); }
+    // Battle music starts HERE, on the transition INTO the map — set the vibe while everyone rolls initiative; we then
+    // stay in it through Begin Combat (onCombatStart sees _combatMusicScene set and won't restart).
+    try {
+      if (CFG.playCombatMusic) {
+        let foes = (cb?.combatants?.contents || cb?.combatants || []).map(c => c.actor).filter(a => a && !a.hasPlayerOwner);
+        if (!foes.length) foes = (scene.tokens?.contents || scene.tokens || []).map(t => t.actor).filter(a => a && !a.hasPlayerOwner);
+        if (foes.length) { playCombatMusic(foes); _combatMusicScene = scene.id; }
+      }
+    } catch (e) { warn("enter combat music failed", e); }
     revealEncounter(scene.getFlag?.("cavril-wayfarer", "encounterBiome") || "");
   }
 
@@ -1394,7 +1408,7 @@
     reg("esEncounterTables",  { name: "  · Biome encounter rosters", hint: "Build foes from curated per-biome rosters + encounter compositions (pack / leader / ambush / solo), not just any creature in the CR band. Off = the older type-based fill.", scope: "world", config: true, type: Boolean, default: true });
     reg("esLoreRostersJSON",  { name: "  · Primus lore rosters (JSON)", hint: 'Add your own creatures per biome, merged over the SRD rosters. JSON: {"jungle":{"pool":["My Beast"],"apex":["My Warlord"]}}. Names must exist in the monster compendium.', scope: "world", config: true, type: String, default: "" });
     reg("esAddToCombat",      { name: "  · Build the encounter", hint: "Add the party + foes to the combat tracker, roll NPC initiative, and call for initiative. You still press Begin Combat yourself.", scope: "world", config: true, type: Boolean, default: true });
-    reg("esCombatMusic",      { name: "  · Combat music on Begin Combat", hint: "When COMBAT begins on a staged scene, start the Cavril: Maestro combat theme for the dominant foe type. (At stage time the current music just shifts tense — see below.)", scope: "world", config: true, type: Boolean, default: true });
+    reg("esCombatMusic",      { name: "  · Combat music on entering the map", hint: "When you ENTER a staged battlemap (the Enter encounter button), start the Cavril: Maestro combat theme for the dominant foe type — setting the battle vibe while everyone rolls initiative; it keeps playing through Begin Combat. (At stage time the current music just shifts tense.)", scope: "world", config: true, type: Boolean, default: true });
     reg("esEncounterSfx",     { name: "  · Encounter alert sound", hint: "Optional Cavril: Maestro cue played when an encounter stages (sfx:path / preset:tag / @Maestro[…]). Blank = no alert sound (the tension shift + cinematic still fire).", scope: "world", config: true, type: String, default: "" });
     reg("esFoeMinFt",         { name: "  · Foe min distance (ft)", hint: "Foes spawn at LEAST this far from the party.", scope: "world", config: true, type: Number, default: 15, range: { min: 0, max: 120, step: 5 } });
     reg("esFoeMaxFt",         { name: "  · Foe max distance (ft)", hint: "Foes spawn at MOST this far from the party.", scope: "world", config: true, type: Number, default: 40, range: { min: 5, max: 200, step: 5 } });
