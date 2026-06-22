@@ -1155,8 +1155,12 @@
     try { ss = M.combatSoundscapeFor?.(actors) || null; } catch (e) { /* fall through to local */ }
     if (!ss) { const t = dominantType(actors); ss = (t && TYPE_MUSIC[t]) || null; via = `local:${t}`; }
     if (!ss) return null;
-    try { M.play(ss, { channel: "music" }); log(`combat music: ${ss} (${via})`); return ss; }
-    catch (e) { warn("Maestro.play failed", e); return null; }
+    try {
+      M.play(ss, { channel: "music" }); log(`combat music: ${ss} (${via})`);
+      // A wordless red pulse on every client so the table SEES combat music engage (sound off — the music is the cue).
+      try { globalThis.CavrilWayfarer?.Cinematic?.broadcastFlash?.({ dir: "up", color: "#e0554d", sound: false }); } catch (e) { /* cosmetic */ }
+      return ss;
+    } catch (e) { warn("Maestro.play failed", e); return null; }
   }
 
   // ===== DOCUMENTATION + SCENE NAVIGATION ==================================

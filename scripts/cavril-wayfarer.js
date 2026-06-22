@@ -1520,7 +1520,17 @@ function cwfCampCardHTML() {
     }).join("");
     const rl = cwfWatchRestLabel(watch.length);
     const watchNote = watch.length ? `${watch.length} on watch · ~${Camp.shiftHours()}h each${rl ? ` · ${rl}` : ""}` : (rl || "no watch — unguarded");
-    const body = `${Camp.supplyNote ? cwfRow("Supplies", cwfEsc(Camp.supplyNote)) : ""}
+    // Glanceable party shape so the GM can see at camp who's fragile before deciding the watch: exhaustion levels
+    // and anyone at or below half HP. "all rested & healthy" when there's nothing to flag.
+    const partyStat = Party.members().map(a => {
+        const exh = Number(a.system?.attributes?.exhaustion) || 0;
+        const hp = a.system?.attributes?.hp || {}, hv = Number(hp.value), hm = Number(hp.max);
+        const low = Number.isFinite(hv) && Number.isFinite(hm) && hm > 0 && hv / hm <= 0.5;
+        const tags = []; if (exh > 0) tags.push(`Exh ${exh}`); if (low) tags.push(`${hv}/${hm} HP`);
+        return tags.length ? `${a.name} (${tags.join(", ")})` : null;
+    }).filter(Boolean);
+    const partyNote = partyStat.length ? partyStat.join(" · ") : "all rested & healthy";
+    const body = `${Camp.supplyNote ? cwfRow("Supplies", cwfEsc(Camp.supplyNote)) : ""}${cwfRow("Party", cwfEsc(partyNote))}
         <div class="cwf-card-row"><span class="cwf-card-l">Danger</span><span class="cwf-card-v">${danger} + biome ${biomeM} + hostiles ${hostileM} = <b>${base}</b>/${Danger.scale()} per hr</span></div>
         <div class="cwf-cardbtns">${dial}</div>
         <div class="cwf-night-sec">Watch order · ${cwfEsc(watchNote)} <button class="cwf-cardbtn" data-cwf="cwatch-all" style="min-width:0;padding:0 7px;font-size:.82em" title="Put the whole party on watch">All</button><button class="cwf-cardbtn" data-cwf="cwatch-none" style="min-width:0;padding:0 7px;font-size:.82em" title="Clear the watch">Clear</button></div>
