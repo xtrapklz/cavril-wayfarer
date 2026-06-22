@@ -1129,6 +1129,19 @@ let cwfBusy = false;
 // Wayfarer move from a manual drag.
 let cwfMoving = false;
 const cwfEsc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
+// Recompute token vision + lighting against the CURRENT scene darkness. The day/night module raises darkness when the
+// clock crosses dusk/night; during a multi-hex travel turn those clock jumps can outrun the darkness animation, leaving
+// the canvas dark with STALE vision (the scene goes black except the token + weather) until something else refreshes it.
+// We force the recompute after the clock settles — fixes "scene stays black until I camp / move the clock".
+let _cwfVisionTimer = null;
+function cwfRefreshVision() {
+    try { canvas?.perception?.update?.({ initializeVision: true, initializeLighting: true, refreshLighting: true, refreshVision: true }); }
+    catch (e) { warn("vision refresh failed", e); }
+}
+function cwfRefreshVisionSoon() {   // coalesce a burst of clock changes (per-hex travel) into a single refresh
+    try { if (_cwfVisionTimer) clearTimeout(_cwfVisionTimer); } catch (e) {}
+    _cwfVisionTimer = setTimeout(() => { _cwfVisionTimer = null; cwfRefreshVision(); }, 450);
+}
 
 const Cinematic = (() => {
     const TONE = {
@@ -1521,6 +1534,7 @@ async function cwfFinishTravel() {
     t.done = true;
     await cwfTrekRefresh();
     WayfarerPanel.renderExternal(); BiomeBadge.update();
+    cwfRefreshVision();   // travel ended (maybe at dusk/night) → recompute vision now so the map never stays black
 }
 
 // ---- INTERACTIVE CAMP CARD — set the danger, pick the watch, resolve the night, all
@@ -3772,7 +3786,7 @@ Hooks.on("canvasReady", () => { Canvasry.invalidateTileIndex(); Music.reset(); M
 for (const h of ["createTile", "updateTile", "deleteTile", "createDrawing", "updateDrawing", "deleteDrawing"])
     Hooks.on(h, () => { try { Canvasry.invalidateTileIndex(); if (Travel.plotting) Travel.refresh?.(); } catch { /* noop */ } });
 // Mini Calendar updates weather as in-game time passes — re-read it.
-Hooks.on("updateWorldTime", () => { if (!cwfBusy) MiniCal.refresh(); });
+Hooks.on("updateWorldTime", () => { if (!cwfBusy) MiniCal.refresh(); cwfRefreshVisionSoon(); });
 // D&D Beyond rolls (via ddb-roll-cards v4.78+) auto-fill the claimed role slot.
 Hooks.on("ddb-roll-cards.roll", (payload) => { try { Turn.ingestRoll(payload); } catch (e) { warn("ddb roll ingest failed", e); } });
 // Work WITH the native dnd5e rest: when Wayfarer has flagged a member (long watch, or
