@@ -1125,7 +1125,10 @@
       // createCombatant dedup hook (onCombatantCreated), which keeps the one that has the roll.
       const add = list.filter(t => !have.has(t.id)).map(t => ({ tokenId: t.id, sceneId: scene.id }));
       if (add.length) await combat.createEmbeddedDocuments("Combatant", add);
-      try { await combat.activate?.(); } catch { /* noop */ }
+      // Only make it the ACTIVE combat when we're actually viewing its scene. Activating a combat for a
+      // background-staged (not-yet-entered) scene makes the dnd5e/carousel tracker render against an undefined
+      // viewed-combat and throw "'turn' in undefined" — harmless but noisy. enterEncounter() activates it on arrival.
+      if (canvas?.scene?.id === scene.id) { try { await combat.activate?.(); } catch { /* noop */ } }
       try { await combat.rollNPC?.(); } catch (e) { warn("rollNPC failed", e); }   // foe initiative; PCs roll their own
       // The "Roll for initiative!" call is fired as a CINEMATIC on entry (revealEncounter), not a chat line.
       return combat;
@@ -1340,6 +1343,9 @@
     const scene = game.scenes?.get(sceneId);
     if (!scene) { ui.notifications?.warn("Encounter Stage: that staged scene is gone."); return; }
     try { await scene.activate(); } catch (e) { warn("enter (activate) failed", e); }
+    // Now that its scene is the viewed one, make the staged combat active (deferred from build time so the
+    // tracker never renders a combat for a scene we aren't looking at).
+    try { const cb = (game.combats?.contents || []).find(c => c.scene?.id === scene.id); if (cb && !cb.active) await cb.activate(); } catch (e) { warn("enter (combat activate) failed", e); }
     revealEncounter(scene.getFlag?.("cavril-wayfarer", "encounterBiome") || "");
   }
 
