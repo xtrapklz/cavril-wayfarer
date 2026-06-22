@@ -2911,13 +2911,20 @@ const Turn = (() => {
     }
     async function roll(roleKey) {
         const s = roles[roleKey];
-        if (!s.actorId) return;
+        if (!s.actorId || s._rolling) return;   // re-entrancy guard: a second trigger before the first resolves is a no-op
         const actor = game.actors.get(s.actorId);
         if (!actor?.rollSkill) { ui.notifications?.warn("That character can't roll skills."); return; }
         const rs = rollState(roleKey);
+        const major = parseInt(String(game.system?.version ?? "4"), 10) || 4;
+        s._rolling = true;
         let result = null;
-        try { result = await actor.rollSkill({ skill: s.skillId, advantage: rs.adv, disadvantage: rs.dis }, { configure: false }); }
-        catch { try { result = await actor.rollSkill(s.skillId, { advantage: rs.adv, disadvantage: rs.dis, fastForward: true }); } catch (e) { warn("rollSkill failed", e); } }
+        try {
+            // Pick ONE signature per dnd5e version. The previous try-new / catch-old pattern DOUBLE-ROLLED when the 5.x
+            // call rolled the dice and THEN threw — the catch re-rolled with the old signature (the GM-view "double roll").
+            if (major >= 4) result = await actor.rollSkill({ skill: s.skillId, advantage: rs.adv, disadvantage: rs.dis }, { configure: false });
+            else result = await actor.rollSkill(s.skillId, { advantage: rs.adv, disadvantage: rs.dis, fastForward: true });
+        } catch (e) { warn("rollSkill failed", e); }
+        finally { s._rolling = false; }
         const rr = Array.isArray(result) ? result[0] : result;
         if (rr) { s.total = rr.total ?? null; s.nat = natOf(rr); }
         WayfarerPanel.render();
