@@ -60,6 +60,9 @@
     playCombatMusic: true,         // start the dominant-foe-type combat theme when COMBAT begins
     startCombat: false,            // GM begins combat (then ddb-roll-cards automates)
     hideGrid: true,                // staged maps: hide Foundry's grid overlay (CZEPEKU art has its own)
+    gridType: 4,                   // grid for staged (and, with the hook below, all new) scenes: 4 = Hexagonal Columns (Odd); 1 = Square; 0 = Gridless
+    hideFoes: true,                // spawn foe tokens HIDDEN (GM reveals them) so players don't see the ambush before it's sprung
+    defaultNewSceneGrid: true,     // also default ANY manually-created new scene to gridType via a preCreateScene hook
     lightColoration: 10,           // force every authored light to Foundry "Natural Light" technique (10); null = leave as-authored
     excludeVariantWords: ["rain", "storm", "downpour"], // never instantiate these variants — CZEPEKU's top-down rain clashes with our weather system
     naturalizeMaps: true,      // combat path: prefer a map's "Natural"/"Empty" variant — strips the unique structures → generic biome terrain
@@ -258,7 +261,8 @@
     // CZEPEKU bakes a coloration technique that reads badly; force "Natural Light" (10) on every light.
     if (CFG.lightColoration != null) for (const l of (sd.lights || [])) { l.config = l.config || {}; l.config.coloration = CFG.lightColoration; }
     sd.active = false; sd.navigation = false; sd.tokens = [];
-    if (CFG.hideGrid ?? true) sd.grid = { ...(sd.grid || {}), alpha: 0 };   // CZEPEKU art has a baked grid — hide Foundry's overlay
+    sd.grid = { ...(sd.grid || {}), type: CFG.gridType };                   // force our preferred grid style on the staged map
+    if (CFG.hideGrid ?? true) sd.grid.alpha = 0;                            // CZEPEKU art has a baked grid — hide Foundry's overlay
     const scene = await Scene.create(sd);
     if (!scene) throw new Error("Scene.create returned null");
     try { const th = await scene.createThumbnail(); const td = typeof th === "string" ? th : th?.thumb; if (td) await scene.update({ thumb: td }); } catch (e) {}
@@ -288,7 +292,7 @@
     const sd = {
       name: `${item.name} — ${variant.name}`.trim(),
       width: w, height: h, padding: 0, navigation: false, active: false,
-      grid: { size: g, alpha: (CFG.hideGrid ?? true) ? 0 : 1 }, tokenVision: false,
+      grid: { size: g, type: CFG.gridType, alpha: (CFG.hideGrid ?? true) ? 0 : 1 }, tokenVision: false,
       flags: { "cavril-wayfarer": { esFallback: true, esMapId: id } },
     };
     // V14 stores the background under levels[]; older cores use Scene#background.
@@ -1047,7 +1051,7 @@
       try {
         const proto = (a.prototypeToken?.toObject?.() ?? foundry.utils.deepClone(a.prototypeToken ?? {})) || {};
         delete proto._id;
-        proto.x = x; proto.y = y; proto.actorId = a.id; proto.hidden = false;
+        proto.x = x; proto.y = y; proto.actorId = a.id; proto.hidden = faceTarget ? !!CFG.hideFoes : false;   // foes (faceTarget = party muster) spawn hidden for the GM to reveal; party stays visible
         if (!proto.name) proto.name = a.name;
         if (faceTarget) {
           // Face from the token's CENTRE (x,y is the top-left corner). Clear lockRotation so it shows.
@@ -1378,6 +1382,9 @@
     reg("esImageFallback",    { name: "  · Image-only fallback", hint: "When a map has no pre-authored scene (~5%), still stage it as a wall-less image scene.", scope: "world", config: true, type: Boolean, default: true });
     reg("esActivateScene",    { name: "  · Switch to staged scene", hint: "Activate the new battlemap (vs. just creating it in the sidebar).", scope: "world", config: true, type: Boolean, default: true });
     reg("esHideGrid",         { name: "  · Hide grid on staged maps", hint: "Hide Foundry's grid overlay on imported battlemaps (CZEPEKU art already has its own grid). Tokens still snap.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esGridType",         { name: "  · Grid style for new scenes", hint: "Grid type forced on staged battlemaps (and, with the toggle below, every new scene).", scope: "world", config: true, type: Number, default: 4, choices: { 0: "Gridless", 1: "Square", 2: "Hex Rows (Odd)", 3: "Hex Rows (Even)", 4: "Hex Columns (Odd)", 5: "Hex Columns (Even)" } });
+    reg("esDefaultNewSceneGrid", { name: "  · Apply that grid to ALL new scenes", hint: "Default any newly-created scene (not just staged ones) to the grid above, changing Foundry's square default. Only touches scenes that start Square; gridless/hex scenes are left alone.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esHideFoes",         { name: "  · Spawn foes hidden", hint: "Drop foe tokens HIDDEN so players don't see the ambush before you spring it — reveal them with the Token HUD eye (or select them and toggle visibility).", scope: "world", config: true, type: Boolean, default: true });
     reg("esAutoEnter",        { name: "  · Enter scene automatically", hint: "OFF (recommended): stage the encounter in the background and show an 'Enter encounter' button so you move there when ready. ON: jump to the battlemap immediately.", scope: "world", config: true, type: Boolean, default: false });
     reg("esUseBiomeIndex",    { name: "  · Use curated biome map pools", hint: "When a biome index has been built (run CavrilEncounterStage.buildBiomeIndex() once after connecting CZEPEKU), pull combat maps from the curated per-biome generic pools. Falls back to live scoring if none is built.", scope: "world", config: true, type: Boolean, default: true });
     reg("esBiomeIndex",       { scope: "world", config: false, type: Object, default: {} });   // the built per-biome classification {builtAt,count,maps:[{id,name,biome,generic,natVar}]}
@@ -1392,6 +1399,9 @@
       CFG.addToCombat        = game.settings.get(MOD, "esAddToCombat");
       CFG.encounterTables    = game.settings.get(MOD, "esEncounterTables");
       CFG.documentEncounters = game.settings.get(MOD, "esDocumentEncounters");
+      CFG.gridType            = Number(game.settings.get(MOD, "esGridType")) || 4;
+      CFG.hideFoes            = game.settings.get(MOD, "esHideFoes");
+      CFG.defaultNewSceneGrid = game.settings.get(MOD, "esDefaultNewSceneGrid");
       try { LORE_ROSTER = JSON.parse(game.settings.get(MOD, "esLoreRostersJSON") || "{}") || {}; }
       catch (e) { warn("esLoreRostersJSON invalid — ignoring", e); LORE_ROSTER = {}; }
       CFG.playCombatMusic    = game.settings.get(MOD, "esCombatMusic");
@@ -1492,7 +1502,7 @@
       log(`catalog has ${cat.allTags.size} tags. Missing tags above are candidates to remap.`);
       return rows;
     },
-    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("updateCombatant", hookIds.combatant); Hooks.off("deleteCombat", hookIds.cEnd); _returnBtn?.remove(); _returnBtn = null; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
+    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("updateCombatant", hookIds.combatant); Hooks.off("deleteCombat", hookIds.cEnd); Hooks.off("preCreateScene", hookIds.preScene); _returnBtn?.remove(); _returnBtn = null; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
   });
 
   // ===== INSTALL ===========================================================
@@ -1506,6 +1516,9 @@
     hookIds.cStart    = Hooks.on("combatStart", onCombatStart);          // combat music starts when COMBAT begins
     hookIds.combatant = Hooks.on("updateCombatant", onCombatantRolled); // dedup duplicate PC combatants on the roll
     hookIds.cEnd      = Hooks.on("deleteCombat", onCombatEnd);          // encounter ends → post the Return-to-overworld card
+    hookIds.preScene  = Hooks.on("preCreateScene", (scene, data) => {   // default new scenes to the configured grid (Foundry's Square default → our grid)
+      try { if (CFG.defaultNewSceneGrid && (data?.grid?.type ?? scene.grid?.type) === 1 && scene.grid?.type !== CFG.gridType) scene.updateSource({ "grid.type": CFG.gridType }); } catch (e) {}
+    });
     globalThis.CavrilEncounterStage = buildApi();
     // Formalize the cross-module contract: Cavril: Cities reaches getCatalog/stageMapByKey via
     // game.modules.get("cavril-wayfarer").api.encounterStage (discoverable) alongside the legacy global.
