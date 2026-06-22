@@ -1022,7 +1022,12 @@
   function faceAngle(px, py, tx, ty) {
     const dx = tx - px, dy = ty - py;
     if (!dx && !dy) return 0;
-    return (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+    // +180: dnd5e / most top-down VTT monster tokens are drawn facing DOWN (toward the bottom of the image) at
+    // rotation 0. Pointing the token's TOP at the target therefore makes the creature face AWAY — the +180 turns
+    // it around so the art actually LOOKS at (tx,ty). (Toggle with the "Foes face the party" setting if a token
+    // pack faces up instead.)
+    const flip = (CFG.faceFlip ?? true) ? 180 : 0;
+    return (Math.atan2(dx, -dy) * 180 / Math.PI + flip + 360) % 360;
   }
   // Build token data straight from each actor's PROTOTYPE token (robust across V14 — getTokenDocument
   // had quirks that were silently dropping the party). Strip the id, set position + actorId. When a
@@ -1341,6 +1346,7 @@
     reg("esAutoStageOnCombat",{ name: "  · Stage on combat start", hint: "When a combat is created, build + activate the map the last encounter staged.", scope: "world", config: true, type: Boolean, default: true });
     reg("esDropParty",        { name: "  · Place the party", hint: "Drop the party's PC tokens in the centre of the staged map, scattered within ~10 ft.", scope: "world", config: true, type: Boolean, default: true });
     reg("esDropMonsters",     { name: "  · Drop foes", hint: "Place a CR-scaled, biome-appropriate group of monsters in strategic clusters around the party.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esFaceFlip",         { name: "  · Foes face the party", hint: "Rotate spawned foes to look at the party. ON (default) suits dnd5e / top-down tokens drawn facing DOWN; turn OFF if your monster art faces UP and foes end up looking the wrong way.", scope: "world", config: true, type: Boolean, default: true });
     reg("esEncounterTables",  { name: "  · Biome encounter rosters", hint: "Build foes from curated per-biome rosters + encounter compositions (pack / leader / ambush / solo), not just any creature in the CR band. Off = the older type-based fill.", scope: "world", config: true, type: Boolean, default: true });
     reg("esLoreRostersJSON",  { name: "  · Primus lore rosters (JSON)", hint: 'Add your own creatures per biome, merged over the SRD rosters. JSON: {"jungle":{"pool":["My Beast"],"apex":["My Warlord"]}}. Names must exist in the monster compendium.', scope: "world", config: true, type: String, default: "" });
     reg("esAddToCombat",      { name: "  · Build the encounter", hint: "Add the party + foes to the combat tracker, roll NPC initiative, and call for initiative. You still press Begin Combat yourself.", scope: "world", config: true, type: Boolean, default: true });
@@ -1366,6 +1372,7 @@
       CFG.autoStageOnCombat  = game.settings.get(MOD, "esAutoStageOnCombat");
       CFG.dropParty          = game.settings.get(MOD, "esDropParty");
       CFG.dropMonsters       = game.settings.get(MOD, "esDropMonsters");
+      CFG.faceFlip           = game.settings.get(MOD, "esFaceFlip");
       CFG.addToCombat        = game.settings.get(MOD, "esAddToCombat");
       CFG.encounterTables    = game.settings.get(MOD, "esEncounterTables");
       CFG.documentEncounters = game.settings.get(MOD, "esDocumentEncounters");
