@@ -317,8 +317,8 @@ const Domain = (() => {
     function spaces(state, cls) {
         const pace = PACE[state.pace] || PACE.normal;
         let n = pace.spaces;
-        const infra = !!(cls?.infrastructure || (cls?.river && state.boat));
-        if (infra) n *= 2;                       // road w/ cart or river w/ boat doubles output
+        const infra = !!(cls?.infrastructure || ((cls?.river || cls?.terrainKey === "water") && state.boat));
+        if (infra) n *= 2;                       // road w/ cart, or river/open-water w/ boat, doubles output
         if (state.shortRest) n = Math.max(0, n - 1);
         return { n, infra, pace };
     }
@@ -1992,7 +1992,7 @@ const Music = (() => {
     // footsteps. Paths are GM-configured (a file, or a soundboard folder ending in "/").
     async function travelSfx(cls, boat) {
         if (!game.user.isGM || !game.settings.get(MOD, "travelSfx") || !globalThis.Maestro) return;
-        const key = (boat && cls?.river) ? "sfxBoat" : (boat && cls?.infrastructure) ? "sfxCart" : "sfxFoot";
+        const key = (boat && (cls?.river || cls?.terrainKey === "water")) ? "sfxBoat" : (boat && cls?.infrastructure) ? "sfxCart" : "sfxFoot";
         const path = String(game.settings.get(MOD, key) || "").trim();
         if (!path) return;
         try {
@@ -2339,7 +2339,8 @@ const Hex = (() => {
         const f = featuresAt(off);
         const roadConn = f.road && (fromOff ? featuresAt(fromOff).road : true);
         const riverConn = f.river && (fromOff ? riverConnects(fromOff, off) : true);
-        const m = (roadConn || riverConn) ? (boat ? 3 : 2) : 1;
+        const waterHex = cls?.terrainKey === "water";   // an ocean/lake/sea hex — boat-traversable like a river
+        const m = (roadConn || riverConn || (waterHex && boat)) ? (boat ? 3 : 2) : 1;
         return (1 + terrainPenalty(cls)) / m;
     }
 
