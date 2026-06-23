@@ -4302,7 +4302,7 @@ Hooks.once("ready", () => {
                 [MOD]:  { tgtAutoTarget: true, esAutoEnter: true, esAddToCombat: true, esAutoStageOnCombat: true }
             },
             manual: {
-                [CORE]: { fullAuto: false, autoConfirmHits: false, autoConfirmDamage: false, featureMasterySaveAuto: false, featureEffectsAuto: false, featureLegResAuto: false, advanceOverlay: true },
+                [CORE]: { fullAuto: false, autoConfirmHits: false, autoConfirmDamage: false, autoRollDamage: false, featureMasterySaveAuto: false, featureEffectsAuto: false, featureLegResAuto: false, advanceOverlay: true },
                 [MOD]:  { tgtAutoTarget: false, esAutoEnter: false, esAddToCombat: true, esAutoStageOnCombat: true }
             }
         };

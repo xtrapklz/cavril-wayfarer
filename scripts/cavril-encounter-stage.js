@@ -1647,7 +1647,8 @@
     let recT = null;
     function recenterSoon(doc) {
       if (!game.user?.isGM || !game.settings.get(MOD, "tgtRecenter")) return;
-      if (!doc?.actor?.hasPlayerOwner) return;   // PLAYER tokens only — never auto-pan the camera on a monster's move
+      // Follows ANY recently-moved token (players AND monsters) so the GM display stays on the action. GM-side only
+      // (canvas.animatePan on this client) — it never moves the players' own views, so monster moves don't yank them.
       const id = doc?.id; clearTimeout(recT);
       const d = Number(game.settings.get(MOD, "tgtRecenterDelay")); const delay = (Number.isFinite(d) ? Math.max(0, d) : 1) * 1000;
       recT = setTimeout(() => {
@@ -1882,7 +1883,7 @@
     reg("tgtHelper",          { name: "Targeting helper — suggest targets in combat", hint: "During combat, show a chip bar of the tokens the selected/active token can SEE, ranked: advantage (flanking or an advantage-granting condition) on an enemy → nearest enemy → nearest neutral → nearest ally. Click a chip to target / untarget. GM-only.", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtAutoTarget",      { name: "  · Auto-target the best enemy", hint: "Automatically target the best enemy at the start of EVERY token's turn (players included) and after it moves with no target. Only ever auto-targets an enemy — neutrals, allies and self stay click-only. OFF = the suggestion is only highlighted; you click a chip to target.", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtAutoDelay",       { name: "  · Auto-target delay (seconds)", hint: "How long after a token moves or starts its turn before the best enemy is auto-targeted. The target chips still update instantly — only the auto-pick waits. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 5, step: 0.5 } });
-    reg("tgtRecenter",        { name: "  · Re-centre camera on player moves", hint: "During combat, pan the GM's camera back onto a PLAYER token after it finishes moving, so the acting hero stays framed. Never pans on monster moves.", scope: "world", config: true, type: Boolean, default: true });
+    reg("tgtRecenter",        { name: "  · Re-centre the GM camera on moves", hint: "During combat, pan the GM's camera onto whatever token just moved — player OR monster — so your display stays on the action. GM-side only: it pans YOUR view, never the players' (a monster's move never yanks their camera).", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtRecenterDelay",   { name: "  · Re-centre delay (seconds)", hint: "How long after a player token settles before the camera pans onto it. 0 = immediate. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 10, step: 0.5 } });
     reg("tgtBarPos",          { scope: "client", config: false, type: Object, default: null });   // GM-dragged bar position {left,top}px
     reg("advBarPos",          { scope: "client", config: false, type: Object, default: null });   // GM-dragged Advance button position {left,top}px
