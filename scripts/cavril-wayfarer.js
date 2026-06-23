@@ -1344,18 +1344,18 @@ async function cwfHexEvent(cls, { scoutGood = false } = {}) {
     if (scoutGood) x = Math.max(0, x - 1);
     let roll = scale; try { roll = (await new Roll(`1d${scale}`).evaluate()).total; } catch { roll = Math.ceil(Math.random() * scale); }
     // Common case — a mundane flavor beat; the party travels on.
-    if (x <= 0 || roll > x) return { halt: false, line: await Tables.drawFlavor() };
+    if (x <= 0 || roll > x) return { halt: false, line: await Tables.drawFlavor(cls?.biome) };
     // A real event. Narrative is most common (continue); combat scales with danger;
     // puzzle and site are rare and halt the day.
     const kind = cwfWeightedPick({ narrative: 5, combat: 3 + x, puzzle: 2, site: 2, trade: cls?.infrastructure ? 6 : 2 });   // site bumped for more hook-discoveries; trade weighted up on roads (infrastructure)
-    if (kind === "narrative" || kind === "trade") return { halt: false, line: await Tables.drawEvent(kind) };   // both are non-halting opportunity beats the GM can choose to run
+    if (kind === "narrative" || kind === "trade") return { halt: false, line: await Tables.drawEvent(kind, cls?.biome) };   // both are non-halting opportunity beats the GM can choose to run
     const hours = Math.max(0, Number(game.settings.get(MOD, "encounterHours")) || 1);
     const meta = ({
         combat: { icon: "fa-dragon", label: "Encounter!" },
         puzzle: { icon: "fa-puzzle-piece", label: "An Obstacle" },
         site:   { icon: "fa-dungeon", label: "A Discovery" }
     })[kind];
-    const text = kind === "combat" ? await cwfEncounterText(cls, { when: "day", surprised: !scoutGood }) : await Tables.drawEvent(kind);
+    const text = kind === "combat" ? await cwfEncounterText(cls, { when: "day", surprised: !scoutGood }) : await Tables.drawEvent(kind, cls?.biome);
     const tag = (kind === "combat" && !scoutGood) ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
     return { halt: true, hours, kind, icon: meta.icon, label: meta.label, tag, line: text, cinematic: { icon: meta.icon, title: meta.label, subtitle: biome, tone: "encounter" } };
 }
@@ -2871,6 +2871,71 @@ const Tables = (() => {
             "A bounty-broker collecting proof of slain monsters — and issuing fresh contracts."
         ]
     };
+    // ---- per-biome THEMED content (in-code) — pickBiome mixes these in ≈75% over the generic editable tables, so each
+    // biome's flavor / discoveries / roadside merchants feel distinct. Keys match cls.biome (Danger.DEF_BIOME). Biomes
+    // not listed (swamp, unknown) just use the generic pool. Narrative + puzzle stay generic (universal).
+    const BIOME_THEMES = {
+        temperate: {
+            flavor: ["Bluebells carpet a glade, then give way to churned, hoof-torn earth.", "A coppiced wood cut in rotation — someone works this land, unseen.", "A weir across the stream, fish-traps full and untended.", "Crows mob something in the canopy, shriek, then scatter all at once.", "A hedgerow grown wild over a tumbled boundary wall."],
+            site: ["A mill, its wheel stilled, the grain-loft stocked and the miller gone.", "A hollow oak with a door set into its bole, the hinges freshly oiled.", "A hunting-lodge shuttered out of season, the larder still hung.", "A holy well, coins in the silt, a path worn to it from nowhere."],
+            trade: ["A drover resting his herd, glad to sell milk, cheese, and gossip from three valleys over.", "A charcoal-burner with a cart, trading fuel and woodland lore for worked metal.", "A circuit-riding tinker — pots mended, blades whetted, news carried."]
+        },
+        boreal: {
+            flavor: ["Spruce closes overhead; the light goes green and the sound goes flat.", "Frost-rimed deadfall, and beneath it a den-mouth breathing warm air.", "A trapline strung through the trees, every snare sprung and empty.", "Antler-rubs scar the saplings shoulder-high — something big passed in rut.", "Woodsmoke and pine-tar on the air; a logging camp, or what's left of one."],
+            site: ["A trapper's cabin, pelts on the stretchers, the stew still warm.", "A spirit-tree hung with offerings of bone and bright cloth.", "A frozen bog with shapes suspended in the black ice below.", "A watch-cairn on a ridge, its sightline cut toward a pass to the north."],
+            trade: ["A fur-trapper with a laden sledge, buying salt, steel, and strong drink.", "A woodsman-guide who'll sell a safe route — and warn you off an unsafe one.", "A resin-gatherer trading pitch and tinder, and amber with things caught inside."]
+        },
+        jungle: {
+            flavor: ["The canopy drips though no rain falls; everything here is breathing.", "Bioluminescent fungus climbs a strangled tree in veins of cold blue.", "A column of ants rivers across the trail, carrying leaves — and a finger-bone.", "Bird-calls that are almost words, answered from somewhere ahead.", "Vines part on a carved stone face, then swallow it again before you're sure."],
+            site: ["A stepped temple breaches the green, its mouth exhaling cool, old air.", "A canopy-walk of rope and bone sways toward lights in the high leaves.", "A poacher's curing-rack hung with hides you don't recognise.", "A sinkhole pool, the water bright and still, something pale circling below."],
+            trade: ["A spore-forager in a beaked mask, buying glands and ichor, selling antitoxins.", "A fey-touched pedlar dealing in riddles, charms, and prices that are too fair.", "A plume-hunter trading feathers and dyes for steel and good rope."]
+        },
+        desert: {
+            flavor: ["Heat-shimmer lifts a city to the horizon, then lets it fall.", "Bones bleach in a dry wash, arranged by the wind into a near-circle.", "Tracks cross yours and vanish where the sand begins to whisper.", "A lone pillar of worked stone, half-buried, leaning at the sky.", "The wind drops, and the silence has a held-breath quality."],
+            site: ["A buried doorway the last storm uncovered, its glyphs still sharp.", "A dry cistern, stairs spiralling down past old high-water marks.", "A caravan half-swallowed by a dune, cargo and crew both gone.", "An oasis ringed with shrines — and with the bones of those who wouldn't share."],
+            trade: ["A water-seller with a roped train of skins, his prices climbing with the sun.", "A nomad trader dealing in salt, glass, and routes only they remember.", "A relic-grubber selling sand-scoured trinkets and a map he swears is real."]
+        },
+        savanna: {
+            flavor: ["Grass to the horizon, moving in a wind you can't feel down here.", "A lone thorn-tree, and under it the patient shapes of things waiting out the heat.", "Vultures spiral down to a kill a mile off, then think better of it.", "A drover's fire gone cold, the cattle-tracks leading off, the herd nowhere in sight.", "The grass lies flattened in a wide path — something large grazes through here."],
+            site: ["A kraal of thornwood, its gate lashed shut from the inside, no one answering.", "A burial-mound studded with cattle-skulls, the newest still wet.", "A baobab hollowed into a shrine, its trunk scarred with claw-marks.", "A staked hunting-blind over a waterhole churned to mud."],
+            trade: ["A cattle-drover open to trade for salt and steel, full of road-news.", "A bead-and-hide trader whose wares carry a charm against the grass-cats.", "A bone-singer who buys the trophies of great beasts and sells their courage."]
+        },
+        frozen: {
+            flavor: ["The cold has a sound here — a tight, glassy creak underfoot.", "Aurora bleeds green across the snow; your shadow has three edges.", "A crevasse exhales mist, and the mist smells faintly of rot.", "Tracks of something that walks on two legs — too far apart, too deep.", "A wall of blue ice with shapes frozen mid-fall inside it."],
+            site: ["A ship's prow juts from a glacier, its rigging hung with frost like sails.", "An ice-cave glittering with crystal, a path melted into it from within.", "A cairn of frost-blackened stones over something that didn't stay buried.", "A hot-spring shrine steaming in the white, offerings left at the rim."],
+            trade: ["A fur-clad trader on a dog-sledge, buying fuel and fire, selling warmth and warning.", "An ice-cutter trading pure meltwater, who knows which crevasses move.", "A relic-seeker thawing finds from the glacier, selling them before they wake."]
+        },
+        tundra: {
+            flavor: ["Flat white to every horizon; distance lies to you out here.", "Lichen-crusted stones march in a line too straight to be chance.", "A herd crosses far off, and behind them, pacing, a low grey shape.", "Fog rolls in waist-high, and the ground beneath it is not where you left it.", "The bones of a great beast picked clean, its ribs arched like a doorway."],
+            site: ["A standing-stone circle half-sunk in the permafrost, humming faintly.", "A turf-roofed long-house, fire-pit cold, the doors barred from outside.", "A heap of antlers piled at a boundary that no map shows.", "A frost-heaved barrow split open, the cold inside older than winter."],
+            trade: ["A reindeer-herder trading hides, horn, and shelter for the night.", "A wind-reader who sells safe crossings and the names of what hunts the fog.", "A scrimshaw-trader buying bone and tusk, selling carved wards."]
+        },
+        volcanic: {
+            flavor: ["The ground ticks with heat; the air tastes of struck flint.", "A river of fire crusts black, then splits red, far below the path.", "Ash falls like grey snow and settles on older, deeper layers.", "Steam screams from a fissure, and for a moment the scream has words.", "Obsidian shards underfoot, knapped — someone harvests blades here."],
+            site: ["A forge-shrine built into a vent, its anvils cold, the fire gone out wrong.", "A basalt stair descending toward a glow that pulses like breathing.", "A cooled lava-tube, smooth as a throat, leading down and in.", "A ring of slag and bone where something was bound, or born."],
+            trade: ["An ash-walker in scorched leathers, buying fire-glands, selling obsidian and salt.", "A smith-errant who'll forge in the vent-heat for rare ore or a rarer tale.", "A glass-trader dealing in volcanic glass, sulphur, and very bad directions."]
+        },
+        wasteland: {
+            flavor: ["Nothing grows; the wind moves dust through the ribs of dead things.", "A road runs straight to nowhere, paved by hands long gone.", "Rusted hulks of some old battle lean in the haze, long since picked over.", "A scatter of teeth and buttons — a camp, or a meal, hard to say.", "The silence is total until something distant drags itself across stone."],
+            site: ["A bunkered ruin, blast-doors ajar, the dark inside untouched by the rot.", "A tilted obelisk listing names no living tongue still speaks.", "A scavenger's nest of salvage abandoned mid-sort, the tools still warm.", "A dry reservoir cracked into a maze, something denning at its centre."],
+            trade: ["A scrap-picker with a groaning cart, buying anything metal, selling anything found.", "A water-witch trading clean drink for salvage and the locations of the dead.", "A relic-fence who asks no questions and pays in bullets, blades, or bread."]
+        },
+        tainted: {
+            flavor: ["The light is wrong here — a degree too red — and your shadow lags a beat.", "Carrion-flowers bloom from a thing that was recently upright.", "The flies move in a pattern, and the pattern is watching you.", "Blood-rust streaks the stones, dry for years, somehow still wet at the edges.", "A sound like a distant choir, or distant screaming, depending on the wind."],
+            site: ["A defiled chapel, the altar turned, fresh offerings on the inverted stone.", "A warded pit, every ward broken outward, not in.", "A grove where the trees grew around bodies and kept on growing.", "A well that doesn't echo, breathing a cold that gets inside your teeth."],
+            trade: ["A plague-doctor pedlar — cures and curses both for sale, his eyes never quite still.", "A relic-hunter buying tainted trophies no sane hand will touch, paying in gold and warnings.", "A hooded dealer in wards and holy water who won't step off the road."]
+        },
+        void: {
+            flavor: ["The stars are in the wrong places, and one of them is getting closer.", "Distance and direction come loose; the path remembers where it was.", "Your reflection in a still pool blinks a half-second late.", "Colours with no names smear the edge of sight and are gone.", "Gravity hesitates — a kicked stone falls up, then reconsiders."],
+            site: ["A door standing alone in the open, light leaking around its frame.", "A stair of floating stones ascending into a sky that is also below.", "A shrine to something unnamed, its idol a hole the eye slides off.", "A field of frozen lightning, and within it a shape mid-stride."],
+            trade: ["A star-pilgrim who trades in dreams, memories, and impossible small kindnesses.", "A between-places pedlar whose wares are never the same twice, the prices stranger still.", "A collector of moments, buying secrets, selling answers to questions you haven't asked."]
+        },
+        water: {
+            flavor: ["Gulls wheel over a tide-line strung with weed and stranger cast-offs.", "The water goes suddenly dark and deep, and very still.", "A bell tolls somewhere offshore, slow, with no boat to swing it.", "Crab-tracks lattice the sand around something half-buried and breathing.", "Phosphorescence lights the shallows green where something just moved through."],
+            site: ["A wreck heeled on the rocks at low tide, hold open, cargo winking in the dark.", "A sea-cave that floods at the turn, a dry shelf above the line marked with tallies.", "A stilt-village over the shallows — ladders up, nets down, no one home.", "A tide-shrine of coral and bone, offerings set for something that comes ashore."],
+            trade: ["A fishmonger-smuggler at a hidden landing, buying news, selling catch and contraband.", "A pearl-diver trading shell and pearl, and the locations of richer, deadlier beds.", "A ferryman who knows the safe crossings and the price of the unsafe ones."]
+        }
+    };
     const TABLE_NAMES = { flavor: "Travel Flavor", narrative: "Travel — Narrative", puzzle: "Travel — Puzzle", site: "Travel — Site", trade: "Travel — Trade" };
     async function ensureGeneric(key, entries) {
         const cached = ids()?.travel?.[key];
@@ -2890,8 +2955,16 @@ const Tables = (() => {
         try { const t = await ensureGeneric(key, entries); if (!t) return fb; const res = await t.draw({ displayChat: false }); const r = res?.results?.[0]; return (r?.description ?? r?.name ?? r?.text) || fb; }
         catch (e) { warn("generic draw failed", e); return fb; }
     }
-    const drawFlavor = () => drawGeneric("flavor", FLAVOR_ENTRIES);
-    const drawEvent = (kind) => drawGeneric(kind, EVENT_SEEDS[kind] || EVENT_SEEDS.narrative);
+    // Biome-aware draw: ≈75% of the time return one of the biome's THEMED lines (when authored); otherwise fall back to
+    // the generic, GM-editable RollTable. So each biome feels distinct while the editable base still fills gaps.
+    const rnd = (arr) => arr[Math.floor(Math.random() * arr.length)];
+    function pickBiome(biomeKey, kind, generic) {
+        const themed = BIOME_THEMES[biomeKey]?.[kind];
+        if (themed && themed.length && Math.random() < 0.75) return rnd(themed);
+        return drawGeneric(kind, generic);
+    }
+    const drawFlavor = (biomeKey) => pickBiome(biomeKey, "flavor", FLAVOR_ENTRIES);
+    const drawEvent = (kind, biomeKey) => pickBiome(biomeKey, kind, EVENT_SEEDS[kind] || EVENT_SEEDS.narrative);
     // Rebuild the travel flavor/event/trade RollTables from the CURRENT seeds — applies the enriched content to an
     // existing world (the tables are created once and cached by id, so new seeds don't appear until rebuilt). Overwrites GM edits to those tables.
     async function reseed() {
