@@ -841,6 +841,104 @@
     water: { pool: ["Reef Shark", "Giant Crab", "Swarm of Quippers", "Constrictor Snake"], lurker: ["Hunter Shark", "Giant Octopus"], apex: ["Giant Shark", "Water Elemental", "Giant Crocodile"] },
     road:  { pool: ["Bandit", "Scout", "Thug"], lurker: ["Spy"], apex: ["Bandit Captain", "Veteran"] },
   };
+  // APL-BANDED rosters — themed creatures curated per average-party-level band so a level-3 fight and a level-15 fight in
+  // the SAME biome pull appropriately different (and flavourful) foes. Bands: t1 = APL 1-4, t2 = 5-10, t3 = 11-16, t4 = 17-20.
+  // Used by mergedRoster when present; falls back to the flat BIOME_ROSTER above. Over-listing is safe (unmatched names skip).
+  const bandFor = (level) => { const L = Math.max(1, level | 0); return L <= 4 ? "t1" : L <= 10 ? "t2" : L <= 16 ? "t3" : "t4"; };
+  const BIOME_BANDS = {
+    temperate: {
+      t1: { pool: ["Wolf", "Boar", "Bandit", "Giant Rat", "Kobold", "Guard", "Stirge"], lurker: ["Giant Spider", "Goblin", "Spy", "Giant Wolf Spider"], apex: ["Black Bear", "Dire Wolf", "Brown Bear", "Bandit Captain", "Ogre"] },
+      t2: { pool: ["Scout", "Veteran", "Berserker", "Thug", "Worg", "Giant Boar", "Bugbear"], lurker: ["Werewolf", "Green Hag", "Druid", "Phase Spider"], apex: ["Owlbear", "Troll", "Werebear", "Hill Giant", "Knight", "Mage"] },
+      t3: { pool: ["Veteran", "Berserker", "Knight", "Troll", "Werewolf"], lurker: ["Night Hag", "Wereboar", "Assassin", "Green Hag"], apex: ["Hill Giant", "Stone Giant", "Young Green Dragon", "Treant", "Oni"] },
+      t4: { pool: ["Veteran", "Knight", "Troll", "Stone Giant"], lurker: ["Assassin", "Oni", "Night Hag"], apex: ["Treant", "Stone Giant", "Adult Green Dragon", "Cloud Giant", "Archmage"] }
+    },
+    boreal: {
+      t1: { pool: ["Wolf", "Boar", "Goblin", "Giant Owl", "Kobold", "Stirge"], lurker: ["Giant Spider", "Worg", "Goblin Boss"], apex: ["Black Bear", "Dire Wolf", "Brown Bear", "Ogre"] },
+      t2: { pool: ["Worg", "Berserker", "Giant Elk", "Scout", "Bugbear"], lurker: ["Werewolf", "Winter Wolf", "Green Hag"], apex: ["Owlbear", "Troll", "Werebear", "Hill Giant", "Mammoth"] },
+      t3: { pool: ["Berserker", "Veteran", "Troll", "Winter Wolf"], lurker: ["Werebear", "Wereboar", "Yeti", "Night Hag"], apex: ["Frost Giant", "Hill Giant", "Young White Dragon", "Mammoth", "Treant"] },
+      t4: { pool: ["Veteran", "Troll", "Frost Giant", "Winter Wolf"], lurker: ["Oni", "Night Hag", "Werebear"], apex: ["Frost Giant", "Treant", "Adult White Dragon", "Young White Dragon", "Mammoth"] }
+    },
+    jungle: {
+      t1: { pool: ["Giant Centipede", "Giant Frog", "Flying Snake", "Velociraptor", "Giant Wasp", "Swarm of Insects", "Ape"], lurker: ["Giant Poisonous Snake", "Panther", "Giant Spider"], apex: ["Tiger", "Giant Constrictor Snake", "Allosaurus", "Giant Boar"] },
+      t2: { pool: ["Constrictor Snake", "Velociraptor", "Ape", "Yuan-ti Pureblood", "Giant Poisonous Snake"], lurker: ["Tiger", "Giant Constrictor Snake", "Yuan-ti Malison"], apex: ["Giant Ape", "Giant Crocodile", "Allosaurus", "Triceratops", "Yuan-ti Malison"] },
+      t3: { pool: ["Yuan-ti Malison", "Velociraptor", "Ape", "Allosaurus"], lurker: ["Yuan-ti Malison", "Tiger", "Couatl"], apex: ["Giant Ape", "Tyrannosaurus Rex", "Triceratops", "Young Green Dragon", "Giant Crocodile"] },
+      t4: { pool: ["Yuan-ti Malison", "Allosaurus", "Giant Ape"], lurker: ["Couatl", "Oni"], apex: ["Tyrannosaurus Rex", "Giant Ape", "Adult Green Dragon", "Triceratops"] }
+    },
+    desert: {
+      t1: { pool: ["Jackal", "Giant Lizard", "Hyena", "Vulture", "Bandit", "Cultist", "Kobold", "Scout"], lurker: ["Giant Scorpion", "Spy", "Swarm of Insects"], apex: ["Giant Hyena", "Lion", "Bandit Captain", "Gnoll"] },
+      t2: { pool: ["Gnoll", "Scout", "Veteran", "Cult Fanatic", "Giant Hyena"], lurker: ["Giant Scorpion", "Lamia", "Mummy"], apex: ["Lion", "Lamia", "Mummy", "Gnoll Pack Lord", "Salamander", "Young Brass Dragon"] },
+      t3: { pool: ["Veteran", "Gnoll Pack Lord", "Cult Fanatic", "Salamander"], lurker: ["Lamia", "Mummy", "Medusa", "Assassin"], apex: ["Mummy Lord", "Androsphinx", "Young Brass Dragon", "Salamander", "Gnoll Fang of Yeenoghu"] },
+      t4: { pool: ["Veteran", "Salamander", "Gnoll Fang of Yeenoghu"], lurker: ["Medusa", "Lamia", "Efreeti"], apex: ["Mummy Lord", "Androsphinx", "Adult Brass Dragon", "Efreeti", "Marid"] }
+    },
+    savanna: {
+      t1: { pool: ["Hyena", "Jackal", "Gnoll", "Boar", "Lion", "Vulture", "Scout"], lurker: ["Giant Hyena", "Lion", "Cult Fanatic"], apex: ["Lion", "Giant Hyena", "Rhinoceros", "Gnoll Pack Lord"] },
+      t2: { pool: ["Gnoll", "Lion", "Scout", "Veteran", "Giant Hyena"], lurker: ["Gnoll Pack Lord", "Lion", "Lamia"], apex: ["Rhinoceros", "Elephant", "Gnoll Pack Lord", "Triceratops", "Young Brass Dragon"] },
+      t3: { pool: ["Veteran", "Gnoll Pack Lord", "Elephant"], lurker: ["Gnoll Fang of Yeenoghu", "Lamia", "Lion"], apex: ["Triceratops", "Tyrannosaurus Rex", "Gnoll Fang of Yeenoghu", "Young Brass Dragon"] },
+      t4: { pool: ["Veteran", "Gnoll Fang of Yeenoghu", "Elephant"], lurker: ["Lamia"], apex: ["Tyrannosaurus Rex", "Adult Brass Dragon", "Triceratops"] }
+    },
+    frozen: {
+      t1: { pool: ["Wolf", "Worg", "Giant Goat", "Ice Mephit", "Polar Bear", "Swarm of Ravens"], lurker: ["Winter Wolf", "Will-o'-Wisp"], apex: ["Polar Bear", "Winter Wolf", "Yeti"] },
+      t2: { pool: ["Worg", "Winter Wolf", "Berserker", "Giant Goat"], lurker: ["Yeti", "Winter Wolf", "Will-o'-Wisp"], apex: ["Yeti", "Mammoth", "Frost Giant", "Young White Dragon"] },
+      t3: { pool: ["Winter Wolf", "Berserker", "Veteran", "Yeti"], lurker: ["Abominable Yeti", "Night Hag", "Yeti"], apex: ["Frost Giant", "Young White Dragon", "Abominable Yeti", "Mammoth"] },
+      t4: { pool: ["Veteran", "Frost Giant", "Winter Wolf"], lurker: ["Abominable Yeti", "Oni"], apex: ["Adult White Dragon", "Frost Giant", "Abominable Yeti"] }
+    },
+    tundra: {
+      t1: { pool: ["Wolf", "Worg", "Giant Elk", "Giant Goat"], lurker: ["Winter Wolf", "Saber-Toothed Tiger"], apex: ["Polar Bear", "Winter Wolf", "Saber-Toothed Tiger"] },
+      t2: { pool: ["Worg", "Winter Wolf", "Giant Elk", "Berserker"], lurker: ["Yeti", "Saber-Toothed Tiger", "Winter Wolf"], apex: ["Mammoth", "Yeti", "Frost Giant", "Young White Dragon"] },
+      t3: { pool: ["Winter Wolf", "Veteran", "Mammoth", "Yeti"], lurker: ["Abominable Yeti", "Yeti"], apex: ["Frost Giant", "Mammoth", "Young White Dragon", "Abominable Yeti"] },
+      t4: { pool: ["Veteran", "Frost Giant", "Mammoth"], lurker: ["Abominable Yeti"], apex: ["Adult White Dragon", "Frost Giant", "Abominable Yeti"] }
+    },
+    volcanic: {
+      t1: { pool: ["Magma Mephit", "Fire Snake", "Magmin", "Smoke Mephit", "Kobold"], lurker: ["Hell Hound", "Magmin"], apex: ["Hell Hound", "Salamander", "Azer"] },
+      t2: { pool: ["Magmin", "Azer", "Hell Hound", "Fire Snake"], lurker: ["Salamander", "Fire Elemental"], apex: ["Salamander", "Fire Elemental", "Young Red Dragon", "Fire Giant"] },
+      t3: { pool: ["Azer", "Salamander", "Fire Elemental"], lurker: ["Salamander", "Efreeti"], apex: ["Fire Giant", "Young Red Dragon", "Fire Elemental", "Efreeti"] },
+      t4: { pool: ["Salamander", "Fire Giant", "Azer"], lurker: ["Efreeti"], apex: ["Adult Red Dragon", "Fire Giant", "Efreeti", "Pit Fiend"] }
+    },
+    wasteland: {
+      t1: { pool: ["Jackal", "Giant Vulture", "Zombie", "Skeleton", "Bandit", "Cultist", "Vulture"], lurker: ["Ghoul", "Giant Scorpion", "Spy"], apex: ["Ghast", "Ogre", "Manticore", "Bandit Captain"] },
+      t2: { pool: ["Skeleton", "Zombie", "Ghoul", "Cultist", "Veteran"], lurker: ["Wight", "Ghost", "Cult Fanatic"], apex: ["Wight", "Manticore", "Mummy", "Ogre", "Revenant"] },
+      t3: { pool: ["Veteran", "Wight", "Ghoul", "Ghast"], lurker: ["Wraith", "Ghost", "Revenant"], apex: ["Mummy", "Wraith", "Young Black Dragon", "Revenant"] },
+      t4: { pool: ["Veteran", "Wight", "Wraith"], lurker: ["Wraith", "Death Knight"], apex: ["Adult Black Dragon", "Death Knight", "Lich", "Wraith"] }
+    },
+    tainted: {
+      t1: { pool: ["Zombie", "Skeleton", "Cultist", "Shadow", "Stirge", "Swarm of Insects", "Giant Centipede"], lurker: ["Ghoul", "Specter", "Will-o'-Wisp"], apex: ["Ghast", "Cult Fanatic", "Ogre", "Mimic"] },
+      t2: { pool: ["Ghoul", "Cultist", "Shadow", "Specter", "Veteran"], lurker: ["Wight", "Carrion Crawler", "Otyugh", "Ghost"], apex: ["Ghast", "Wight", "Vampire Spawn", "Flameskull", "Mummy"] },
+      t3: { pool: ["Veteran", "Wight", "Ghast", "Cult Fanatic"], lurker: ["Wraith", "Vampire Spawn", "Gibbering Mouther", "Night Hag"], apex: ["Vampire", "Wraith", "Beholder", "Young Black Dragon", "Mummy Lord"] },
+      t4: { pool: ["Wight", "Vampire Spawn", "Veteran"], lurker: ["Night Hag", "Gibbering Mouther"], apex: ["Vampire", "Beholder", "Lich", "Death Knight"] }
+    },
+    void: {
+      t1: { pool: ["Shadow", "Specter", "Will-o'-Wisp", "Cultist", "Nothic"], lurker: ["Phase Spider", "Specter", "Nothic"], apex: ["Wight", "Flameskull", "Gibbering Mouther"] },
+      t2: { pool: ["Specter", "Shadow", "Nothic", "Cultist"], lurker: ["Phase Spider", "Invisible Stalker", "Will-o'-Wisp"], apex: ["Wraith", "Chuul", "Cloaker", "Gibbering Mouther"] },
+      t3: { pool: ["Invisible Stalker", "Nothic", "Wraith"], lurker: ["Cloaker", "Phase Spider", "Mind Flayer"], apex: ["Beholder", "Mind Flayer", "Wraith", "Chuul"] },
+      t4: { pool: ["Invisible Stalker", "Mind Flayer"], lurker: ["Cloaker", "Mind Flayer"], apex: ["Beholder", "Lich", "Mind Flayer"] }
+    },
+    water: {
+      t1: { pool: ["Reef Shark", "Giant Crab", "Merfolk", "Swarm of Quippers", "Crocodile", "Sahuagin"], lurker: ["Hunter Shark", "Giant Octopus", "Sea Hag"], apex: ["Hunter Shark", "Giant Crocodile", "Plesiosaurus"] },
+      t2: { pool: ["Sahuagin", "Merfolk", "Reef Shark", "Constrictor Snake", "Hunter Shark"], lurker: ["Giant Constrictor Snake", "Sea Hag", "Water Elemental"], apex: ["Giant Shark", "Killer Whale", "Water Elemental", "Sahuagin Baron", "Young Bronze Dragon"] },
+      t3: { pool: ["Sahuagin", "Hunter Shark", "Water Elemental", "Merrow"], lurker: ["Water Elemental", "Giant Shark"], apex: ["Giant Shark", "Sahuagin Baron", "Young Bronze Dragon", "Killer Whale"] },
+      t4: { pool: ["Sahuagin", "Water Elemental", "Giant Shark"], lurker: ["Water Elemental"], apex: ["Adult Bronze Dragon", "Kraken", "Giant Shark"] }
+    },
+    unknown: {
+      t1: { pool: ["Wolf", "Bandit", "Scout", "Boar"], lurker: ["Giant Spider", "Spy"], apex: ["Ogre", "Dire Wolf", "Bandit Captain"] },
+      t2: { pool: ["Veteran", "Berserker", "Scout", "Thug"], lurker: ["Werewolf", "Phase Spider", "Ghost"], apex: ["Ogre", "Troll", "Knight", "Owlbear", "Mage"] },
+      t3: { pool: ["Veteran", "Knight", "Troll"], lurker: ["Assassin", "Wraith"], apex: ["Hill Giant", "Young Green Dragon", "Stone Giant"] },
+      t4: { pool: ["Veteran", "Knight", "Stone Giant"], lurker: ["Assassin", "Oni"], apex: ["Adult Red Dragon", "Archmage", "Stone Giant"] }
+    }
+  };
+  const FEATURE_BANDS = {
+    road: {
+      t1: { pool: ["Bandit", "Scout", "Thug"], lurker: ["Spy"], apex: ["Bandit Captain"] },
+      t2: { pool: ["Scout", "Veteran", "Thug"], lurker: ["Spy", "Assassin"], apex: ["Bandit Captain", "Veteran", "Knight"] },
+      t3: { pool: ["Veteran", "Knight"], lurker: ["Assassin"], apex: ["Knight", "Mage"] },
+      t4: { pool: ["Knight", "Veteran"], lurker: ["Assassin"], apex: ["Archmage", "Knight"] }
+    },
+    water: {
+      t1: { pool: ["Reef Shark", "Giant Crab", "Swarm of Quippers"], lurker: ["Hunter Shark", "Giant Octopus"], apex: ["Giant Crocodile"] },
+      t2: { pool: ["Reef Shark", "Hunter Shark"], lurker: ["Giant Octopus", "Water Elemental"], apex: ["Giant Shark", "Water Elemental"] },
+      t3: { pool: ["Hunter Shark", "Water Elemental"], lurker: ["Water Elemental"], apex: ["Giant Shark", "Killer Whale"] },
+      t4: { pool: ["Water Elemental"], lurker: ["Water Elemental"], apex: ["Kraken", "Giant Shark"] }
+    }
+  };
   // Encounter COMPOSITIONS — how foes are shaped. `danger` = the scene-danger range this shape
   // can appear in (so calm hexes lean to packs, deadly hexes to leaders/solos).
   const COMPOSITIONS = [
@@ -853,13 +951,15 @@
   ];
   let LORE_ROSTER = {};   // your Primus creatures, merged OVER the SRD roster
   const ROLES = ["pool", "lurker", "apex"];
-  function mergedRoster(biome, feats = {}) {
-    const base = BIOME_ROSTER[biome] || BIOME_ROSTER.unknown, lore = LORE_ROSTER[biome] || {};
+  function mergedRoster(biome, feats = {}, level = 4) {
+    const band = bandFor(level);
+    const base = BIOME_BANDS[biome]?.[band] || BIOME_ROSTER[biome] || BIOME_ROSTER.unknown;   // APL-banded roster; flat fallback
+    const lore = LORE_ROSTER[biome] || {};
     const out = {};
     for (const r of ROLES) {
       out[r] = [...(base[r] || []), ...(lore[r] || [])];
-      if (feats.water) out[r].push(...(FEATURE_ROSTER.water[r] || []));
-      if (feats.road) out[r].push(...(FEATURE_ROSTER.road[r] || []));
+      if (feats.water) out[r].push(...((FEATURE_BANDS.water[band] || FEATURE_ROSTER.water)[r] || []));   // features banded too → level-appropriate waylayers/aquatics
+      if (feats.road) out[r].push(...((FEATURE_BANDS.road[band] || FEATURE_ROSTER.road)[r] || []));
     }
     return out;
   }
@@ -876,16 +976,14 @@
   function composeEncounter(cls, index, level, size, danger) {
     const biome = effectiveBiome(cls);
     const feats = { water: !!(cls?.river || cls?.coast), road: !!cls?.infrastructure };
-    const roster = mergedRoster(biome, feats);
-    const bands = {
-      pool:   [Math.max(0, Math.floor(level / 4) - 1), Math.max(1, Math.ceil(level / 2) + 1)],
-      lurker: [Math.max(0, Math.floor(level / 4)),     Math.max(1, level)],
-      apex:   [Math.max(1, level - 2),                 level + 4],
-    };
-    const mapInBand = ([lo, hi]) => { const m = new Map(); for (const e of index) { const cr = crOfEntry(e); if (cr == null || cr < lo || cr > hi) continue; const k = (e.name || "").toLowerCase(); (m.get(k) || m.set(k, []).get(k)).push({ id: e._id, cr, name: e.name }); } return m; };
-    const maps = { pool: mapInBand(bands.pool), lurker: mapInBand(bands.lurker), apex: mapInBand(bands.apex) };
-    const optsFor = (role) => { const o = []; for (const n of roster[role] || []) { const m = maps[role].get(String(n).toLowerCase()); if (m) o.push(...m); } return o; };
-    if (!ROLES.some(r => optsFor(r).length)) return null;   // nothing in any band → caller falls back
+    const roster = mergedRoster(biome, feats, level);   // APL-banded — the roster itself is now level-appropriate
+    // Resolve roster names → index entries. The band roster controls level-appropriateness, so we only apply a SOFT CR
+    // ceiling (≤ level + 6) to stop a mis-tiered giant from busting a low-level fight; no lower bound — minions are fine.
+    const ceiling = (Number(level) || 4) + 6;
+    const byName = new Map();
+    for (const e of index) { const cr = crOfEntry(e); if (cr != null && cr > ceiling) continue; const k = (e.name || "").toLowerCase(); (byName.get(k) || byName.set(k, []).get(k)).push({ id: e._id, cr: cr == null ? 0.25 : cr, name: e.name }); }
+    const optsFor = (role) => { const o = []; for (const n of roster[role] || []) { const m = byName.get(String(n).toLowerCase()); if (m) o.push(...m); } return o; };
+    if (!ROLES.some(r => optsFor(r).length)) return null;   // nothing matched → caller falls back
     const comp = pickWeighted(weightedCompositions(danger));
     const dFactor = Math.max(0.7, Math.min(1.35, 0.75 + (Number.isFinite(danger) ? danger : 2) * 0.1));
     const budget = Math.max(1, Math.round(level * size * (CFG.encounterBudgetMul ?? 0.5) * dFactor));
