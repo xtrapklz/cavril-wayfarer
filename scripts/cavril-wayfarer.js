@@ -411,9 +411,9 @@ const Store = (() => {
         // Remembered role assignments (actor + skill per role), pre-filled each turn.
         g.register(MOD, "lastRoles", { scope: "world", config: false, type: Object, default: {} });
         // Night camp / watch / danger.
-        g.register(MOD, "dangerDefault", { name: "Default danger level", hint: "Base night-encounter danger (0-5) for new scenes. Adjustable per scene in the Camp panel.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 5, step: 1 } });
+        g.register(MOD, "dangerDefault", { name: "Default danger level", hint: "Base encounter danger (0-5) for new scenes — drives BOTH day-travel events and night camp checks. Adjustable per scene in the Camp panel. 0 = safe road, 2 = ordinary wilds (default), 3-4 = hostile region, 5 = deadly. At 0-1 a competent party sees almost no encounters; bump it to make the wilds bite.", scope: "world", config: true, type: Number, default: 2, range: { min: 0, max: 5, step: 1 } });
         g.register(MOD, "nightHours", { name: "Night length (hours)", hint: "How many hourly encounter checks the night runs (watches split this evenly).", scope: "world", config: true, type: Number, default: 8 });
-        g.register(MOD, "encounterScale", { name: "Encounter die (x/N per hour)", hint: "Denominator for the hourly encounter check. Higher = rarer. Default 50.", scope: "world", config: true, type: Number, default: 50 });
+        g.register(MOD, "encounterScale", { name: "Encounter die (x/N per hour)", hint: "Denominator for the hourly NIGHT encounter check. Higher = rarer. Default 40 (nights were a touch too quiet at 50).", scope: "world", config: true, type: Number, default: 40 });
         g.register(MOD, "oneEncounterPerNight", { name: "One encounter per night", hint: "Stop checking once a night encounter triggers (at most one per night).", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "campHour", { name: "Bed-down hour (0-23)", hint: "Hour the party turns in when you Make Camp.", scope: "world", config: true, type: Number, default: 21 });
         g.register(MOD, "wakeHour", { name: "Wake hour (0-23)", hint: "Hour the party rises at dawn after the night resolves.", scope: "world", config: true, type: Number, default: 6 });
@@ -2183,9 +2183,10 @@ const Danger = (() => {
     }
     // Encounter die size (x/scale per hour). Configurable; default 50.
     const scale = () => Math.max(2, Number(game.settings.get(MOD, "encounterScale")) || 50);
-    // x numerator for one hour. The on-watch member's highest mod reduces the danger score.
+    // x numerator for one hour. The on-watch member's highest mod reduces the danger score — but CAPPED at -2, so a
+    // single high-WIS watcher can't zero a genuinely dangerous night (it used to: a +4 watcher nulled danger 4).
     function hourlyX(danger, biomeM, hostileM, watcherMod = 0) {
-        return Math.max(0, Math.min(scale(), Math.max(0, (danger | 0) - watcherMod) + biomeM + hostileM));
+        return Math.max(0, Math.min(scale(), Math.max(0, (danger | 0) - Math.min(2, Math.max(0, watcherMod))) + biomeM + hostileM));
     }
     return { biomeMod, hostileMod, highestMod, hourlyX, scale };
 })();

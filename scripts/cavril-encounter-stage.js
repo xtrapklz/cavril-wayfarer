@@ -1289,9 +1289,28 @@
       .map(c => ({ ...c, weight: (c.weight || 1) * ((c.id === "solo" || c.id === "packLeader") ? (1 + d * 0.15) : 1) }));
   }
 
-  // Compose an encounter from the biome roster + a danger-weighted composition. Each ROLE draws
-  // from its own CR band (pool = weak/numerous, lurker = mid, apex = near party level), the budget
-  // scales with scene danger, and hex features add aquatic/road foes. Returns {chosen,comp} | null.
+  // ===== XP-BASED ENCOUNTER BUDGET (dnd5e) =====================================================================
+  // Replaces raw-CR summing, which ignored that CR↔threat is non-linear AND that action economy (foe COUNT) changes
+  // real difficulty hugely — so the same "budget" swung Easy↔Deadly on the composition roll. We now size to the party's
+  // dnd5e XP thresholds × the encounter multiplier, so a "danger 3" fight reliably lands ~Hard.
+  const CR_XP = { 0: 10, 0.125: 25, 0.25: 50, 0.5: 100, 1: 200, 2: 450, 3: 700, 4: 1100, 5: 1800, 6: 2300, 7: 2900, 8: 3900, 9: 5000, 10: 5900, 11: 7200, 12: 8400, 13: 10000, 14: 11500, 15: 13000, 16: 15000, 17: 18000, 18: 20000, 19: 22000, 20: 25000, 21: 33000, 22: 41000, 23: 50000, 24: 62000, 25: 75000 };
+  function crToXp(cr) { const c = Number(cr) || 0; if (CR_XP[c] != null) return CR_XP[c]; let best = -1, bx = 10; for (const k in CR_XP) { const n = Number(k); if (n <= c && n > best) { best = n; bx = CR_XP[k]; } } return bx; }
+  const encMult = (n) => n <= 1 ? 1 : n === 2 ? 1.5 : n <= 6 ? 2 : n <= 10 ? 2.5 : n <= 14 ? 3 : 4;   // dnd5e encounter multiplier by foe count
+  const XP_THRESH = [[25, 50, 75, 100], [50, 100, 150, 200], [75, 150, 225, 400], [125, 250, 375, 500], [250, 500, 750, 1100], [300, 600, 900, 1400], [350, 750, 1100, 1700], [450, 900, 1300, 2000], [550, 1100, 1600, 2400], [600, 1200, 1900, 2800], [800, 1600, 2400, 3600], [1000, 2000, 3000, 4800], [1100, 2200, 3400, 5200], [1250, 2500, 3800, 5900], [1400, 2800, 4300, 6400], [1600, 3200, 4800, 6800], [2000, 3900, 5900, 8800], [2100, 4200, 6300, 9500], [2400, 4900, 7300, 10900], [2800, 5700, 8500, 12700]];
+  // Target ADJUSTED-xp for the fight: party thresholds [easy,med,hard,deadly]×size, danger 0-5 slides 0=easy → 5=deadly.
+  // The legacy encounterBudgetMul (default 0.5) still scales it globally: 0.5→×1.0, 0.25→×0.5 (easier), 1.0→×2 (harder).
+  function encounterTargetXp(level, size, danger) {
+    const L = Math.max(1, Math.min(20, level | 0)), n = Math.max(1, size | 0);
+    const t = XP_THRESH[L - 1].map(v => v * n);
+    const d = Math.max(0, Math.min(5, Number.isFinite(danger) ? danger : 2));
+    const pos = (d / 5) * 3, lo = Math.floor(pos), hi = Math.min(3, lo + 1);
+    const base = t[lo] + (t[hi] - t[lo]) * (pos - lo);
+    const mult = Math.max(0.5, Math.min(2, (CFG.encounterBudgetMul ?? 0.5) * 2));
+    return Math.round(base * (0.85 + Math.random() * 0.3) * mult);   // ±15% run-to-run variety
+  }
+  // Compose an encounter from the biome roster + a danger-weighted composition. Each ROLE draws from its own CR band
+  // (pool = weak/numerous, lurker = mid, apex = near party level); foes are added until the encounter's ADJUSTED XP
+  // reaches the danger-scaled target. Hex features add aquatic/road foes. Returns {chosen,comp} | null.
   function composeEncounter(cls, index, level, size, danger) {
     const biome = effectiveBiome(cls);
     const feats = { water: !!(cls?.river || cls?.coast), road: !!cls?.infrastructure };
@@ -1304,14 +1323,20 @@
     const optsFor = (role) => { const o = []; for (const n of roster[role] || []) { const m = byName.get(String(n).toLowerCase()); if (m) o.push(...m); } return o; };
     if (!ROLES.some(r => optsFor(r).length)) return null;   // nothing matched → caller falls back
     const comp = pickWeighted(weightedCompositions(danger));
-    const dFactor = Math.max(0.7, Math.min(1.35, 0.75 + (Number.isFinite(danger) ? danger : 2) * 0.1));
-    const budget = Math.max(1, Math.round(level * size * (CFG.encounterBudgetMul ?? 0.5) * dFactor));
-    const chosen = []; let spent = 0;
-    const take = (role, n) => {
+    const targetXp = encounterTargetXp(level, size, danger);   // dnd5e party threshold, danger-scaled
+    const maxN = CFG.maxMonsters ?? 6;
+    const chosen = [];
+    const adjXp = () => chosen.reduce((s, c) => s + crToXp(c.cr), 0) * encMult(chosen.length);   // difficulty as the party will FEEL it
+    for (const [role, lo, hi] of comp.slots) {
       let opts = optsFor(role); if (!opts.length) opts = optsFor("pool"); if (!opts.length) opts = optsFor("apex");
-      for (let i = 0; i < n && opts.length; i++) { if (chosen.length >= (CFG.maxMonsters ?? 6)) return; const x = opts[Math.floor(Math.random() * opts.length)]; chosen.push(x); spent += (x.cr || 0.25) + 1; if (spent >= budget && chosen.length >= 1) return; }
-    };
-    for (const [role, lo, hi] of comp.slots) { take(role, lo + Math.floor(Math.random() * (hi - lo + 1))); if (spent >= budget || chosen.length >= (CFG.maxMonsters ?? 6)) break; }
+      if (!opts.length) continue;
+      const want = lo + Math.floor(Math.random() * (hi - lo + 1));
+      for (let i = 0; i < want && chosen.length < maxN; i++) {
+        chosen.push(opts[Math.floor(Math.random() * opts.length)]);
+        if (i + 1 >= lo && adjXp() >= targetXp) break;   // this slot's MINIMUM is met AND we've hit the difficulty target → stop here
+      }
+      if (chosen.length >= maxN || adjXp() >= targetXp) break;
+    }
     return chosen.length ? { chosen, comp: comp.id } : null;
   }
 
@@ -1563,22 +1588,36 @@
     const gs = scene.grid?.size || CFG.fallbackGridSize;
     const minR = ftToPx(scene, CFG.foeMinFt ?? 15);
     const maxR = Math.max(minR + gs, ftToPx(scene, CFG.foeMaxFt ?? 40));
+    // Scene play-area bounds — keep a grid-square margin so a foe never spills off the map (the foeMaxFt band alone
+    // ignored the edges, so spawns near a corner landed off-scene).
+    const dim = scene.dimensions || canvas?.dimensions || {};
+    const sx = dim.sceneX ?? dim.x ?? 0, sy = dim.sceneY ?? dim.y ?? 0;
+    const sw = (dim.sceneWidth ?? dim.width ?? Number(scene.width)) || 0, sh = (dim.sceneHeight ?? dim.height ?? Number(scene.height)) || 0;
+    const haveBounds = sw > gs * 3 && sh > gs * 3, mgn = gs;
+    const inScene = (x, y) => !haveBounds ? { x, y } : { x: Math.max(sx + mgn, Math.min(sx + sw - mgn, x)), y: Math.max(sy + mgn, Math.min(sy + sh - mgn, y)) };
     const nClusters = actors.length <= 2 ? 1 : Math.min(3, Math.ceil(actors.length / 3));
     const base = Math.random() * Math.PI * 2;
     const clusters = Array.from({ length: nClusters }, (_, i) => {
       const ang = base + (i / nClusters) * Math.PI * 2 + (Math.random() - 0.5) * 0.6;
       const dist = minR + Math.random() * (maxR - minR);
-      return { x: center.x + Math.cos(ang) * dist, y: center.y + Math.sin(ang) * dist };
+      return inScene(center.x + Math.cos(ang) * dist, center.y + Math.sin(ang) * dist);   // cluster seeds kept on the map
     });
-    // Clamp a point's distance-from-party into [minR, maxR].
-    const clamp = (x, y) => { const dx = x - center.x, dy = y - center.y, d = Math.hypot(dx, dy) || 1, c = Math.max(minR, Math.min(maxR, d)); return { x: center.x + dx / d * c, y: center.y + dy / d * c }; };
+    // Fit a point: distance from the party in [minR, maxR] AND inside the scene. If the party is cornered and both can't
+    // hold, ON-SCENE wins (a foe at slightly < minR but on the map beats one off the edge).
+    const fit = (x, y) => {
+      let dx = x - center.x, dy = y - center.y, d = Math.hypot(dx, dy) || 1, c = Math.max(minR, Math.min(maxR, d));
+      let p = inScene(center.x + dx / d * c, center.y + dy / d * c);
+      dx = p.x - center.x; dy = p.y - center.y; d = Math.hypot(dx, dy) || 1;
+      if (d < minR - 1) p = inScene(center.x + dx / d * minR, center.y + dy / d * minR);   // bounds pulled it too close → push back out, re-clamp
+      return p;
+    };
     const pts = [];
     for (let i = 0; i < actors.length; i++) {
       const c = clusters[i % nClusters];
       const s0 = scatterPoints(1, c, gs * 1.4, 0)[0];
-      let p = clamp(s0.x, s0.y), tries = 0;
+      let p = fit(s0.x, s0.y), tries = 0;
       while (tries < 12 && pts.some(q => Math.hypot(q.x - p.x, q.y - p.y) < gs * 0.85)) {
-        const s = scatterPoints(1, c, gs * 2, 0)[0]; p = clamp(s.x, s.y); tries++;
+        const s = scatterPoints(1, c, gs * 2, 0)[0]; p = fit(s.x, s.y); tries++;
       }
       pts.push(p);
     }
