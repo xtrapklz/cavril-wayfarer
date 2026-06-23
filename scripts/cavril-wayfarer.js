@@ -3405,6 +3405,40 @@ const MerchantEconomy = (() => {
         tinker:       ["tinker", "gnome", "artisan", "commoner", "inventor"],
     };
 
+    // ===== COMPOSED MERCHANT CHARACTER ===========================================================
+    // Each generated merchant is a designed PERSON, not just a type: a species (biased to the trade's archetype) + build
+    // + age + a distinguishing feature + trade-fitting garb + a quirk. The SPECIES + trade ROLES drive the CZEPEKU token
+    // match (subjects are race+class, e.g. "Dwarf Wizard Blacksmith"); the appearance/quirk feed the BIO only (scars and
+    // aprons aren't in token subjects, so they'd just dilute the match). Composed in rollMerchant → m.character + m.tokKw.
+    const M_BUILD = ["wiry", "stout", "broad-shouldered", "lean", "hunched", "towering", "barrel-chested", "slight", "heavyset", "rangy", "stooped", "compact"];
+    const M_AGE = ["young", "fresh-faced", "middle-aged", "greying", "weather-beaten", "grizzled", "ancient", "road-worn", "sharp-eyed"];
+    const M_FEATURE = ["a jagged scar across one cheek", "a milky, blind eye", "a close-cropped iron-grey beard", "forearms inked with faded tattoos", "two fingers gone on the left hand", "a brass-capped front tooth", "a shaved, tattooed scalp", "one eye behind a leather patch", "old burn-scars up both arms", "a nose broken more than once", "mismatched eyes — one green, one grey", "a long braid threaded with charms", "spectacles perched low on the nose", "a wine-dark birthmark at the jaw", "knuckles swollen from years of work"];
+    const M_QUIRK = ["speaks in clipped, clattering sentences", "won't quite meet your eye", "laughs a beat too loud at their own jokes", "weighs every coin twice", "never stops working while they talk", "quotes proverbs no one has heard of", "calls everyone 'friend' a shade too warmly", "keeps half an eye on the door", "hums tunelessly between words", "drives a hard bargain and clearly enjoys it", "distrusts anyone who haggles too well", "forgets your name twice, then never again", "punctuates every price with a wink"];
+    // Per-trade: species bias (repeats = weight), token ROLE words, and trade-fitting GARB fragments for the bio.
+    const CHAR = {
+        peddler:      { species: ["human", "halfling", "gnome", "half-elf", "human"], roles: ["peddler", "merchant", "trader", "commoner"], garb: ["a patchwork coat of a hundred pockets", "road-dusted layers and a wide hat", "a cloak sewn with dangling trinkets"] },
+        general:      { species: ["human", "dwarf", "halfling", "human"], roles: ["merchant", "shopkeeper", "trader"], garb: ["a stained shopkeeper's apron", "sturdy practical wool and a money-belt", "shirtsleeves and ink-smudged ledgers"] },
+        blacksmith:   { species: ["dwarf", "human", "half-orc", "dwarf", "mountain dwarf"], roles: ["blacksmith", "smith", "forge", "artisan"], garb: ["a soot-blackened leather apron", "a scorched apron over bare, muscled arms", "heavy hide and a hammer at the belt"] },
+        fletcher:     { species: ["elf", "human", "half-elf", "wood elf"], roles: ["fletcher", "bowyer", "archer", "ranger"], garb: ["a quiver-slung jerkin", "green-dyed leathers", "an apron stuck all over with feathers"] },
+        alchemist:    { species: ["gnome", "human", "elf", "tiefling"], roles: ["alchemist", "wizard", "apothecary", "scholar"], garb: ["acid-stained robes", "a many-pocketed coat that clinks with vials", "singed scholar's robes and goggles"] },
+        herbalist:    { species: ["elf", "human", "half-elf", "gnome", "druid"], roles: ["herbalist", "druid", "witch", "gatherer"], garb: ["earth-stained homespun", "a shawl pinned with dried flowers", "mossy green wraps and a satchel of cuttings"] },
+        apothecary:   { species: ["human", "halfling", "gnome", "human"], roles: ["apothecary", "healer", "priest", "physician"], garb: ["a clean linen smock", "a high-collared physician's coat", "herb-scented robes and a measuring spoon"] },
+        fence:        { species: ["human", "half-elf", "tiefling", "halfling"], roles: ["rogue", "thief", "smuggler", "hooded"], garb: ["a deep hood that hides the eyes", "unremarkable, forgettable dark clothes", "a coat lined with too many inner pockets"] },
+        relicdealer:  { species: ["human", "elf", "tiefling", "human"], roles: ["scholar", "collector", "noble", "antiquarian"], garb: ["dusty velvet gone thin at the elbows", "a coat hung with odd little talismans", "a scholar's threadbare finery"] },
+        beasttrader:  { species: ["half-orc", "human", "dwarf", "halfling"], roles: ["hunter", "handler", "tamer", "trapper"], garb: ["scarred hide and heavy gauntlets", "a coat patched with mismatched fur", "mud-caked boots and a coiled lead"] },
+        partsbuyer:   { species: ["human", "half-orc", "dwarf", "goblin"], roles: ["hunter", "butcher", "trapper", "skinner"], garb: ["a blood-stiffened leather apron", "a coat hung with hooks and skinning knives", "stained oilcloth and a bone-handled blade"] },
+        spicetrader:  { species: ["human", "tiefling", "half-elf", "human"], roles: ["merchant", "trader", "noble", "exotic"], garb: ["bright, layered silks", "a saffron-dyed coat and rings on every finger", "a jewelled turban and a scent of cloves"] },
+        cartographer: { species: ["human", "gnome", "elf", "half-elf"], roles: ["cartographer", "scholar", "scribe", "surveyor"], garb: ["ink-stained shirtsleeves", "a coat bristling with rolled charts", "a surveyor's practical leathers and brass tools"] },
+        jeweller:     { species: ["gnome", "dwarf", "halfling", "human"], roles: ["jeweller", "goldsmith", "artisan", "noble"], garb: ["a velvet-fronted waistcoat", "fine clothes and a loupe on a chain", "dark cloth chosen to flatter the gems"] },
+        provisioner:  { species: ["human", "halfling", "dwarf", "human"], roles: ["merchant", "farmer", "provisioner", "commoner"], garb: ["a flour-dusted apron", "sturdy farm wool and a tally-stick", "a quartermaster's belted coat"] },
+        tinker:       { species: ["gnome", "halfling", "human", "gnome"], roles: ["tinker", "artisan", "inventor", "gnome"], garb: ["a coat hung with tools and half-built gears", "grease-stained overalls and pushed-up goggles", "a many-pocketed smock that faintly ticks"] },
+    };
+    function composeCharacter(key) {
+        const c = CHAR[key] || { species: ["human", "elf", "half-elf", "dwarf", "halfling"], roles: [String(TYPES[key]?.name || "merchant").toLowerCase()], garb: ["practical travelling clothes"] };
+        const species = pick(c.species);
+        const desc = `A ${pick(M_BUILD)}, ${pick(M_AGE)} ${species} with ${pick(M_FEATURE)}, in ${pick(c.garb)} — ${pick(M_QUIRK)}.`;
+        return { species, desc, tokKw: [species, ...c.roles] };   // species + trade words → matches the CZEPEKU race+class subjects
+    }
     function genName() {
         const firsts = ["Bram", "Oda", "Cass", "Henrik", "Mirela", "Tobin", "Yara", "Esk", "Wend", "Pell", "Lhena", "Garr", "Sorrel", "Cobb", "Vask", "Ilsa", "Dunmore", "Petra", "Quill", "Maddox", "Nool", "Tamsin"];
         const eps = ["the Fair", "Quicksilver", "One-Eye", "of the Long Road", "Goldtooth", "the Patient", "Saltbeard", "Greenfingers", "Threadbare", "the Honest (so-called)", "Far-Walker", "Coppercoat", "of Nowhere", "the Lender", "Brassneck", "Ashfoot"];
@@ -3443,7 +3477,8 @@ const MerchantEconomy = (() => {
         let key = opts.type && TYPES[opts.type] ? opts.type : pick(opts.cls ? terrainTypes(opts.cls) : ALL);
         const type = TYPES[key], level = opts.level || cwfAvgPartyLevel();
         const quest = (type.quests && type.quests.length && Math.random() < (opts.questChance ?? 0.5)) ? pick(type.quests) : null;
-        return { key, type, name: genName(), greet: pick(type.greet), stock: stockFor(type, level), quest, level };
+        const ch = composeCharacter(key);   // a designed person — bio + token keywords
+        return { key, type, name: genName(), greet: pick(type.greet), stock: stockFor(type, level), quest, level, character: ch.desc, species: ch.species, tokKw: ch.tokKw };
     }
     // attach a CZEPEKU character-token portrait to the merchant (a face for the shop), matched by keyword. Async + best-effort:
     // if the encounter-stage token catalog is absent or the fetch fails, the card just renders portrait-less.
@@ -3452,7 +3487,7 @@ const MerchantEconomy = (() => {
             if (m.portrait || !game.settings.get(MOD, "merchantPortraits")) return m;
             const tokenFor = globalThis.CavrilEncounterStage?.tokenFor;
             if (typeof tokenFor !== "function") return m;
-            const tk = await tokenFor(TOK_KW[m.key] || [m.type.name]);
+            const tk = await tokenFor(m.tokKw || TOK_KW[m.key] || [m.type.name]);   // composed species + trade words → a face that fits THIS character
             if (tk?.url) { m.portrait = tk.url; m.portraitSubject = tk.subject || ""; }
         } catch (e) { /* no portrait — card still renders */ }
         return m;
@@ -3462,14 +3497,15 @@ const MerchantEconomy = (() => {
         const buys = m.type.buys ? `<div class="cwf-muted2" style="margin-top:5px"><b>Buys:</b> ${m.type.buys}.</div>` : "";
         const quest = m.quest ? cwfRow("⚑ Hook", m.quest) : "";
         const portrait = m.portrait ? `<img class="cwf-merch-portrait" src="${m.portrait}" alt="" title="${String(m.portraitSubject || "").replace(/"/g, "&quot;")}" onerror="this.remove()">` : "";
-        const body = `${portrait}<div class="cwf-muted2" style="font-style:italic;margin-bottom:6px">${m.greet}</div>${rows}${buys}${quest}`;
+        const bio = m.character ? `<div class="cwf-muted2" style="font-size:.86em;opacity:.82;margin-bottom:5px">${m.character}</div>` : "";
+        const body = `${portrait}${bio}<div class="cwf-muted2" style="font-style:italic;margin-bottom:6px">“${m.greet}”</div>${rows}${buys}${quest}`;
         return cwfCardShell(m.type.icon || "fa-store", `${m.name} — ${m.type.name}`, body, { sub: `APL ${m.level}` });
     }
     async function post(m) { try { await resolvePortrait(m); ChatMessage.create({ content: card(m), whisper: cwfGmIds() }); } catch (e) { warn("merchant card failed", e); } return m; }
     function roll(opts) { return post(rollMerchant(opts)); }
     async function onTrade(cls) { try { if (!game.user.isGM || !game.settings.get(MOD, "merchantCards")) return; await post(rollMerchant({ cls })); } catch (e) { warn("merchant onTrade failed", e); } }
 
-    return { roll, rollMerchant, post, card, onTrade, resolvePortrait, TYPES, POOLS, TOK_KW };
+    return { roll, rollMerchant, post, card, onTrade, resolvePortrait, composeCharacter, TYPES, POOLS, TOK_KW, CHAR };
 })();
 
 /* =========================================================================
@@ -3623,6 +3659,7 @@ const CodexShop = (() => {
             const dispName = globalThis.CONST?.TOKEN_DISPLAY_MODES?.HOVER ?? 1;
             const actor = await Actor.create({
                 name: m.name, type: "npc", img: portrait, folder,
+                system: { details: { biography: { value: m.character ? `<p><em>${cwfEsc(m.character)}</em></p>` : "" } } },   // the composed character on the shopkeeper sheet
                 prototypeToken: { name: m.name, texture: { src: portrait }, actorLink: false, disposition: disp, displayName: dispName },
                 flags: { "cavril-wayfarer": { merchantShop: shop?.uuid || null, merchantType: m.key } },
             });
@@ -3650,9 +3687,10 @@ const CodexShop = (() => {
         const picks = await pickStock(m.type, m.level, want);
         // durable shopkeeper art (DOWNLOADED so the Actor's portrait/token survive across sessions, not a live session URL)
         let portrait = "";
-        try { const tk = await globalThis.CavrilEncounterStage?.tokenArtFor?.(MerchantEconomy.TOK_KW?.[m.key] || [m.type.name]); if (tk?.url) portrait = tk.url; } catch (e) {}
+        try { const tk = await globalThis.CavrilEncounterStage?.tokenArtFor?.(m.tokKw || MerchantEconomy.TOK_KW?.[m.key] || [m.type.name]); if (tk?.url) portrait = tk.url; } catch (e) {}   // composed species + trade words → a fitting face
         const pImg = portrait ? `<p style="text-align:center"><img src="${portrait}" style="max-width:160px;border-radius:10px"></p>` : "";
-        const desc = `${pImg}<p><em>${cwfEsc(m.greet)}</em></p><p><b>Buys:</b> ${cwfEsc(m.type.buys || "—")}.</p>${m.quest ? `<p><b>⚑ Hook:</b> ${cwfEsc(m.quest)}</p>` : ""}`;
+        const bioP = m.character ? `<p style="opacity:.85"><em>${cwfEsc(m.character)}</em></p>` : "";
+        const desc = `${pImg}${bioP}<p>“${cwfEsc(m.greet)}”</p><p><b>Buys:</b> ${cwfEsc(m.type.buys || "—")}.</p>${m.quest ? `<p><b>⚑ Hook:</b> ${cwfEsc(m.quest)}</p>` : ""}`;
         const cash = 40 + (m.level | 0) * 40;
         const shop = await createShop(`${m.name} — ${m.type.name}`, picks, { markup: m.type.markup ?? 1.0, cash, description: desc });
         if (!shop) return shop;

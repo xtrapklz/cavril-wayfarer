@@ -802,12 +802,12 @@
         <button class="cwf-tp-x" title="Close"><i class="fa-solid fa-xmark"></i></button>
       </div>
       <div class="cwf-tp-grid"></div>
-      <div class="cwf-tp-foot"><i class="fa-solid fa-arrow-pointer"></i> click a face → apply to selected token(s) · right-click → copy URL</div>`;
+      <div class="cwf-tp-foot"><i class="fa-solid fa-arrow-pointer"></i> click → apply to selected token(s) · <b>shift-click → new NPC actor</b> · right-click → copy URL</div>`;
     document.body.appendChild(el); _tpEl = el;
     const qi = el.querySelector(".cwf-tp-q"), grid = el.querySelector(".cwf-tp-grid");
     const render = (rows, note) => {
       grid.innerHTML = (rows && rows.length)
-        ? rows.map(r => `<div class="cwf-tp-cell" data-url="${esc(r.url)}" title="${esc((r.subject || r.name || "") + (r.score ? ` · score ${r.score}` : ""))}"><img src="${esc(r.url)}" loading="lazy"><span>${esc(r.subject || r.name || "")}</span></div>`).join("")
+        ? rows.map(r => `<div class="cwf-tp-cell" data-url="${esc(r.url)}" data-subj="${esc(r.subject || r.name || "")}" title="${esc((r.subject || r.name || "") + (r.pack ? ` · ${r.pack}` : "") + (r.score ? ` · score ${r.score}` : ""))}"><img src="${esc(r.url)}" loading="lazy"><span>${esc(r.subject || r.name || "")}</span></div>`).join("")
         : `<div class="cwf-tp-empty">${esc(note || "no matches — try fewer or different words, or roll a wildcard.")}</div>`;
     };
     const search = async (wild) => {
@@ -817,16 +817,25 @@
     };
     const apply = async (url) => {
       const toks = canvas.tokens?.controlled || [];
-      if (!toks.length) { ui.notifications?.warn("Cavril: select a token first (or right-click a face to copy its URL)."); return; }
+      if (!toks.length) { ui.notifications?.warn("Cavril: select a token first (Shift-click a face to make a new NPC, or right-click to copy its URL)."); return; }
       const local = await saveExternalImage(url, "token"); let n = 0;
       for (const t of toks) { try { await t.document.update({ "texture.src": local }); n++; } catch (e) {} try { await t.actor?.update({ img: local, "prototypeToken.texture.src": local }); } catch (e) {} }
       ui.notifications?.info(`Cavril: applied to ${n} token${n === 1 ? "" : "s"}.`);
+    };
+    const makeNpc = async (url, subj) => {
+      try {
+        const local = await saveExternalImage(url, "npc");
+        const name = (subj && subj.trim()) || "CZEPEKU NPC";
+        let fid = null; try { let f = (game.folders?.contents || []).find(x => x.type === "Actor" && x.name === "Cavril Tokens"); if (!f) f = await Folder.create({ name: "Cavril Tokens", type: "Actor" }); fid = f?.id || null; } catch (e) {}
+        const actor = await Actor.create({ name, type: "npc", img: local, folder: fid, prototypeToken: { name, texture: { src: local }, actorLink: false, disposition: globalThis.CONST?.TOKEN_DISPOSITIONS?.NEUTRAL ?? 0 } });
+        if (actor) { ui.notifications?.info(`Cavril: created NPC "${name}" (in the "Cavril Tokens" folder) — drag it onto the map.`); try { actor.sheet?.render?.(true); } catch (e) {} }
+      } catch (e) { warn("token-picker makeNpc failed", e); ui.notifications?.warn("Cavril: couldn't create the NPC."); }
     };
     el.querySelector(".cwf-tp-go").addEventListener("click", () => search(false));
     el.querySelector(".cwf-tp-rnd").addEventListener("click", () => search(true));
     el.querySelector(".cwf-tp-x").addEventListener("click", closeTokenPicker);
     qi.addEventListener("keydown", (e) => { if (e.key === "Enter") search(false); });
-    grid.addEventListener("click", (e) => { const c = e.target.closest(".cwf-tp-cell"); if (c) apply(c.dataset.url); });
+    grid.addEventListener("click", (e) => { const c = e.target.closest(".cwf-tp-cell"); if (!c) return; if (e.shiftKey) makeNpc(c.dataset.url, c.dataset.subj); else apply(c.dataset.url); });
     grid.addEventListener("contextmenu", (e) => { const c = e.target.closest(".cwf-tp-cell"); if (!c) return; e.preventDefault(); try { navigator.clipboard.writeText(c.dataset.url); ui.notifications?.info("Cavril: token URL copied."); } catch (x) {} });
     const grip = el.querySelector(".cwf-tp-grip");
     grip.addEventListener("pointerdown", (e) => { e.preventDefault(); const r = el.getBoundingClientRect(); _tpDrag = { dx: e.clientX - r.left, dy: e.clientY - r.top }; try { grip.setPointerCapture(e.pointerId); } catch (x) {} });
