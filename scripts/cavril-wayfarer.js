@@ -3463,6 +3463,130 @@ const MerchantEconomy = (() => {
 })();
 
 /* =========================================================================
+ * CAMPAIGN CODEX STOREFRONTS — turn a generated merchant into a real, manageable
+ * Campaign Codex SHOP entry stocked with REAL dnd5e SRD items (priced, marked up),
+ * so the GM can manage stock + buy/sell with CC's own widgets.
+ *
+ * CC contract (verified against campaign-codex 5.5.3): a shop is a JournalEntry with
+ * flags["campaign-codex"].type="shop" + .data{ inventory:[rows], markup, inventoryCash,
+ * inventoryCacheVersion:1 } + flags.core.sheetClass="campaign-codex.ShopSheet". Create via
+ * game.campaignCodex.createShopJournal(name). Each inventory ROW matches CC's createInventorySnapshot
+ * (sheets/linkers.js:1418): { itemUuid, itemId, name, img, type, inventoryCategory, ownership, quantity,
+ * customPrice, infinite, visibleToPlayers, removeAllLocked, basePrice, currency, weight }. CampaignCodexLinkers
+ * is an ES export (not reachable cross-module), so we build the rows ourselves — no dependency on CC internals
+ * beyond the public createShopJournal + the documented flag shape.
+ * ========================================================================= */
+const MOD_CC = "campaign-codex";   // Campaign Codex flag scope
+const CodexShop = (() => {
+    const GP = { pp: 10, gp: 1, ep: 0.5, sp: 0.1, cp: 0.01 };          // → gold-piece value
+    const gpVal = (e) => (Number(e.price) || 0) * (GP[e.denom] ?? 1);
+    const TYPE_CAT = { weapon: "Weapons", equipment: "Armor & Gear", consumable: "Consumables", tool: "Tools", loot: "Goods", container: "Containers" };
+    const catLabel = (e) => TYPE_CAT[e.type] || "Goods";
+
+    // Map each Wayfarer merchant POOL keyword → a predicate over an indexed dnd5e item. Keeps the common trades (smith,
+    // fletcher, alchemist, general) stocked with the RIGHT item types; the rest fall back to generic Goods (loot).
+    const POOL_FILTER = {
+        weapons:    e => e.type === "weapon",
+        armor:      e => e.type === "equipment" && ["light", "medium", "heavy", "shield"].includes(e.sub),
+        tools:      e => e.type === "tool",
+        ammo:       e => e.type === "consumable" && /ammo/i.test(e.sub),
+        potions:    e => e.type === "consumable" && e.sub === "potion",
+        poisons:    e => e.type === "consumable" && e.sub === "poison",
+        reagents:   e => e.type === "loot",
+        herbs:      e => e.type === "loot",
+        provisions: e => (e.type === "consumable" && (e.sub === "food" || e.sub === "")) || e.type === "loot" || e.type === "container",
+        trinkets:   e => e.type === "loot" || (e.type === "equipment" && e.sub === "trinket"),
+        gems:       e => e.type === "loot" && /gem|stone|crystal|pearl|diamond|ruby|emerald|sapphire|jade|amber|opal|quartz|topaz|garnet/i.test(e.name),
+        books:      e => e.type === "loot" && /book|tome|manual|map|scroll/i.test(e.name),
+        relics:     e => e.type === "loot",
+        contraband: e => e.type === "loot" || e.type === "weapon",
+        spices:     e => e.type === "loot",
+        parts:      e => e.type === "loot",
+        beasts:     e => e.type === "loot",
+    };
+
+    // One-time index of the dnd5e SRD item compendiums (full docs → reliable price/type), cached for the session.
+    let _srd = null;
+    async function srdIndex(force = false) {
+        if (_srd && !force) return _srd;
+        const out = [];
+        for (const id of ["dnd5e.items", "dnd5e.equipment24"]) {
+            const pack = game.packs.get(id); if (!pack) continue;
+            let docs = []; try { docs = await pack.getDocuments(); } catch (e) { warn(`CodexShop: pack ${id} load failed`, e); continue; }
+            for (const it of docs) {
+                if (["spell", "feat", "background", "class", "subclass", "race", "facility"].includes(it.type)) continue;
+                const price = it.system?.price || {};
+                out.push({ uuid: it.uuid, name: it.name, type: it.type, img: it.img, sub: String(it.system?.type?.value || ""), price: Number(price.value) || 0, denom: price.denomination || "gp" });
+            }
+        }
+        _srd = out; log(`[CodexShop] indexed ${out.length} SRD items`);
+        return _srd;
+    }
+
+    // Pick `want` real SRD items appropriate to this merchant type + party level (soft gp ceiling scales with level).
+    async function pickStock(merchType, level, want) {
+        const idx = await srdIndex();
+        const ceil = 8 + (level | 0) * (level | 0) * 2.5;   // L1≈10 · L5≈70 · L10≈258 · L20≈1008 gp
+        let cands = [];
+        for (const p of (merchType.pools || [])) { const f = POOL_FILTER[p]; if (f) cands = cands.concat(idx.filter(f)); }
+        const seen = new Set(); cands = cands.filter(c => seen.has(c.uuid) ? false : (seen.add(c.uuid), true));
+        let pool = cands.filter(c => { const v = gpVal(c); return v === 0 || v <= ceil; });
+        if (pool.length < 3) pool = cands;                                                                   // ceiling too tight
+        if (pool.length < 3) pool = idx.filter(c => ["weapon", "equipment", "consumable", "tool", "loot"].includes(c.type));   // ultimate fallback so a shop is never empty
+        return shuffle(pool.slice()).slice(0, Math.max(3, want)).map(e => ({ e, quantity: gpVal(e) > 50 ? rint(1, 2) : rint(1, 6) }));
+    }
+
+    // CC inventory row — matches createInventorySnapshot (sheets/linkers.js:1418) field-for-field.
+    function buildRow(e, qty) {
+        return {
+            itemUuid: e.uuid, itemId: String(e.uuid).split(".").pop(), name: e.name,
+            img: e.img || "icons/svg/item-bag.svg", type: e.type || "loot", inventoryCategory: catLabel(e),
+            ownership: { default: 0 }, quantity: Math.max(1, qty | 0), customPrice: null, infinite: false,
+            visibleToPlayers: true, removeAllLocked: false, basePrice: Number(e.price) || 0, currency: e.denom || "gp", weight: null,
+        };
+    }
+
+    // Create a Campaign Codex shop JournalEntry, stocked + priced. Returns the JournalEntry (or null).
+    async function createShop(name, picks, opts = {}) {
+        const cc = game.campaignCodex;
+        if (typeof cc?.createShopJournal !== "function") { ui.notifications?.warn("Cavril: Campaign Codex isn't active — can't create a storefront."); return null; }
+        const shop = await cc.createShopJournal(name);
+        if (!shop) return null;
+        const data = foundry.utils.duplicate(shop.getFlag(MOD_CC, "data") || {});
+        data.inventory = picks.map(p => buildRow(p.e, p.quantity));
+        data.markup = opts.markup ?? 1.0;
+        data.inventoryCash = opts.cash ?? 0;
+        data.inventoryCacheVersion = 1;   // mark as current so CC doesn't re-resolve/strip rows on load
+        if (opts.description != null) data.description = opts.description;
+        await shop.setFlag(MOD_CC, "data", data);
+        return shop;
+    }
+
+    // Headline command: generate a merchant (reusing MerchantEconomy) → stock from SRD → a real CC storefront with its
+    // portrait + greeting + buys + quest hook as the shop description. CavrilWayfarer.merchantShop("blacksmith").
+    async function merchantShop(opts = {}) {
+        if (typeof opts === "string") opts = { type: opts };
+        if (!game.user.isGM) return null;
+        const m = MerchantEconomy.rollMerchant(opts);
+        const want = m.type.count ? m.type.count[1] : 8;
+        const picks = await pickStock(m.type, m.level, want);
+        let portrait = "";
+        try { const tk = await globalThis.CavrilEncounterStage?.tokenFor?.(MerchantEconomy.TOK_KW?.[m.key] || [m.type.name]); if (tk?.url) portrait = tk.url; } catch (e) {}
+        const pImg = portrait ? `<p style="text-align:center"><img src="${portrait}" style="max-width:160px;border-radius:10px"></p>` : "";
+        const desc = `${pImg}<p><em>${cwfEsc(m.greet)}</em></p><p><b>Buys:</b> ${cwfEsc(m.type.buys || "—")}.</p>${m.quest ? `<p><b>⚑ Hook:</b> ${cwfEsc(m.quest)}</p>` : ""}`;
+        const cash = 40 + (m.level | 0) * 40;
+        const shop = await createShop(`${m.name} — ${m.type.name}`, picks, { markup: m.type.markup ?? 1.0, cash, description: desc });
+        if (shop) {
+            try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell(m.type.icon || "fa-store", `Storefront: ${cwfEsc(m.name)}`, cwfRow(m.type.name, `${picks.length} SRD items · APL ${m.level} · markup ×${(m.type.markup ?? 1).toFixed(2)} — open it in the Journal (Campaign Codex shop) to manage stock & trade.`)) }); } catch (e) {}
+            ui.notifications?.info(`Cavril: created storefront "${shop.name}" — ${picks.length} items.`);
+        }
+        return shop;
+    }
+
+    return { merchantShop, createShop, pickStock, srdIndex };
+})();
+
+/* =========================================================================
  * TURN — guided group check: claim roles → (swap skills) → roll → resolve →
  * draw outcomes → move the party per the Navigator's result.
  * ========================================================================= */
@@ -4439,6 +4563,8 @@ Hooks.once("ready", () => {
         reseedTables: () => Tables.reseed(),
         resetJourney: () => Tables.resetJourney(),
         merchant: (opts) => MerchantEconomy.roll(opts),
+        merchantShop: (opts) => CodexShop.merchantShop(opts),   // generate a merchant → a real Campaign Codex storefront stocked with SRD items
+        codexShop: CodexShop,
         automation: (mode) => cwfApplyAutomation(mode),
         journeyStatus: () => Tables.journeyStatus(),
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, _installed: true
