@@ -694,10 +694,11 @@
       const tk = typeof t.thumbnailKey === "string" ? t.thumbnailKey : "";
       const url = (tk && base) ? base.replace("<THUMBNAIL_KEY>", tk) : null;
       if (!url) return null;
+      const subjLabel = _asLabel(t.subject), packLabel = _asLabel(t.pack);
       return {
-        id: t.id, name: t.name || "", subject: t.subject, pack: t.pack,
-        subjLabel: _asLabel(t.subject), packLabel: _asLabel(t.pack), url,
-        hay: _flatStr([t.name, t.subject, t.pack], []).join(" ").toLowerCase(),
+        id: t.id, name: t.name || "", subject: t.subject, pack: t.pack, subjLabel, packLabel, url,
+        subjHay: subjLabel.toLowerCase(),   // subject.name ("Dwarf Wizard Blacksmith") — the GOLD match field
+        hay: _flatStr([t.name, t.subject, t.pack], []).join(" ").toLowerCase(),   // everything (incl pack title) — weak fallback
       };
     }).filter(Boolean);
     _tokenCat = { items, base }; _tokenCatAt = Date.now();
@@ -727,19 +728,32 @@
   }
   async function tokenSample(query = "", n = 25) {
     const cat = await tokenCatalog(); const q = String(query).toLowerCase().trim();
-    const items = q ? cat.items.filter(t => t.hay.includes(q)) : cat.items;
+    const items = q ? cat.items.filter(t => t.subjHay.includes(q) || t.hay.includes(q)) : cat.items;
     const sample = items.slice(0, n).map(t => ({ subject: t.subjLabel, name: t.name, pack: t.packLabel }));
     console.log(`%c[EncounterStage] token sample — ${items.length} match "${query}" (showing ${sample.length}):`, CSS); console.table(sample);
     return sample;
   }
-  // Pick a token whose name/subject/pack text matches ANY keyword (random among matches); falls back to a random token.
-  // Returns { url, subject, pack, name } (subject/pack as display labels) or null. Used by NPC generators (merchants).
+  // Distinct SUBJECTS (the character types — "Orc Bard", "Dwarf Wizard Blacksmith") with counts. This is the real matching
+  // vocabulary; run tokenSubjects() (or tokenSubjects("wizard")) to see what to put in a merchant/NPC keyword map.
+  async function tokenSubjects(query = "", n = 80) {
+    const cat = await tokenCatalog(); const q = String(query).toLowerCase().trim(); const m = {};
+    for (const t of cat.items) { if (q && !t.subjHay.includes(q)) continue; const k = t.subjLabel || "(none)"; m[k] = (m[k] || 0) + 1; }
+    const rows = Object.entries(m).sort((a, b) => b[1] - a[1]).map(([subject, count]) => ({ subject, count }));
+    console.log(`%c[EncounterStage] CZEPEKU token SUBJECTS (${rows.length} distinct${q ? ` matching "${query}"` : ""}; top ${n}):`, CSS); console.table(rows.slice(0, n));
+    return rows;
+  }
+  // Pick a token for an NPC, matching ANY keyword. Tries the SUBJECT (the actual character) first, then the full text
+  // (incl the noisy pack title), then a random token so a face is always returned. Returns { url, subject, name, pack }.
   async function tokenFor(keywords) {
     try {
       const cat = await tokenCatalog(); if (!cat.items.length) return null;
       const kws = (Array.isArray(keywords) ? keywords : String(keywords || "").split(/[\s,]+/)).map(k => k.toLowerCase()).filter(Boolean);
       let pool = cat.items;
-      if (kws.length) { const m = cat.items.filter(t => kws.some(k => t.hay.includes(k))); if (m.length) pool = m; }
+      if (kws.length) {
+        const bySubj = cat.items.filter(t => kws.some(k => t.subjHay.includes(k)));
+        const matched = bySubj.length ? bySubj : cat.items.filter(t => kws.some(k => t.hay.includes(k)));
+        if (matched.length) pool = matched;
+      }
       const t = pool[Math.floor(Math.random() * pool.length)];
       return t ? { url: t.url, subject: t.subjLabel, name: t.name, pack: t.packLabel } : null;
     } catch (e) { warn("tokenFor failed", e); return null; }
@@ -1717,14 +1731,16 @@
     function reflect() { if (last) render(last.list, last.viewer); }   // re-skin highlights only (never auto-targets)
     function hide() { last = null; if (el) el.style.display = "none"; }
     let autoT = null;
-    function recompute(fresh, repick) {
+    // The CHIP BAR only (gated by tgtHelper). Auto-targeting is NOT done here anymore — it's decoupled into kick()/
+    // autoTargetSoon so it still fires when the bar is hidden. (Previously this returned early on !tgtHelper, which also
+    // silently killed auto-target whenever the GM turned the bar off — the "auto-target stopped working" bug.)
+    function recompute() {
       try {
         if (!game.user?.isGM || !game.settings.get(MOD, "tgtHelper")) return hide();
         const c = game.combats?.active; if (!c?.started) return hide();
         const viewer = driver(); if (!viewer?.actor) return hide();
         const list = ranked(viewer); if (!list.length) return hide();
-        render(list, viewer);              // chips update instantly…
-        autoTargetSoon(!!fresh, !!repick); // …the auto-pick settles a beat later (tgtAutoDelay)
+        render(list, viewer);
       } catch (e) { warn("target helper recompute failed", e); }
     }
     // Delayed auto-target: ~tgtAutoDelay seconds after the trigger, target the best ENEMY (never ally / neutral / self),
@@ -1747,7 +1763,11 @@
         } catch (e) {}
       }, delay);
     }
-    function recomputeSoon(fresh, repick) { clearTimeout(timer); timer = setTimeout(() => { timer = null; recompute(fresh, repick); }, 120); }
+    function recomputeSoon() { clearTimeout(timer); timer = setTimeout(() => { timer = null; recompute(); }, 120); }
+    // The combined tick the hooks fire on turn-change / move / select. Auto-target runs INDEPENDENTLY of the chip bar, so
+    // it works even with the bar hidden (tgtHelper off); the bar only redraws when tgtHelper is on. This is what makes
+    // "I just want reliable auto-targeting, I don't need the bar" work — leave tgtAutoTarget on, turn tgtHelper off.
+    function kick(fresh, repick) { try { autoTargetSoon(!!fresh, !!repick); } catch (e) {} recomputeSoon(); }
     function reflectSoon() { clearTimeout(rTimer); rTimer = setTimeout(() => { rTimer = null; reflect(); }, 60); }
     // QoL: ~3s after a token settles, pan the GM's camera back onto it (combat only; gated by tgtRecenter).
     let recT = null;
@@ -1763,7 +1783,7 @@
       }, delay);
     }
     function destroy() { clearTimeout(timer); clearTimeout(rTimer); clearTimeout(recT); clearTimeout(autoT); el?.remove(); el = null; last = null; }
-    return { recompute, recomputeSoon, reflect, reflectSoon, recenterSoon, hide, destroy };
+    return { recompute, recomputeSoon, kick, reflect, reflectSoon, recenterSoon, hide, destroy };
   })();
   globalThis.CavrilTargeting = TargetHelper;
 
@@ -1986,8 +2006,8 @@
     reg("esBiomeIndex",       { scope: "world", config: false, type: Object, default: {} });   // the built per-biome classification {builtAt,count,maps:[{id,name,biome,generic,natVar}]}
     reg("esEncounterLog",     { scope: "world", config: false, type: Array, default: [] });    // ledger of staged encounters [{wt,ts,biome,when,weather,foes,map,sceneId}]
     reg("esBiomeOverrides",   { scope: "world", config: false, type: Object, default: {} });   // GM review-panel overrides {id→{biome?,generic?,exclude?}}
-    reg("tgtHelper",          { name: "Targeting helper — suggest targets in combat", hint: "During combat, show a chip bar of the tokens the selected/active token can SEE, ranked: advantage (flanking or an advantage-granting condition) on an enemy → nearest enemy → nearest neutral → nearest ally. Click a chip to target / untarget. GM-only.", scope: "world", config: true, type: Boolean, default: true });
-    reg("tgtAutoTarget",      { name: "  · Auto-target the best enemy", hint: "Automatically target the best enemy at the start of EVERY token's turn AND every time a token moves (players included) — releasing the previous target each time, so the pick always tracks the current best. Only ever auto-targets an enemy — neutrals, allies and self stay click-only. OFF = the suggestion is only highlighted; you click a chip to target.", scope: "world", config: true, type: Boolean, default: true });
+    reg("tgtHelper",          { name: "Targeting helper bar — suggest targets in combat", hint: "Show the chip BAR of tokens the active/selected token can SEE, ranked: advantage (flanking or an advantage-granting condition) on an enemy → nearest enemy → nearest neutral → nearest ally. Click a chip to target / untarget. GM-only. NOTE: this is only the visual bar — turning it OFF does NOT disable auto-targeting below (they're independent), so you can have hands-off auto-targeting with no bar on screen.", scope: "world", config: true, type: Boolean, default: true });
+    reg("tgtAutoTarget",      { name: "Auto-target the best enemy", hint: "Automatically target the best enemy at the start of EVERY token's turn AND every time a token moves — releasing the previous target each time, so the pick always tracks the current best. Works WHETHER OR NOT the target bar above is shown (independent of it). Only ever auto-targets an enemy (relative to whoever is acting); neutrals, allies and self stay manual. You can still change/add targets by hand with Foundry's normal targeting afterwards. OFF = no automatic targeting.", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtAutoDelay",       { name: "  · Auto-target delay (seconds)", hint: "How long after a token moves or starts its turn before the best enemy is auto-targeted. The target chips still update instantly — only the auto-pick waits. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 5, step: 0.5 } });
     reg("tgtRecenter",        { name: "  · Re-centre the GM camera on moves", hint: "During combat, pan the GM's camera onto whatever token just moved — player OR monster — so your display stays on the action. GM-side only: it pans YOUR view, never the players' (a monster's move never yanks their camera).", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtRecenterDelay",   { name: "  · Re-centre delay (seconds)", hint: "How long after a player token settles before the camera pans onto it. 0 = immediate. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 10, step: 0.5 } });
@@ -2099,7 +2119,7 @@
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
     getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, storyMaps, previewMap, czepekuProbe,
-    tokenCatalog, tokenProbe, tokenPacks, tokenSample, tokenFor, tokenUrl,   // CZEPEKU NPC art: tokenProbe() dumps raw shape, tokenPacks()/tokenSample("smith") explore, tokenFor(keywords) matches a face
+    tokenCatalog, tokenProbe, tokenPacks, tokenSubjects, tokenSample, tokenFor, tokenUrl,   // CZEPEKU NPC art: tokenSubjects() lists the character vocab, tokenFor(keywords) matches a face
     purgeStagedScenes, isStagedScene,   // cleanup: delete encounter-generated scenes (CavrilEncounterStage.purgeStagedScenes())
     encounterLog, showEncounterLog, logEncounter, markEncounterResolved,   // ledger: CavrilEncounterStage.showEncounterLog()
     // Preview the top matches for a biome without creating anything.
@@ -2184,12 +2204,12 @@
       try { if (CFG.defaultNewSceneGrid && (data?.grid?.type ?? scene.grid?.type) === 1 && scene.grid?.type !== CFG.gridType) scene.updateSource({ "grid.type": CFG.gridType }); } catch (e) {}
     });
     // Targeting helper — recompute on turn change (fresh suggestion), movement, selection, scene + combat end.
-    hookIds.tgtTurn   = Hooks.on("updateCombat", (cb, chg) => { if (("turn" in chg) || ("round" in chg)) TargetHelper.recomputeSoon(true); });
-    hookIds.tgtMove   = Hooks.on("updateToken", (d, chg) => { if (("x" in chg) || ("y" in chg)) { TargetHelper.recomputeSoon(false, true); TargetHelper.recenterSoon(d); } });
-    hookIds.tgtCtrl   = Hooks.on("controlToken", () => TargetHelper.recomputeSoon(false));
+    hookIds.tgtTurn   = Hooks.on("updateCombat", (cb, chg) => { if (("turn" in chg) || ("round" in chg)) TargetHelper.kick(true, true); });
+    hookIds.tgtMove   = Hooks.on("updateToken", (d, chg) => { if (("x" in chg) || ("y" in chg)) { TargetHelper.kick(false, true); TargetHelper.recenterSoon(d); } });
+    hookIds.tgtCtrl   = Hooks.on("controlToken", () => TargetHelper.kick(false, false));
     hookIds.tgtTgt    = Hooks.on("targetToken", () => TargetHelper.reflectSoon());   // target changed elsewhere → just re-skin chips (no auto-target, so deselects stick)
-    hookIds.tgtCanvas = Hooks.on("canvasReady", () => TargetHelper.recomputeSoon(false));
-    hookIds.tgtEnd    = Hooks.on("deleteCombat", () => TargetHelper.recomputeSoon(false));
+    hookIds.tgtCanvas = Hooks.on("canvasReady", () => TargetHelper.kick(false, false));
+    hookIds.tgtEnd    = Hooks.on("deleteCombat", () => TargetHelper.kick(false, false));
     globalThis.CavrilEncounterStage = buildApi();
     // Formalize the cross-module contract: Cavril: Cities reaches getCatalog/stageMapByKey via
     // game.modules.get("cavril-wayfarer").api.encounterStage (discoverable) alongside the legacy global.
