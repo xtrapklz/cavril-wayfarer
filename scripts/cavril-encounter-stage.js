@@ -1338,9 +1338,15 @@
       catch (e) { return true; }   // sight backend unavailable → fail open (assume visible)
     }
     function visionFt(t) {
-      const d = t.document; let r = Number(d.sight?.range) || 0;
-      for (const m of (d.detectionModes || [])) r = Math.max(r, Number(m.range) || 0);
-      try { const s = t.actor?.system?.attributes?.senses; if (s) for (const k of ["darkvision", "blindsight", "tremorsense", "truesight"]) r = Math.max(r, Number(s[k] ?? s.ranges?.[k]) || 0); } catch (e) {}
+      let r = 0;
+      try {
+        const d = t.document;
+        r = Number(d?.sight?.range) || 0;
+        const modes = d?.detectionModes;   // array / Collection / undefined depending on doc state — only iterate a real array
+        if (Array.isArray(modes)) for (const m of modes) r = Math.max(r, Number(m?.range) || 0);
+        const s = t.actor?.system?.attributes?.senses;
+        if (s) for (const k of ["darkvision", "blindsight", "tremorsense", "truesight"]) r = Math.max(r, Number(s[k] ?? s.ranges?.[k]) || 0);
+      } catch (e) {}
       return r;   // 0 → treat as unlimited (global illumination / always-see)
     }
     function canSee(viewer, t) {
