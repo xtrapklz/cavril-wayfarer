@@ -1898,27 +1898,60 @@
     // QoL: after a PLAYER-owned token settles from a move, ease its rotation back to 0° (upright) — so the auto-facing
     // never leaves a hero's art sideways. Non-player tokens (monsters/NPCs) keep whatever facing they were left.
     // Per-token debounce; same delay as the camera re-centre; GM-side + authoritative. Gated by tgtUpright.
-    const upTimers = new Map();
+    // (Trace it: CavrilTargeting.debugUpright(true) → move a player token → read [upright] lines. Static gates:
+    //  .diagnoseUpright(). Force it: .upright(). See the whole spin end-to-end: .testUpright().)
+    const upTimers = new Map(); let upDebug = false;
+    const upLog = (msg) => { if (upDebug) log("[upright] " + msg); };
     function uprightSoon(doc) {
       try {
-        if (!game.user?.isGM || !game.settings.get(MOD, "tgtUpright")) return;
+        if (!game.user?.isGM) return upLog("skip: not GM");
+        if (!game.settings.get(MOD, "tgtUpright")) return upLog("skip: setting OFF");
         const id = doc?.id; if (!id) return;
-        const actor = (canvas.tokens?.get(id)?.actor) || doc?.actor;
-        if (!actor?.hasPlayerOwner) return;                                        // ONLY player-owned tokens self-right
+        const t0 = canvas.tokens?.get(id); const actor = t0?.actor || doc?.actor;
+        if (!actor?.hasPlayerOwner) return upLog(`skip: ${t0?.name || id} not player-owned`);   // ONLY player-owned tokens self-right
         const d = Number(game.settings.get(MOD, "tgtRecenterDelay")); const delay = (Number.isFinite(d) ? Math.max(0, d) : 1) * 1000;
+        upLog(`queued ${t0?.name || id} in ${delay}ms (rotation now ${Math.round(t0?.document?.rotation || 0)}°)`);
         clearTimeout(upTimers.get(id));
-        upTimers.set(id, setTimeout(async () => {
-          upTimers.delete(id);
-          try {
-            const t = canvas.tokens?.get(id); if (!t) return;
-            if (((((t.document.rotation || 0) % 360) + 360) % 360) < 0.5) return;   // already upright — skip the needless update
-            await t.document.update({ rotation: 0 }, { animate: true });            // eased spin back to upright
-          } catch (e) {}
-        }, delay));
-      } catch (e) {}
+        upTimers.set(id, setTimeout(() => { upTimers.delete(id); doUpright(id); }, delay));
+      } catch (e) { warn("uprightSoon failed", e); }
     }
+    async function doUpright(id) {
+      try {
+        const t = canvas.tokens?.get(id); if (!t) return upLog(`gone: ${id}`);
+        const rot = (((t.document.rotation || 0) % 360) + 360) % 360;
+        if (rot < 0.5 || rot > 359.5) return upLog(`${t.name}: already upright`);   // nothing to undo
+        upLog(`${t.name}: ${Math.round(rot)}° → 0°`);
+        await t.document.update({ rotation: 0 });                                   // Foundry eases token rotation by default
+      } catch (e) { warn("doUpright failed", e); }
+    }
+    // Manual force: upright the controlled token(s), else every player-owned token on the scene. Returns count.
+    function upright(id) {
+      const ids = id ? [id]
+        : (canvas.tokens?.controlled?.length ? canvas.tokens.controlled.map(t => t.id)
+        : (canvas.tokens?.placeables || []).filter(t => t.actor?.hasPlayerOwner).map(t => t.id));
+      let n = 0; for (const tid of ids) { const t = canvas.tokens?.get(tid); if (t && ((((t.document.rotation || 0) % 360) + 360) % 360) > 0.5) { t.document.update({ rotation: 0 }); n++; } }
+      ui.notifications?.info(`Cavril: uprighted ${n} token${n === 1 ? "" : "s"}.`);
+      return n;
+    }
+    // Static state for "why isn't it working": isGM + settingOn must be true; a player-owned token with lockRotation:true never SHOWS rotation.
+    function diagnoseUpright() {
+      const out = { isGM: !!game.user?.isGM, settingOn: !!game.settings.get(MOD, "tgtUpright"), delaySec: Number(game.settings.get(MOD, "tgtRecenterDelay")), tokens: [] };
+      for (const t of (canvas.tokens?.placeables || [])) out.tokens.push({ name: t.name, playerOwned: !!t.actor?.hasPlayerOwner, rotation: t.document.rotation, lockRotation: t.document.lockRotation });
+      console.log("%c[upright] diagnose", CSS, out); console.table(out.tokens);
+      ui.notifications?.info("Cavril: upright diagnose in console (F12).");
+      return out;
+    }
+    // Visible end-to-end demo on the SELECTED token: spin to 90°, then ease back to 0 (proves rotation SHOWS + the reset path runs).
+    async function testUpright() {
+      const t = canvas.tokens?.controlled?.[0]; if (!t) { ui.notifications?.warn("Cavril: select a token first."); return; }
+      if (t.document.lockRotation) ui.notifications?.warn(`Cavril: "${t.name}" has Lock Rotation ON — it will never visibly rotate (token config → Appearance).`);
+      upLog(`test ${t.name}: → 90°`); await t.document.update({ rotation: 90 });
+      await new Promise(r => setTimeout(r, 900));
+      upLog(`test ${t.name}: 90° → 0°`); await t.document.update({ rotation: 0 });
+    }
+    const debugUpright = (on = true) => { upDebug = !!on; log(`[upright] verbose tracing ${upDebug ? "ON" : "OFF"}`); return upDebug; };
     function destroy() { clearTimeout(timer); clearTimeout(rTimer); clearTimeout(recT); clearTimeout(autoT); for (const t of upTimers.values()) clearTimeout(t); upTimers.clear(); el?.remove(); el = null; last = null; }
-    return { recompute, recomputeSoon, kick, diagnose, reflect, reflectSoon, recenterSoon, uprightSoon, hide, destroy };
+    return { recompute, recomputeSoon, kick, diagnose, reflect, reflectSoon, recenterSoon, uprightSoon, upright, diagnoseUpright, testUpright, debugUpright, hide, destroy };
   })();
   globalThis.CavrilTargeting = TargetHelper;
 
