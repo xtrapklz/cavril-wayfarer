@@ -406,7 +406,7 @@
     let poolIds = null;
     if (genericBias && (CFG.useBiomeIndex ?? true)) {
       const rows = biomeIndexRows();
-      if (rows) { const b = effectiveBiome(cls); const ids = rows.filter(m => !m.exclude && m.generic && m.biome === b).map(m => m.id); if (ids.length) poolIds = new Set(ids); }
+      if (rows) { const b = effectiveBiome(cls); const ids = rows.filter(m => !m.exclude && m.generic && ((m.biomes || [m.biome]).includes(b))).map(m => m.id); if (ids.length) poolIds = new Set(ids); }   // multi-biome: a map serves every pool it fits
     }
     const scoreCat = (restrict) => cat.items
       .filter(it => it.dataKey === dataKey && it.genre === "fantasy" && (!restrict || restrict.has(it.id)))
@@ -487,13 +487,26 @@
     for (const [b, list] of Object.entries(BIOME_TAGS)) { let c = 0; for (const t of list) if (set.has(t)) c++; if (c > n) { n = c; best = b; } }
     return n ? best : "unknown";
   }
+  // EVERY biome a map can credibly serve (not just the single best) — so a generic natural map lands in ALL fitting
+  // pools, the way a real grassland suits temperate AND savanna. Qualifies on ≥2 shared tags, or the top match if it's alone.
+  function biomesOf(tags) {
+    const set = new Set((tags || []).map(t => String(t).toLowerCase()));
+    const scores = [];
+    for (const [b, list] of Object.entries(BIOME_TAGS)) { let c = 0; for (const t of list) if (set.has(t)) c++; if (c > 0) scores.push([b, c]); }
+    if (!scores.length) return ["unknown"];
+    const best = Math.max(...scores.map(s => s[1]));
+    return scores.filter(([, c]) => c >= 2 || c === best).map(([b]) => b);
+  }
   // Classify one battlemap for the curated index: its NATURALIZED variant → biome + generic/specific.
   function classifyMap(it) {
     const base = naturalBase(it);
     const tags = (base?.tags || []).map(t => String(t).toLowerCase());
     const terrain = tags.filter(t => WILDERNESS_TAGS.has(t) || t === "natural").length;
     const struct = tags.filter(t => STRUCTURE_TAGS.has(t)).length;
-    return { id: it.id, name: it.name, biome: biomeOf(tags), generic: terrain > 0 && terrain >= struct, natVar: base?.name || "" };
+    // If the map ships a "Natural"/"Empty" (building-stripped) variant, it's usable as generic wild terrain even when the
+    // base art has structures — staging naturalizes it. This pulls far more good wild candidates into the pools.
+    const hasNatural = (it.variants || []).some(v => /natural|empty/.test((v.name || "").toLowerCase()));
+    return { id: it.id, name: it.name, biome: biomeOf(tags), biomes: biomesOf(tags), generic: hasNatural || (terrain > 0 && terrain >= struct), natVar: base?.name || "" };
   }
   // The stored index merged with the GM's review-panel overrides ({id → {biome?,generic?,exclude?}}). Null
   // until buildBiomeIndex() has run. Overrides win, so re-curating never gets clobbered by a rebuild.
@@ -598,6 +611,35 @@
         { action: "close", label: "Close", icon: "fa-solid fa-xmark" },
       ],
     }).render({ force: true });
+  }
+
+  // Story-seed maps: the SPECIFIC (landmark/structure) battlemaps per biome — the opposite of the generic wild pool.
+  // These are the ones that can ANCHOR a set-piece, a quest beat, or inspire a story (a temple, a wreck, a keep).
+  // CavrilEncounterStage.storyMaps() or .storyMaps("jungle").
+  async function storyMaps(biome = null) {
+    let rows = biomeIndexRows();
+    if (!rows) { const cat = await getCatalog(); rows = cat.items.filter(it => it.dataKey === "maps" && it.genre === "fantasy").map(classifyMap); }
+    const out = {};
+    for (const m of rows) { if (m.exclude || m.generic) continue; for (const b of (m.biomes || [m.biome])) { if (biome && b !== biome) continue; (out[b] ??= []).push(m.name); } }
+    for (const b of Object.keys(out)) out[b] = Array.from(new Set(out[b])).sort();
+    console.log("%c[EncounterStage] story-seed maps — landmark/structure battlemaps that can anchor a set-piece or quest", CSS);
+    console.table(Object.fromEntries(Object.entries(out).map(([b, ns]) => [b, ns.length])));
+    console.log(out);
+    ui.notifications?.info("Cavril: story-seed maps in console (F12) — the landmark maps that can anchor a scene.");
+    return out;
+  }
+  // Verify the day/night + season variant selection: which MAP + variant would stage for a biome at a given
+  // time/season/weather, without creating anything. CavrilEncounterStage.previewMap("forest", { when:"night", season:"autumn" }).
+  async function previewMap(biome = "temperate", { when = "day", season = null, weather = null, river = false, road = false, n = 5 } = {}) {
+    const cls = { biome, river, coast: false, infrastructure: road };
+    const rows = [];
+    for (let i = 0; i < n; i++) {
+      const pick = await pickMap(cls, { type: "combat", when, weather, season });
+      rows.push(pick ? { map: pick.item?.name, variant: pick.variant?.name || "?", importable: !!pick.importable } : { map: "—", variant: "(no match)", importable: false });
+    }
+    console.log(`%c[EncounterStage] map preview — ${biome} · ${when}${season ? " · " + season : ""}${weather ? " · " + weather : ""}${road ? " · road" : ""}${river ? " · river" : ""}`, CSS);
+    console.table(rows);
+    return rows;
   }
 
   // ===== STAGING ===========================================================
@@ -1919,7 +1961,7 @@
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
-    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview,
+    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, storyMaps, previewMap,
     purgeStagedScenes, isStagedScene,   // cleanup: delete encounter-generated scenes (CavrilEncounterStage.purgeStagedScenes())
     encounterLog, showEncounterLog, logEncounter, markEncounterResolved,   // ledger: CavrilEncounterStage.showEncounterLog()
     // Preview the top matches for a biome without creating anything.
