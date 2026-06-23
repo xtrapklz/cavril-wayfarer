@@ -647,23 +647,23 @@
   async function czepekuProbe() {
     try {
       const data = await czQuery("fvtt.getSessionData", null);
-      const out = {};
-      for (const genre of Object.keys(data || {})) {
-        const g = data[genre];
-        if (genre === "urls" || !g || typeof g !== "object" || Array.isArray(g)) continue;
-        out[genre] = {};
+      const summary = { topKeys: Object.keys(data || {}), urls: data?.urls ?? {}, genres: {} };
+      for (const genre of ["fantasy", "scifi"]) {
+        const g = data?.[genre]; if (!g || typeof g !== "object") continue;
+        summary.genres[genre] = {};
         for (const dk of Object.keys(g)) {
           const arr = g[dk];
-          out[genre][dk] = Array.isArray(arr)
-            ? { count: arr.length, sampleName: arr[0]?.name ?? null, sampleKeys: arr[0] ? Object.keys(arr[0]) : [], sampleVariantKeys: arr[0]?.variants?.[0] ? Object.keys(arr[0].variants[0]) : null }
-            : typeof arr;
+          if (!Array.isArray(arr)) { summary.genres[genre][dk] = `(${typeof arr})`; continue; }
+          const s = arr[0];
+          summary.genres[genre][dk] = { count: arr.length, sampleName: s?.name ?? null, itemKeys: s ? Object.keys(s) : [], variant0: s?.variants?.[0] ?? null };
         }
       }
-      console.log("%c[EncounterStage] CZEPEKU getSessionData — data keys per genre (look for a 'tokens'/'assets' key beyond maps/scenes):", CSS);
-      console.log(out);
-      console.log("top-level keys:", Object.keys(data || {}), "· urls keys:", Object.keys(data?.urls || {}));
-      ui.notifications?.info("Cavril: CZEPEKU data shape dumped to the console (F12) — paste it back.");
-      return out;
+      let text; try { text = JSON.stringify(summary, null, 2); } catch (e) { text = String(summary); }
+      console.log("%c[EncounterStage] CZEPEKU data structure — copy the JSON below + paste it back:", CSS);
+      console.log(text);
+      try { await navigator.clipboard.writeText(text); ui.notifications?.info("Cavril: CZEPEKU data shape COPIED to clipboard (+ console F12) — paste it back."); }
+      catch (e) { ui.notifications?.info("Cavril: CZEPEKU data shape in console (F12) — copy the JSON and paste it back."); }
+      return summary;
     } catch (e) { warn("czepeku probe failed", e); ui.notifications?.warn(`Cavril: CZEPEKU probe failed — connected? ${e?.message || ""}`); return null; }
   }
 
