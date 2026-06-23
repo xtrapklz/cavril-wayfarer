@@ -1783,7 +1783,13 @@
       attachAdvDrag(el); document.body.appendChild(el); applyAdvPos();
     }
     function render() {
-      const primary = primaryAction(), next = nextAction();
+      let primary = primaryAction(), next = nextAction();
+      // Ever-present during combat: if the queue momentarily empties between steps, fall back to Next turn so the button
+      // never blinks out — it should always be there + contextual while a fight is running.
+      if (!primary && !next && game.user?.isGM && game.combats?.active?.started && game.combats.active.combatant) {
+        next = { id: "next-turn", label: "Next turn", icon: "fa-forward-step", priority: 10, run: () => game.combats?.active?.nextTurn?.() };
+        q.set("next-turn", next);
+      }
       if ((!primary && !next) || !game.user?.isGM) { if (el) el.style.display = "none"; return; }
       ensureEl();
       const a = primary || next;   // if only Next turn is queued, it fills the primary slot
