@@ -1424,6 +1424,16 @@
       if (b && b.id !== "next-turn" && q.has("next-turn") && rawTopId === idOf(b) && (Date.now() - rawTopAt) >= STALE_MS) return q.get("next-turn");
       return b;
     };
+    let advDrag = null;
+    function applyAdvPos() {
+      try { const p = game.settings.get(MOD, "advBarPos"); if (el && p && Number.isFinite(p.left) && Number.isFinite(p.top)) { el.style.left = p.left + "px"; el.style.top = p.top + "px"; el.style.right = "auto"; el.style.bottom = "auto"; el.style.transform = "none"; } } catch (e) {}
+    }
+    function attachAdvDrag(node) {   // drag the grip → reposition the universal button; persisted per-GM in advBarPos
+      node.addEventListener("pointerdown", (ev) => { if (!ev.target.closest(".cwf-adv-grip")) return; ev.preventDefault(); const r = node.getBoundingClientRect(); advDrag = { dx: ev.clientX - r.left, dy: ev.clientY - r.top }; try { node.setPointerCapture?.(ev.pointerId); } catch (e) {} });
+      node.addEventListener("pointermove", (ev) => { if (!advDrag) return; node.style.left = Math.max(2, Math.min(window.innerWidth - 40, ev.clientX - advDrag.dx)) + "px"; node.style.top = Math.max(2, Math.min(window.innerHeight - 24, ev.clientY - advDrag.dy)) + "px"; node.style.right = "auto"; node.style.bottom = "auto"; node.style.transform = "none"; });
+      const end = () => { if (!advDrag) return; advDrag = null; try { game.settings.set(MOD, "advBarPos", { left: parseInt(node.style.left) || 0, top: parseInt(node.style.top) || 0 }); } catch (e) {} };
+      node.addEventListener("pointerup", end); node.addEventListener("pointercancel", end);
+    }
     function render() {
       const raw = rawTop();
       const rid = idOf(raw);
@@ -1435,9 +1445,13 @@
       }
       const a = topAction();
       if (!a || !game.user?.isGM) { if (el) el.style.display = "none"; return; }
-      if (!el) { el = document.createElement("button"); el.type = "button"; el.id = "cavril-advance"; el.addEventListener("click", onClick); document.body.appendChild(el); }
+      if (!el) {
+        el = document.createElement("button"); el.type = "button"; el.id = "cavril-advance";
+        el.addEventListener("click", (ev) => { if (ev.target.closest(".cwf-adv-grip")) return; onClick(); });   // grip = drag, the rest = run the action
+        attachAdvDrag(el); document.body.appendChild(el); applyAdvPos();
+      }
       el.className = "cavril-advance" + (a.tone ? " " + a.tone : "");
-      el.innerHTML = `<i class="fa-solid ${a.icon || "fa-forward"}"></i> <span>${esc(a.label || "Advance")}</span>`;
+      el.innerHTML = `<span class="cwf-adv-grip" title="Drag to move"><i class="fa-solid fa-grip-vertical"></i></span><i class="fa-solid ${a.icon || "fa-forward"}"></i> <span>${esc(a.label || "Advance")}</span>`;
       el.disabled = false; el.style.display = "inline-flex";
     }
     async function onClick() {
@@ -1599,19 +1613,33 @@
     }
     function reflect() { if (last) render(last.list, last.viewer); }   // re-skin highlights only (never auto-targets)
     function hide() { last = null; if (el) el.style.display = "none"; }
+    let autoT = null;
     function recompute(fresh) {
       try {
         if (!game.user?.isGM || !game.settings.get(MOD, "tgtHelper")) return hide();
         const c = game.combats?.active; if (!c?.started) return hide();
         const viewer = driver(); if (!viewer?.actor) return hide();
         const list = ranked(viewer); if (!list.length) return hide();
-        // Auto-target the best ENEMY at the start of EVERY token's turn (incl. players) or after it moves with no target — never an ally/neutral/self.
-        if (game.settings.get(MOD, "tgtAutoTarget") && (fresh || !game.user.targets?.size)) {
-          const best = list.find((r) => r.rel === "enemy");
-          if (best) { try { best.t.setTarget(true, { user: game.user, releaseOthers: true }); } catch (e) {} }
-        }
-        render(list, viewer);
+        render(list, viewer);          // chips update instantly…
+        autoTargetSoon(!!fresh);       // …the auto-pick settles a beat later (tgtAutoDelay)
       } catch (e) { warn("target helper recompute failed", e); }
+    }
+    // Delayed auto-target: ~tgtAutoDelay seconds after a token moves or starts its turn, target the best ENEMY (never an
+    // ally / neutral / self). On a fresh turn it always re-picks; after a move only when nothing is currently targeted.
+    function autoTargetSoon(fresh) {
+      clearTimeout(autoT);
+      const d = Number(game.settings.get(MOD, "tgtAutoDelay")); const delay = (Number.isFinite(d) ? Math.max(0, d) : 1) * 1000;
+      autoT = setTimeout(() => {
+        autoT = null;
+        try {
+          if (!game.settings.get(MOD, "tgtAutoTarget")) return;
+          if (!(fresh || !game.user.targets?.size)) return;
+          const c = game.combats?.active; if (!c?.started) return;
+          const viewer = driver(); if (!viewer?.actor) return;
+          const best = ranked(viewer).find((r) => r.rel === "enemy");
+          if (best) best.t.setTarget(true, { user: game.user, releaseOthers: true });
+        } catch (e) {}
+      }, delay);
     }
     function recomputeSoon(fresh) { clearTimeout(timer); timer = setTimeout(() => { timer = null; recompute(fresh); }, 120); }
     function reflectSoon() { clearTimeout(rTimer); rTimer = setTimeout(() => { rTimer = null; reflect(); }, 60); }
@@ -1627,7 +1655,7 @@
         try { if (!game.combats?.active?.started) return; const tok = id ? canvas.tokens?.get(id) : null; if (tok) canvas.animatePan({ x: tok.center.x, y: tok.center.y, duration: 400 }); } catch (e) {}
       }, delay);
     }
-    function destroy() { clearTimeout(timer); clearTimeout(rTimer); clearTimeout(recT); el?.remove(); el = null; last = null; }
+    function destroy() { clearTimeout(timer); clearTimeout(rTimer); clearTimeout(recT); clearTimeout(autoT); el?.remove(); el = null; last = null; }
     return { recompute, recomputeSoon, reflect, reflectSoon, recenterSoon, hide, destroy };
   })();
   globalThis.CavrilTargeting = TargetHelper;
@@ -1853,9 +1881,11 @@
     reg("esBiomeOverrides",   { scope: "world", config: false, type: Object, default: {} });   // GM review-panel overrides {id→{biome?,generic?,exclude?}}
     reg("tgtHelper",          { name: "Targeting helper — suggest targets in combat", hint: "During combat, show a chip bar of the tokens the selected/active token can SEE, ranked: advantage (flanking or an advantage-granting condition) on an enemy → nearest enemy → nearest neutral → nearest ally. Click a chip to target / untarget. GM-only.", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtAutoTarget",      { name: "  · Auto-target the best enemy", hint: "Automatically target the best enemy at the start of EVERY token's turn (players included) and after it moves with no target. Only ever auto-targets an enemy — neutrals, allies and self stay click-only. OFF = the suggestion is only highlighted; you click a chip to target.", scope: "world", config: true, type: Boolean, default: true });
+    reg("tgtAutoDelay",       { name: "  · Auto-target delay (seconds)", hint: "How long after a token moves or starts its turn before the best enemy is auto-targeted. The target chips still update instantly — only the auto-pick waits. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 5, step: 0.5 } });
     reg("tgtRecenter",        { name: "  · Re-centre camera on player moves", hint: "During combat, pan the GM's camera back onto a PLAYER token after it finishes moving, so the acting hero stays framed. Never pans on monster moves.", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtRecenterDelay",   { name: "  · Re-centre delay (seconds)", hint: "How long after a player token settles before the camera pans onto it. 0 = immediate. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 10, step: 0.5 } });
     reg("tgtBarPos",          { scope: "client", config: false, type: Object, default: null });   // GM-dragged bar position {left,top}px
+    reg("advBarPos",          { scope: "client", config: false, type: Object, default: null });   // GM-dragged Advance button position {left,top}px
     reg("tgtBarScale",        { scope: "client", config: false, type: Number, default: 40 });      // GM-scrolled circle size (px)
   }
   function syncCfg() {

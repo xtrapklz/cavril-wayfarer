@@ -358,6 +358,10 @@ button.cwf-pm-v:hover { background: rgba(189,169,232,.18); color: #fff; }
 #cavril-advance:active { transform: translateX(-50%) scale(0.97); }
 #cavril-advance[disabled] { opacity: 0.55; cursor: default; }
 #cavril-advance i { font-size: 13px; opacity: 0.95; }
+#cavril-advance .cwf-adv-grip { display: inline-flex; align-items: center; margin: -6px 0 -6px -8px; padding: 6px 3px; opacity: 0.4; cursor: grab; touch-action: none; }
+#cavril-advance .cwf-adv-grip:hover { opacity: 0.85; }
+#cavril-advance .cwf-adv-grip:active { cursor: grabbing; }
+#cavril-advance .cwf-adv-grip i { font-size: 11px; }
 #cavril-advance.danger {
     border-color: var(--cwf-hard, #e0554d);
     background: color-mix(in srgb, var(--cwf-hard, #e0554d) 30%, rgba(20, 20, 26, 0.92));
