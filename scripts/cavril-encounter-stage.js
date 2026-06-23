@@ -668,39 +668,72 @@
   }
 
   // ===== CZEPEKU TOKENS (NPC art) =========================================
-  // CZEPEKU's session serves ~4500 fantasy character TOKENS: { id, name, thumbnailKey, subject, pack }. The portrait URL
-  // is urls.tokenThumbnail with <THUMBNAIL_KEY> swapped for the token's thumbnailKey. We match NPC/merchant types by
-  // keyword against subject+name+pack. tokenPacks()/tokenSample() reveal the vocabulary; tokenFor(keywords) picks one.
+  // CZEPEKU's session serves ~4500 fantasy character TOKENS: { id, name, thumbnailKey, subject, pack }. The portrait URL is
+  // urls.tokenThumbnail with <THUMBNAIL_KEY> swapped for the token's thumbnailKey. CRITICAL: `subject` and `pack` are
+  // OBJECTS, not strings — the descriptive words live nested inside them — so the match haystack is built by recursively
+  // collecting every string in name+subject+pack. tokenProbe() dumps the raw shape; tokenPacks()/tokenSample() reveal the
+  // vocabulary; tokenFor(keywords) picks a fitting face.
+  // Recursively collect every string value (skips ids/hashes by only walking the fields we pass in).
+  function _flatStr(v, acc) {
+    if (v == null) return acc;
+    const ty = typeof v;
+    if (ty === "string") { if (v) acc.push(v); return acc; }
+    if (ty === "number" || ty === "boolean") return acc;
+    if (Array.isArray(v)) { for (const x of v) _flatStr(x, acc); return acc; }
+    if (ty === "object") { for (const k in v) _flatStr(v[k], acc); return acc; }
+    return acc;
+  }
+  // Best-effort human label for an object-or-string field (subject / pack).
+  const _asLabel = (v) => v == null ? "" : (typeof v === "string" ? v : (v.name || v.label || v.title || v.slug || v.value || ""));
   let _tokenCat = null, _tokenCatAt = 0;
   async function tokenCatalog(force = false) {
     if (!force && _tokenCat && (Date.now() - _tokenCatAt) < (CFG.catalogTtlMs ?? 300000)) return _tokenCat;
     const data = await czQuery("fvtt.getSessionData", null);
     const base = data?.urls?.tokenThumbnail || "";
-    const items = (data?.fantasy?.tokens ?? []).map(t => ({
-      id: t.id, name: t.name || "", subject: t.subject || "", pack: t.pack || "",
-      url: (t.thumbnailKey && base) ? base.replace("<THUMBNAIL_KEY>", t.thumbnailKey) : null,
-      hay: `${t.subject || ""} ${t.name || ""} ${t.pack || ""}`.toLowerCase(),
-    })).filter(t => t.url);
+    const items = (data?.fantasy?.tokens ?? []).map(t => {
+      const tk = typeof t.thumbnailKey === "string" ? t.thumbnailKey : "";
+      const url = (tk && base) ? base.replace("<THUMBNAIL_KEY>", tk) : null;
+      if (!url) return null;
+      return {
+        id: t.id, name: t.name || "", subject: t.subject, pack: t.pack,
+        subjLabel: _asLabel(t.subject), packLabel: _asLabel(t.pack), url,
+        hay: _flatStr([t.name, t.subject, t.pack], []).join(" ").toLowerCase(),
+      };
+    }).filter(Boolean);
     _tokenCat = { items, base }; _tokenCatAt = Date.now();
     return _tokenCat;
   }
   const tokenUrl = (t) => t?.url || null;
+  // Raw structure dump — `subject`/`pack` are objects, so this shows the real field names to match against. Copies to clipboard.
+  async function tokenProbe() {
+    try {
+      const data = await czQuery("fvtt.getSessionData", null);
+      const toks = data?.fantasy?.tokens ?? [];
+      const out = { count: toks.length, urlTemplate: data?.urls?.tokenThumbnail || null, sample: toks.slice(0, 6) };
+      let text; try { text = JSON.stringify(out, null, 2); } catch (e) { text = String(out); }
+      console.log("%c[EncounterStage] CZEPEKU TOKEN structure — copy the JSON below + paste it back:", CSS);
+      console.log(text);
+      try { await navigator.clipboard.writeText(text); ui.notifications?.info("Cavril: CZEPEKU token shape COPIED to clipboard (+ console F12) — paste it back."); }
+      catch (e) { ui.notifications?.info("Cavril: CZEPEKU token shape in console (F12) — copy the JSON and paste it back."); }
+      return out;
+    } catch (e) { warn("token probe failed", e); ui.notifications?.warn("Cavril: token probe failed — " + (e?.message || "")); return null; }
+  }
   async function tokenPacks() {
     const cat = await tokenCatalog(); const m = {};
-    for (const t of cat.items) { const k = t.pack || "(none)"; m[k] = (m[k] || 0) + 1; }
+    for (const t of cat.items) { const k = t.packLabel || "(unlabeled)"; m[k] = (m[k] || 0) + 1; }
     const rows = Object.entries(m).sort((a, b) => b[1] - a[1]).map(([pack, count]) => ({ pack, count }));
-    console.log(`%c[EncounterStage] CZEPEKU token packs (${cat.items.length} tokens, top 60 packs):`, CSS); console.table(rows.slice(0, 60));
+    console.log(`%c[EncounterStage] CZEPEKU token packs (${cat.items.length} tokens, ${rows.length} packs; top 60):`, CSS); console.table(rows.slice(0, 60));
     return rows;
   }
   async function tokenSample(query = "", n = 25) {
     const cat = await tokenCatalog(); const q = String(query).toLowerCase().trim();
     const items = q ? cat.items.filter(t => t.hay.includes(q)) : cat.items;
-    const sample = items.slice(0, n).map(t => ({ subject: t.subject, name: t.name, pack: t.pack }));
+    const sample = items.slice(0, n).map(t => ({ subject: t.subjLabel, name: t.name, pack: t.packLabel }));
     console.log(`%c[EncounterStage] token sample — ${items.length} match "${query}" (showing ${sample.length}):`, CSS); console.table(sample);
     return sample;
   }
-  // Pick a token whose subject/name/pack matches ANY keyword (random among matches); falls back to a random token. Returns
-  // { url, subject, pack, name } or null. Used by NPC generators (the merchant economy) to give each NPC a face.
+  // Pick a token whose name/subject/pack text matches ANY keyword (random among matches); falls back to a random token.
+  // Returns { url, subject, pack, name } (subject/pack as display labels) or null. Used by NPC generators (merchants).
   async function tokenFor(keywords) {
     try {
       const cat = await tokenCatalog(); if (!cat.items.length) return null;
@@ -708,7 +741,7 @@
       let pool = cat.items;
       if (kws.length) { const m = cat.items.filter(t => kws.some(k => t.hay.includes(k))); if (m.length) pool = m; }
       const t = pool[Math.floor(Math.random() * pool.length)];
-      return t ? { url: t.url, subject: t.subject, name: t.name, pack: t.pack } : null;
+      return t ? { url: t.url, subject: t.subjLabel, name: t.name, pack: t.packLabel } : null;
     } catch (e) { warn("tokenFor failed", e); return null; }
   }
 
@@ -2066,7 +2099,7 @@
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
     getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, storyMaps, previewMap, czepekuProbe,
-    tokenCatalog, tokenPacks, tokenSample, tokenFor, tokenUrl,   // CZEPEKU NPC art: tokenPacks()/tokenSample("smith") to explore, tokenFor(keywords) to match a face
+    tokenCatalog, tokenProbe, tokenPacks, tokenSample, tokenFor, tokenUrl,   // CZEPEKU NPC art: tokenProbe() dumps raw shape, tokenPacks()/tokenSample("smith") explore, tokenFor(keywords) matches a face
     purgeStagedScenes, isStagedScene,   // cleanup: delete encounter-generated scenes (CavrilEncounterStage.purgeStagedScenes())
     encounterLog, showEncounterLog, logEncounter, markEncounterResolved,   // ledger: CavrilEncounterStage.showEncounterLog()
     // Preview the top matches for a biome without creating anything.
