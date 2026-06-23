@@ -4273,6 +4273,34 @@ Hooks.once("init", () => {
 
 Hooks.once("ready", () => {
     // Public surface for macros: window.CavrilWayfarer.toggle()
+    // Automation presets — ONE switch between FULLY AUTOMATED (the flow runs itself) and FULLY MANUAL (you click every
+    // step on the Advance button). Flips the high-impact toggles across Cavril: Core + Wayfarer. CavrilWayfarer.automation()
+    // toggles; .automation("auto") / .automation("manual") set it explicitly. GM-only; skips Core's settings if Core's absent.
+    async function cwfApplyAutomation(mode) {
+        if (!game.user?.isGM) return;
+        const CORE = "ddb-roll-cards", coreOn = !!game.modules.get(CORE)?.active;
+        if (!mode) { let cur = false; try { cur = coreOn ? game.settings.get(CORE, "fullAuto") : game.settings.get(MOD, "tgtAutoTarget"); } catch (e) {} mode = cur ? "manual" : "auto"; }
+        const PRESETS = {
+            auto: {
+                [CORE]: { fullAuto: true, advanceOverlay: true },
+                [MOD]:  { tgtAutoTarget: true, esAutoEnter: true, esAddToCombat: true, esAutoStageOnCombat: true }
+            },
+            manual: {
+                [CORE]: { fullAuto: false, autoConfirmHits: false, autoConfirmDamage: false, featureMasterySaveAuto: false, featureEffectsAuto: false, featureLegResAuto: false, advanceOverlay: true },
+                [MOD]:  { tgtAutoTarget: false, esAutoEnter: false, esAddToCombat: true, esAutoStageOnCombat: true }
+            }
+        };
+        const p = PRESETS[mode];
+        if (!p) { ui.notifications?.warn("Cavril: automation mode must be 'auto' or 'manual'."); return; }
+        let n = 0;
+        for (const [ns, kv] of Object.entries(p)) {
+            if (ns !== MOD && !coreOn) continue;   // Core not installed → skip its settings
+            for (const [k, v] of Object.entries(kv)) { try { await game.settings.set(ns, k, v); n++; } catch (e) {} }
+        }
+        ui.notifications?.info(`${TITLE}: ${mode === "auto" ? "FULLY AUTOMATED" : "FULLY MANUAL"} mode — ${n} setting${n === 1 ? "" : "s"} applied${coreOn ? "" : " (Core absent — Wayfarer only)"}.`);
+        return mode;
+    }
+
     globalThis.CavrilWayfarer = {
         open: () => WayfarerPanel.open(),
         close: () => WayfarerPanel.close(),
@@ -4284,6 +4312,7 @@ Hooks.once("ready", () => {
         reseedTables: () => Tables.reseed(),
         resetJourney: () => Tables.resetJourney(),
         merchant: (opts) => MerchantEconomy.roll(opts),
+        automation: (mode) => cwfApplyAutomation(mode),
         journeyStatus: () => Tables.journeyStatus(),
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, _installed: true
     };
