@@ -365,30 +365,48 @@ button.cwf-pm-v:hover { background: rgba(189,169,232,.18); color: #fff; }
 }
 @keyframes cavril-advance-in { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
-/* ===== Targeting helper — chip bar of visible tokens, just above the Advance button ===== */
+/* ===== Targeting helper — minimalist target reticules (no bar chrome); grip drags to move, scroll resizes ===== */
 #cavril-targets {
-    position: fixed; bottom: 23vh; left: 50%; transform: translateX(-50%);
-    display: none; align-items: center; gap: 7px; flex-wrap: wrap; justify-content: center;
-    max-width: 72vw; padding: 6px 11px; z-index: 69;
-    background: rgba(20, 20, 26, 0.82); border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 13px; backdrop-filter: blur(6px); box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
-    animation: cavril-advance-in 0.2s ease;
+    position: fixed; left: 50%; bottom: 22vh; transform: translateX(-50%);
+    --tgt-size: 40px;
+    display: none; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: center;
+    max-width: 70vw; padding: 4px; z-index: 69; animation: cavril-advance-in 0.2s ease;
 }
-#cavril-targets .cwf-tgt-h { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; opacity: 0.82; color: var(--cwf-accent, #bda9e8); margin-right: 3px; white-space: nowrap; }
+.cwf-tgt-grip {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; margin-right: 1px; cursor: grab;
+    color: var(--cwf-accent, #bda9e8); opacity: 0.32; font-size: 10px;
+    touch-action: none; transition: opacity 0.12s ease;
+}
+.cwf-tgt-grip:hover { opacity: 0.9; }
+.cwf-tgt-grip:active { cursor: grabbing; }
 .cwf-tgt {
-    position: relative; width: 38px; height: 38px; padding: 0; border-radius: 50%;
-    border: 2px solid var(--ring, #888); background: #14141a; cursor: pointer; overflow: visible;
-    transition: transform 0.12s ease, box-shadow 0.12s ease;
+    position: relative; width: var(--tgt-size); height: var(--tgt-size);
+    padding: 0; border: none; background: none; cursor: pointer; transition: transform 0.12s ease;
 }
-.cwf-tgt img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
+.cwf-tgt img {
+    position: absolute; top: 7%; left: 7%; width: 86%; height: 86%;
+    border-radius: 50%; object-fit: cover; display: block;
+    box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ring) 50%, transparent);
+}
 .cwf-tgt.enemy { --ring: #e0566a; }
 .cwf-tgt.neutral { --ring: #c8a24a; }
 .cwf-tgt.ally { --ring: #5bbf7a; }
 .cwf-tgt:hover { transform: translateY(-2px); }
-.cwf-tgt.sug { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.92), 0 0 12px 2px var(--ring); }
-.cwf-tgt.on { border-color: #fff; box-shadow: 0 0 0 2px var(--ring), 0 0 10px 1px rgba(255, 255, 255, 0.85); }
-.cwf-tgt-adv { position: absolute; top: -4px; right: -4px; font-size: 9px; color: #ffd34d; background: #1a1a20; border-radius: 50%; padding: 2px 3px; line-height: 1; }
-.cwf-tgt-d { position: absolute; bottom: -7px; left: 50%; transform: translateX(-50%); font-size: 9px; background: #1a1a20; color: #ddd; padding: 0 4px; border-radius: 6px; line-height: 1.5; }
+.cwf-tgt.sug img { box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.85); }
+.cwf-tgt.on img { box-shadow: 0 0 0 2px var(--ring); }
+.cwf-tgt.sug { --ret: rgba(255, 255, 255, 0.8); }
+.cwf-tgt.on { --ret: var(--ring); }
+.cwf-tgt.sug::before, .cwf-tgt.on::before, .cwf-tgt.sug::after, .cwf-tgt.on::after { content: ""; position: absolute; pointer-events: none; }
+.cwf-tgt.sug::before, .cwf-tgt.on::before {
+    top: 50%; left: -3px; right: -3px; height: 1.5px; transform: translateY(-50%);
+    background: linear-gradient(90deg, var(--ret) 0 5px, transparent 5px calc(100% - 5px), var(--ret) calc(100% - 5px) 100%);
+}
+.cwf-tgt.sug::after, .cwf-tgt.on::after {
+    left: 50%; top: -3px; bottom: -3px; width: 1.5px; transform: translateX(-50%);
+    background: linear-gradient(180deg, var(--ret) 0 5px, transparent 5px calc(100% - 5px), var(--ret) calc(100% - 5px) 100%);
+}
+.cwf-tgt-adv { position: absolute; top: -2px; right: -2px; font-size: 8px; color: #ffd34d; background: rgba(20, 20, 26, 0.9); border-radius: 50%; padding: 2px; line-height: 1; z-index: 2; }
 
 /* ---------- Read-aloud boxed text on encounter cards ---------- */
 .cwf-readaloud {

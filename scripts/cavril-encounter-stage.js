@@ -1398,10 +1398,21 @@
       out.sort((a, b) => a.tier - b.tier || a.dist - b.dist);
       return out;
     }
+    let dragOff = null, pendScale = null, scaleT = null;
     function chip(r, suggested) {
       const t = r.t, img = t.document?.texture?.src || t.actor?.img || "";
       const tip = `${t.name} · ${Math.round(r.dist)} ft · ${r.rel}${r.adv ? " · advantage" : ""}${suggested ? " · suggested" : ""}`;
-      return `<button class="cwf-tgt ${r.rel}${suggested ? " sug" : ""}${targeted(t) ? " on" : ""}" data-tid="${t.id}" title="${esc(tip)}"><img src="${esc(img)}" alt="">${r.adv ? '<i class="fa-solid fa-bolt cwf-tgt-adv"></i>' : ""}<span class="cwf-tgt-d">${Math.round(r.dist)}</span></button>`;
+      return `<button class="cwf-tgt ${r.rel}${suggested ? " sug" : ""}${targeted(t) ? " on" : ""}" data-tid="${t.id}" title="${esc(tip)}"><img src="${esc(img)}" alt="">${r.adv ? '<i class="fa-solid fa-bolt cwf-tgt-adv"></i>' : ""}</button>`;
+    }
+    // Restore the GM's saved bar position + circle size (client-scoped; set by drag + scroll).
+    function applyBar() {
+      if (!el) return;
+      try {
+        const sc = Number(game.settings.get(MOD, "tgtBarScale")) || 40;
+        el.style.setProperty("--tgt-size", Math.max(24, Math.min(84, sc)) + "px");
+        const p = game.settings.get(MOD, "tgtBarPos");
+        if (p && Number.isFinite(p.left) && Number.isFinite(p.top)) { el.style.left = p.left + "px"; el.style.top = p.top + "px"; el.style.right = "auto"; el.style.bottom = "auto"; el.style.transform = "none"; }
+      } catch (e) {}
     }
     function render(list, viewer) {
       if (!list || !list.length || !viewer) return hide();
@@ -1409,14 +1420,39 @@
       if (!el) {
         el = document.createElement("div"); el.id = "cavril-targets";
         el.addEventListener("click", (ev) => {
+          if (ev.target.closest(".cwf-tgt-grip")) return;
           const b = ev.target.closest("[data-tid]"); if (!b) return;
           const t = canvas.tokens?.get(b.dataset.tid); if (!t) return;
           try { t.setTarget(!targeted(t), { user: game.user, releaseOthers: false }); } catch (e) {}
           reflect();
         });
+        el.addEventListener("pointerdown", (ev) => {   // drag the grip → reposition (delegated, survives innerHTML rebuilds)
+          if (!ev.target.closest(".cwf-tgt-grip")) return;
+          ev.preventDefault();
+          const r = el.getBoundingClientRect();
+          dragOff = { dx: ev.clientX - r.left, dy: ev.clientY - r.top };
+          try { el.setPointerCapture(ev.pointerId); } catch (e) {}
+        });
+        el.addEventListener("pointermove", (ev) => {
+          if (!dragOff) return;
+          el.style.left = Math.max(2, Math.min(window.innerWidth - 24, ev.clientX - dragOff.dx)) + "px";
+          el.style.top = Math.max(2, Math.min(window.innerHeight - 24, ev.clientY - dragOff.dy)) + "px";
+          el.style.right = "auto"; el.style.bottom = "auto"; el.style.transform = "none";
+        });
+        const endDrag = () => { if (!dragOff) return; dragOff = null; try { game.settings.set(MOD, "tgtBarPos", { left: parseInt(el.style.left) || 0, top: parseInt(el.style.top) || 0 }); } catch (e) {} };
+        el.addEventListener("pointerup", endDrag);
+        el.addEventListener("pointercancel", endDrag);
+        el.addEventListener("wheel", (ev) => {   // scroll over the bar → resize the circles (debounced save)
+          ev.preventDefault(); ev.stopPropagation();
+          let s = pendScale ?? (Number(game.settings.get(MOD, "tgtBarScale")) || 40);
+          s = Math.max(24, Math.min(84, s + (ev.deltaY < 0 ? 4 : -4))); pendScale = s;
+          el.style.setProperty("--tgt-size", s + "px");
+          clearTimeout(scaleT); scaleT = setTimeout(() => { try { game.settings.set(MOD, "tgtBarScale", pendScale); } catch (e) {} }, 300);
+        }, { passive: false });
         document.body.appendChild(el);
+        applyBar();
       }
-      el.innerHTML = `<span class="cwf-tgt-h"><i class="fa-solid fa-crosshairs"></i> ${esc(viewer.name || "Targets")}</span>` + list.slice(0, 14).map((r, i) => chip(r, i === 0)).join("");
+      el.innerHTML = `<span class="cwf-tgt-grip" title="Drag to move · scroll to resize"><i class="fa-solid fa-up-down-left-right"></i></span>` + list.slice(0, 14).map((r, i) => chip(r, i === 0)).join("");
       el.style.display = "flex";
     }
     function reflect() { if (last) render(last.list, last.viewer); }   // re-skin highlights only (never auto-targets)
@@ -1661,6 +1697,8 @@
     reg("esBiomeOverrides",   { scope: "world", config: false, type: Object, default: {} });   // GM review-panel overrides {id→{biome?,generic?,exclude?}}
     reg("tgtHelper",          { name: "Targeting helper — suggest targets in combat", hint: "During combat, show a chip bar of the tokens the selected/active token can SEE, ranked: advantage (flanking or an advantage-granting condition) on an enemy → nearest enemy → nearest neutral → nearest ally. Click a chip to target / untarget. GM-only.", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtAutoTarget",      { name: "  · Auto-target the suggestion", hint: "Automatically set the top suggestion as your target at the start of each foe's turn (and when the active foe moves with no target). OFF = the suggestion is only highlighted; you click a chip to target it. Never auto-targets on a player's own turn.", scope: "world", config: true, type: Boolean, default: true });
+    reg("tgtBarPos",          { scope: "client", config: false, type: Object, default: null });   // GM-dragged bar position {left,top}px
+    reg("tgtBarScale",        { scope: "client", config: false, type: Number, default: 40 });      // GM-scrolled circle size (px)
   }
   function syncCfg() {
     try {
