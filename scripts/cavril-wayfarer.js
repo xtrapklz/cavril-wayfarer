@@ -1144,6 +1144,17 @@ function cwfRefreshVisionSoon() {   // coalesce a burst of clock changes (per-he
     try { if (_cwfVisionTimer) clearTimeout(_cwfVisionTimer); } catch (e) {}
     _cwfVisionTimer = setTimeout(() => { _cwfVisionTimer = null; cwfRefreshVision(); }, 450);
 }
+// Wait for the party token's MOVE animation to actually FINISH. token.document.update({animate:true}) resolves on the data
+// write, not the glide — so without this the cinematic curtain fires mid-move, starves the animation's frames, and the token
+// jumps with an unexplored fog gap between hexes. Awaiting the real animation lets the glide land + the fog sweep the path
+// first. Races a 2s cap so a stuck/cancelled animation can never hang the trek.
+async function cwfAwaitMove(tok) {
+    try {
+        const name = tok?.animationName;
+        const anim = (name && globalThis.CanvasAnimation?.getAnimation) ? CanvasAnimation.getAnimation(name) : null;
+        if (anim?.promise) await Promise.race([anim.promise, new Promise(r => setTimeout(r, 2000))]);
+    } catch (e) { /* noop */ }
+}
 
 const Cinematic = (() => {
     const TONE = {
@@ -1481,6 +1492,7 @@ async function cwfAdvanceHex(auto) {
     }
     // SIGNAL (or a manual Step) → flush the leg, ONE combined transition cinematic, the hex line.
     cwfFlushLeg();
+    if (tok) { try { await cwfAwaitMove(tok); cwfRefreshVision(); } catch (e) { /* noop */ } }   // let the glide FULLY land (fog sweeps the path) before any cinematic curtain — fixes the jump + the unexplored gap between hexes
     if (biomeChanged || weatherChanged || todChanged) {
         await new Promise(res => setTimeout(res, 180));   // let the glide settle on the new hex for a beat before the transition curtain covers it
         const bits = []; if (biomeChanged) bits.push(biome); if (todChanged) bits.push(tod.label); if (weatherChanged && weatherLabel) bits.push(weatherLabel);
