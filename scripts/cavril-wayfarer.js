@@ -1347,8 +1347,8 @@ async function cwfHexEvent(cls, { scoutGood = false } = {}) {
     if (x <= 0 || roll > x) return { halt: false, line: await Tables.drawFlavor() };
     // A real event. Narrative is most common (continue); combat scales with danger;
     // puzzle and site are rare and halt the day.
-    const kind = cwfWeightedPick({ narrative: 5, combat: 3 + x, puzzle: 2, site: 1 });
-    if (kind === "narrative") return { halt: false, line: await Tables.drawEvent("narrative") };
+    const kind = cwfWeightedPick({ narrative: 5, combat: 3 + x, puzzle: 2, site: 2, trade: cls?.infrastructure ? 6 : 2 });   // site bumped for more hook-discoveries; trade weighted up on roads (infrastructure)
+    if (kind === "narrative" || kind === "trade") return { halt: false, line: await Tables.drawEvent(kind) };   // both are non-halting opportunity beats the GM can choose to run
     const hours = Math.max(0, Number(game.settings.get(MOD, "encounterHours")) || 1);
     const meta = ({
         combat: { icon: "fa-dragon", label: "Encounter!" },
@@ -2799,7 +2799,19 @@ const Tables = (() => {
         "Faint woodsmoke on the breeze, its source unseen.",
         "The path narrows between leaning rocks.",
         "Day-old tracks of some large animal cross yours.",
-        "A standing stone, lichen-furred, leaning with age."
+        "A standing stone, lichen-furred, leaning with age.",
+        "Claw-marks gouge a tree at twice a man's height — and fresh.",
+        "A snare-line, lately set and just as lately sprung.",
+        "Scales the size of dinner plates, shed and gleaming, trail off the path.",
+        "A territory-marker of bone and hide, arranged with grim purpose.",
+        "A half-eaten carcass, dragged some distance, the furrow still damp.",
+        "Wards of woven grass and bone hang in the branches — someone here is afraid.",
+        "A hunter's blind, abandoned mid-vigil, gear still in it.",
+        "Fresh wheel-ruts turn off toward the hills — a wagon, heavily laden.",
+        "Thin steady smoke on the air — a camp, a forge, or a signal.",
+        "A boundary-stone of a neighbouring land, its sigil unfamiliar.",
+        "Spoor too large for anything you would care to meet, leading on.",
+        "A shrine-offering left in haste, untouched and fly-clouded."
     ];
     const EVENT_SEEDS = {
         narrative: [
@@ -2810,7 +2822,15 @@ const Tables = (() => {
             "A border-marker of some unknown claim — someone rules here.",
             "An abandoned wagon, cargo gone, story untold.",
             "Distant horns or drums — a people you have not met.",
-            "A field of old battle, arms and armor rusting in the grass."
+            "A field of old battle, arms and armor rusting in the grass.",
+            "A trapper warns of a beast 'come down from the high country' — and offers coin to whoever ends it.",
+            "Refugees on the road speak of a place gone wrong, some days behind them.",
+            "A hedge-priest blesses your road and lets slip the name of a local terror.",
+            "A bounty-notice nailed to a post: a creature, a reward, a place to claim it.",
+            "A faction scout you've crossed before recognizes you — and only watches you pass.",
+            "A caravan-guard trades news: the pass ahead is closed, the reason unspoken.",
+            "A milestone carved with a child's rhyme that names a monster — and where it sleeps.",
+            "A lone survivor, half-mad, repeats a single direction over and over."
         ],
         puzzle: [
             "A sealed door set into a hillside, its mechanism cold and clever.",
@@ -2818,7 +2838,9 @@ const Tables = (() => {
             "Standing stones aligned to something; the pattern bars the way.",
             "A chasm spanned by a bridge that won't bear a careless step.",
             "An old warding glyph blocks the path, waiting to be unmade.",
-            "A gatehouse with no gate — only a question carved above it."
+            "A gatehouse with no gate — only a question carved above it.",
+            "A toll-shrine that takes its payment in answers, not coin.",
+            "A washed-out trail; the only way on is a feat of nerve and rope."
         ],
         site: [
             "A cave mouth exhales cold air and older silence.",
@@ -2826,10 +2848,30 @@ const Tables = (() => {
             "A half-fallen watchtower, its cellars intact.",
             "A barrow, capstone shifted — something went in, or out.",
             "A sinkhole opens onto worked stone far below.",
-            "An overgrown keep, gates ajar, no banners flying."
+            "An overgrown keep, gates ajar, no banners flying.",
+            "A lair-mouth ringed with the bones of prey — and one fresher set that wore boots.",
+            "A hunter's cache, sealed and trapped, its ledger naming a quarry never claimed.",
+            "A wrecked expedition's camp — maps, a journal, and a route into worse country.",
+            "A monument to some beast-slaying, its inscription pointing onward.",
+            "A shrine the locals feed rather than worship — the offerings lead somewhere.",
+            "A poacher's hide hung with trophies, a contract still pinned to the wall.",
+            "Tracks converging on one point ahead, from every direction.",
+            "A boundary between this country and the next, marked by something's territory."
+        ],
+        trade: [
+            "A parts-buyer's wagon, scales set out, paying coin for monster ichor, hide, and horn.",
+            "An alchemist afoot, hunting rare reagents and trading potions for them.",
+            "A relic-dealer with a locked case and a nervous guard, buying odd finds.",
+            "A cartographer trading coin and charts for word of what lies off the road.",
+            "A tinker-smith who'll repair or reforge — for the right material, or a good tale.",
+            "A travelling apothecary: cures and antitoxins for sale, rumors thrown in free.",
+            "A beast-tamer leading muzzled stock, buying live specimens, selling mounts.",
+            "A road-fence, no questions asked, prices to match.",
+            "A herbalist with a pack-goat, trading salves for foraged rarities.",
+            "A bounty-broker collecting proof of slain monsters — and issuing fresh contracts."
         ]
     };
-    const TABLE_NAMES = { flavor: "Travel Flavor", narrative: "Travel — Narrative", puzzle: "Travel — Puzzle", site: "Travel — Site" };
+    const TABLE_NAMES = { flavor: "Travel Flavor", narrative: "Travel — Narrative", puzzle: "Travel — Puzzle", site: "Travel — Site", trade: "Travel — Trade" };
     async function ensureGeneric(key, entries) {
         const cached = ids()?.travel?.[key];
         if (cached) { const t = game.tables.get(cached); if (t) return t; }
@@ -2850,8 +2892,19 @@ const Tables = (() => {
     }
     const drawFlavor = () => drawGeneric("flavor", FLAVOR_ENTRIES);
     const drawEvent = (kind) => drawGeneric(kind, EVENT_SEEDS[kind] || EVENT_SEEDS.narrative);
+    // Rebuild the travel flavor/event/trade RollTables from the CURRENT seeds — applies the enriched content to an
+    // existing world (the tables are created once and cached by id, so new seeds don't appear until rebuilt). Overwrites GM edits to those tables.
+    async function reseed() {
+        if (!game.user.isGM) return;
+        const map = ids(); map.travel = map.travel || {};
+        const kinds = { flavor: FLAVOR_ENTRIES, narrative: EVENT_SEEDS.narrative, puzzle: EVENT_SEEDS.puzzle, site: EVENT_SEEDS.site, trade: EVENT_SEEDS.trade };
+        for (const key of Object.keys(kinds)) { try { const old = map.travel[key] && game.tables.get(map.travel[key]); if (old) await old.delete(); } catch (e) {} delete map.travel[key]; }
+        await game.settings.set(MOD, "tableIds", map);
+        for (const [key, entries] of Object.entries(kinds)) { try { await ensureGeneric(key, entries); } catch (e) {} }
+        ui.notifications?.info(`${TITLE}: travel flavor / event / trade tables rebuilt from the latest seeds.`);
+    }
 
-    return { ensureAll, draw, ensureEncounter, drawEncounter, drawFlavor, drawEvent, DEFS, FOLDER };
+    return { ensureAll, draw, ensureEncounter, drawEncounter, drawFlavor, drawEvent, reseed, DEFS, FOLDER };
 })();
 
 /* =========================================================================
@@ -3779,6 +3832,7 @@ Hooks.once("ready", () => {
         debugBadge: () => BiomeBadge.diagnose(),
         planRoute: () => Travel.startPlot(),
         createTables: () => Tables.ensureAll(),
+        reseedTables: () => Tables.reseed(),
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, _installed: true
     };
     // Phase-transition cinematics broadcast from the GM → every client plays them.
