@@ -357,10 +357,24 @@ const Domain = (() => {
         return { mode: adv ? "advantage" : dis ? "disadvantage" : "normal", adv, dis };
     }
 
+    // WHY a role rolls with advantage/disadvantage this turn — the individual sources (pace, weather), each with its own
+    // icon + label, so the turn card can show a tiny glanceable "because…" instead of a bare ADV/DIS tag. When a role has
+    // both an adv and a dis source they cancel to a straight roll (rollState handles the net) but BOTH are still reported
+    // here, so the GM can see "Slow pace + Fog → cancels out" rather than an unexplained normal roll.
+    function rollWhy(roleKey, state) {
+        const pace = PACE[state.pace] || PACE.normal;
+        const weather = WEATHER[state.weather] || WEATHER.clear;
+        const why = [];
+        if (pace.mod === "advantage") why.push({ kind: "adv", label: `${pace.label} pace`, icon: "fa-gauge-simple-low" });
+        if (pace.mod === "disadvantage") why.push({ kind: "dis", label: `${pace.label} pace`, icon: "fa-gauge-simple-high" });
+        if (weather.hits.includes(roleKey)) why.push({ kind: "dis", label: weather.label, icon: weather.icon });
+        return why;
+    }
+
     return {
         DEFAULT_TERRAIN, DEFAULT_FEATURES, BIOME, ELEV, WEATHER, WEATHER_ORDER, PACE, PACE_ORDER, ROLES,
         terrainTable, isBiomeTile, keywordsFromSrc, classify, classifyHexlands, tier,
-        rollWeatherKey, spaces, fastProhibited, hoursPerHex, rollState
+        rollWeatherKey, spaces, fastProhibited, hoursPerHex, rollState, rollWhy
     };
 })();
 
@@ -1146,6 +1160,13 @@ function cwfRefreshVisionSoon() {   // coalesce a burst of clock changes (per-he
     try { if (_cwfVisionTimer) clearTimeout(_cwfVisionTimer); } catch (e) {}
     _cwfVisionTimer = setTimeout(() => { _cwfVisionTimer = null; cwfRefreshVision(); }, 450);
 }
+// After a LARGE clock jump (camp → night → dawn) the day/night module ANIMATES darkness over ~1s. A single (debounced)
+// refresh can fire mid-animation and leave the overworld black with stale vision — the "entire hex map goes blank at camp /
+// night" bug. Stagger several recomputes so the final vision state matches the settled darkness no matter how long the
+// animation runs. perception.update coalesces, so the extra calls are cheap + idempotent.
+function cwfSettleVision() {
+    for (const ms of [250, 700, 1400, 2200]) setTimeout(cwfRefreshVision, ms);
+}
 // Wait for the party token's MOVE animation to actually FINISH. token.document.update({animate:true}) resolves on the data
 // write, not the glide — so without this the cinematic curtain fires mid-move, starves the animation's frames, and the token
 // jumps with an unexplored fog gap between hexes. Awaiting the real animation lets the glide land + the fog sweep the path
@@ -1294,6 +1315,7 @@ async function advanceToDawn() {
         if (mc?.setTime) await mc.setTime(1, "dawn");   // tomorrow's dawn
         else await Store.advanceWorldTime(8);
     } catch (e) { warn("advance to dawn failed", e); await Store.advanceWorldTime(8); }
+    cwfSettleVision();   // darkness swings back to day → recompute until the map brightens (no lingering black-out)
     Cinematic.broadcast({ icon: "fa-sun", title: "Dawn", subtitle: `Day ${nextDay}`, tone: "dawn" });
     ChatMessage.create({ content: cwfCardShell("fa-sun", `Dawn — Day ${nextDay}`, cwfRow("Morning", "The watch ends and a new day begins.")) });
     if (game.settings.get(MOD, "longRestAtDawn")) await cwfPartyRest("long", { newDay: true, silent: true });
@@ -1595,10 +1617,6 @@ function cwfCampCardHTML() {
     const base = Math.max(0, danger) + biomeM + hostileM;
     const dial = [0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-cardbtn ${danger === n ? "cwf-primary" : ""}" data-cwf="cdanger" data-n="${n}" style="min-width:0;padding:0 9px">${n}</button>`).join("");
     const watch = Camp.watchers;
-    const chips = Party.members().map(a => {
-        const i = watch.indexOf(a.id), on = i >= 0;
-        return `<button class="cwf-cardbtn ${on ? "cwf-primary" : ""}" data-cwf="cwatch" data-id="${a.id}" title="Highest mod −${Danger.highestMod(a)}"><span class="cwf-watch-nm">${on ? `${i + 1}. ` : ""}${cwfEsc(a.name)}</span><span class="cwf-rr-sk">−${Danger.highestMod(a)}</span></button>`;
-    }).join("");
     const rl = cwfWatchRestLabel(watch.length);
     const watchNote = watch.length ? `${watch.length} on watch · ~${Camp.shiftHours()}h each${rl ? ` · ${rl}` : ""}` : (rl || "no watch — unguarded");
     // Glanceable party shape so the GM can see at camp who's fragile before deciding the watch: exhaustion levels
@@ -1615,7 +1633,7 @@ function cwfCampCardHTML() {
         <div class="cwf-card-row"><span class="cwf-card-l">Danger</span><span class="cwf-card-v">${danger} + biome ${biomeM} + hostiles ${hostileM} = <b>${base}</b>/${Danger.scale()} per hr</span></div>
         <div class="cwf-cardbtns">${dial}</div>
         <div class="cwf-night-sec">Watch order · ${cwfEsc(watchNote)} <button class="cwf-cardbtn" data-cwf="cwatch-all" style="min-width:0;padding:0 7px;font-size:.82em" title="Put the whole party on watch">All</button><button class="cwf-cardbtn" data-cwf="cwatch-none" style="min-width:0;padding:0 7px;font-size:.82em" title="Clear the watch">Clear</button></div>
-        <div class="cwf-watch-grid">${chips || `<span class="cwf-muted2">No party members.</span>`}</div>`;
+        ${cwfWatchRosterHTML({ attr: "cwf", toggle: "cwatch", up: "cwatch-up", down: "cwatch-down" })}`;
     const foot = `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="ccancel"><i class="fa-solid fa-xmark"></i> Cancel</button><button class="cwf-cardbtn cwf-primary" data-cwf="cresolve"><i class="fa-solid fa-moon"></i> Resolve night → dawn</button></div>`;
     return cwfCardShell("fa-campground", "Make Camp", body, { sub: cls?.label || "", footerHTML: foot });
 }
@@ -1695,6 +1713,40 @@ function cwfWatchLevels(n) {
     return Math.floor(cwfWatchShiftHours(n) / block);
 }
 // One-line description of what the current watch nets after the dawn rest (camp UI).
+// Shared watch-order roster, used by BOTH the chat camp card and the HUD panel (so the two surfaces stay identical).
+// Two zones: an ordered list of shifts (number · name · hour-window · best mod · reorder ▲▼ · remove ✕) and a "Resting"
+// pool of add chips. `io` parameterises the click-dispatch convention of each surface:
+//   { attr:"cwf"|"action", toggle, up, down } — toggle adds/removes (reuses Camp.toggleWatcher), up/down call moveWatcher.
+function cwfWatchRosterHTML(io) {
+    const watch = Camp.watchers, members = Party.members();
+    const byId = new Map(members.map(a => [a.id, a]));
+    const H = Camp.nightHours() || 0, N = watch.length, per = N ? H / N : 0;
+    const shifts = watch.map((id, i) => {
+        const a = byId.get(id); if (!a) return "";
+        const start = Math.floor(i * per) + 1;
+        const end = i === N - 1 ? H : Math.floor((i + 1) * per);
+        const win = H ? (start >= end ? `Hr ${start}` : `Hr ${start}–${end}`) : "";
+        const mod = Danger.highestMod(a);
+        return `<div class="cwf-shift">
+            <span class="cwf-shift-n">${i + 1}</span>
+            <span class="cwf-shift-nm">${cwfEsc(a.name)}</span>
+            <span class="cwf-shift-win">${win}</span>
+            <span class="cwf-shift-mod" title="Best passive watch modifier (Perception/Survival)">−${mod}</span>
+            <span class="cwf-shift-ctl">
+                <button class="cwf-shift-btn" data-${io.attr}="${io.up}" data-id="${a.id}" title="Earlier shift" ${i === 0 ? "disabled" : ""}><i class="fa-solid fa-chevron-up"></i></button>
+                <button class="cwf-shift-btn" data-${io.attr}="${io.down}" data-id="${a.id}" title="Later shift" ${i === N - 1 ? "disabled" : ""}><i class="fa-solid fa-chevron-down"></i></button>
+                <button class="cwf-shift-btn cwf-shift-x" data-${io.attr}="${io.toggle}" data-id="${a.id}" title="Take off watch"><i class="fa-solid fa-xmark"></i></button>
+            </span>
+        </div>`;
+    }).join("");
+    const resting = members.filter(a => !watch.includes(a.id));
+    const restChips = resting.map(a => `<button class="cwf-rest-chip" data-${io.attr}="${io.toggle}" data-id="${a.id}" title="Add ${cwfEsc(a.name)} to the watch (best mod −${Danger.highestMod(a)})"><i class="fa-solid fa-plus"></i> ${cwfEsc(a.name)}</button>`).join("");
+    return `<div class="cwf-watch-roster">
+        <div class="cwf-watch-shifts">${shifts || `<div class="cwf-watch-empty"><i class="fa-solid fa-moon"></i> No one on watch — the camp sleeps unguarded.</div>`}</div>
+        ${resting.length ? `<div class="cwf-watch-rest"><span class="cwf-watch-rest-l">Resting</span><div class="cwf-watch-rest-chips">${restChips}</div></div>` : ""}
+    </div>`;
+}
+
 function cwfWatchRestLabel(n) {
     if (!game.settings.get(MOD, "watchRest")) return "";
     if (n <= 0) return "no watch — everyone recovers normally";
@@ -3489,6 +3541,12 @@ const Turn = (() => {
         if (!game.settings.get(MOD, "travelRollMods")) return { mode: "normal", adv: false, dis: false };
         return Domain.rollState(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() });
     }
+    // The sources behind this role's adv/dis (pace, weather) for the turn card's tiny "why" icons. Empty when the
+    // pace/weather modifier rule is off, so the card stays clean unless the mechanic is actually in play.
+    function rollWhy(roleKey) {
+        if (!game.settings.get(MOD, "travelRollMods")) return [];
+        return Domain.rollWhy(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() });
+    }
 
     function natOf(roll) {
         try { const d = roll.dice?.find(x => x.faces === 20) || roll.dice?.[0]; return d?.results?.find(r => r.active)?.result ?? d?.total ?? null; }
@@ -3633,7 +3691,7 @@ const Turn = (() => {
     }
 
     return {
-        begin, claim, setSkill, roll, enter, adjust, resolve, end, ingestRoll, partyMembers, outcomeFor, rollState,
+        begin, claim, setSkill, roll, enter, adjust, resolve, end, ingestRoll, partyMembers, outcomeFor, rollState, rollWhy,
         claimedRoles, allRolled,
         get active() { return active; }, get step() { return step; }, get roles() { return roles; },
         get governing() { return governing; }, get route() { return route; }
@@ -3671,6 +3729,7 @@ const Camp = (() => {
         const hour = Number(game.settings.get(MOD, "campHour")) || 21;
         try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(0, hour); else await Store.advanceWorldTime(3); }
         catch (e) { warn("advance to night failed", e); }
+        cwfSettleVision();   // big darkness jump to night → keep recomputing until the map matches the settled dark (no black-out)
     }
     function setDanger(n) {
         const v = Math.max(0, Math.min(5, n | 0)), prev = dangerScore();
@@ -3690,6 +3749,16 @@ const Camp = (() => {
     function toggleWatcher(id) {
         const i = watchers.indexOf(id);
         if (i >= 0) watchers.splice(i, 1); else watchers.push(id);
+        game.settings.set(MOD, "lastWatch", watchers.slice()).catch(() => {});
+        WayfarerPanel.render();
+        cwfCampRefresh();
+    }
+    // Reorder a watcher's shift up (earlier) or down (later) in the rotation — so watch order is set by intent, not click
+    // sequence. The order drives both who covers which night-hour (watcherForHour) and the shift-window labels.
+    function moveWatcher(id, dir) {
+        const i = watchers.indexOf(id); if (i < 0) return;
+        const j = i + (dir === "up" ? -1 : 1); if (j < 0 || j >= watchers.length) return;
+        [watchers[i], watchers[j]] = [watchers[j], watchers[i]];
         game.settings.set(MOD, "lastWatch", watchers.slice()).catch(() => {});
         WayfarerPanel.render();
         cwfCampRefresh();
@@ -3777,6 +3846,7 @@ const Camp = (() => {
         Cinematic.broadcast({ icon: "fa-sun", title: "Dawn", subtitle: `Day ${nextDay}`, tone: "dawn" });
         try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(1, Number(game.settings.get(MOD, "wakeHour")) || 6); else await Store.advanceWorldTime(nightHours()); }
         catch (e) { warn("advance to dawn failed", e); }
+        cwfSettleVision();   // big darkness jump back to day → recompute until the map brightens (no lingering black-out)
         if (game.settings.get(MOD, "longRestAtDawn")) await cwfPartyRest("long", { newDay: true, silent: true });
         active = false;
         if (pendingMsg) { const m = game.messages.get(pendingMsg); if (m) { try { await m.update({ content: cwfCardShell("fa-moon", "Night Watch", `<div class="cwf-muted2">Resolved — dawn breaks on Day ${nextDay}.</div>`) }); } catch { /* noop */ } } }
@@ -3788,7 +3858,7 @@ const Camp = (() => {
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
 
     return {
-        begin, setDanger, toggleWatcher, setAllWatch, resolveNight, wakeAtDawn, cancel, watcherForHour, shiftHours, dangerScore, nightHours,
+        begin, setDanger, toggleWatcher, moveWatcher, setAllWatch, resolveNight, wakeAtDawn, cancel, watcherForHour, shiftHours, dangerScore, nightHours,
         get active() { return active; }, get watchers() { return watchers; }, get supplyNote() { return supplyNote; },
         get nightEncounterPending() { return !!nightDawnPending; }
     };
@@ -3901,6 +3971,10 @@ const WayfarerPanel = (() => {
                 case "turn-end": Turn.end(); break;
                 case "camp-danger": Camp.setDanger(Number(btn.dataset.n)); break;
                 case "camp-watch": Camp.toggleWatcher(btn.dataset.id); break;
+                case "camp-watch-up": Camp.moveWatcher(btn.dataset.id, "up"); break;
+                case "camp-watch-down": Camp.moveWatcher(btn.dataset.id, "down"); break;
+                case "camp-watch-all": Camp.setAllWatch(true); break;
+                case "camp-watch-none": Camp.setAllWatch(false); break;
                 case "camp-resolve": await Camp.resolveNight(); break;
                 case "camp-dawn": await Camp.wakeAtDawn(); break;
                 case "camp-cancel": Camp.cancel(); break;
@@ -4042,6 +4116,9 @@ const WayfarerPanel = (() => {
             const s = Turn.roles[k];
             const rs = Turn.rollState(k);
             const advTag = rs.mode === "advantage" ? `<span class="cwf-adv">ADV</span>` : rs.mode === "disadvantage" ? `<span class="cwf-dis">DIS</span>` : "";
+            // Tiny "why" icons: each pace/weather source of advantage or disadvantage, so the GM sees the CAUSE at a glance
+            // (a Slow-pace gauge, a fog cloud) — and when two sources cancel, both show even though the net tag is blank.
+            const whyIcons = Turn.rollWhy(k).map(w => `<i class="fa-solid ${w.icon} cwf-why cwf-why-${w.kind}" title="${w.kind === "adv" ? "Advantage" : "Disadvantage"}: ${esc(w.label)}"></i>`).join("");
             const tier = Turn.outcomeFor(s);
             const badge = s.total != null ? `<span class="cwf-tier cwf-${tier}">${s.total} · ${TIER_LABEL[tier]}</span>` : "";
             const rollRow = s.actorId ? `
@@ -4052,7 +4129,7 @@ const WayfarerPanel = (() => {
                 </div>` : "";
             return `
                 <div class="cwf-role ${s.actorId ? "claimed" : ""}">
-                    <div class="cwf-role-h"><i class="fa-solid ${ROLE_ICON[k]}"></i> <b>${ROLE_LABEL[k]}</b> ${advTag}</div>
+                    <div class="cwf-role-h"><i class="fa-solid ${ROLE_ICON[k]}"></i> <b>${ROLE_LABEL[k]}</b> ${advTag}${whyIcons}</div>
                     <div class="cwf-claim">
                         <select class="cwf-sel" data-action="turn-claim" data-role="${k}" ${dis} title="Who is claiming this role?">${memberOpts(s.actorId)}</select>
                         <select class="cwf-sel" data-action="turn-skill" data-role="${k}" ${dis} title="Skill for this role this turn">${skillOpts(k, s.skillId)}</select>
@@ -4085,11 +4162,6 @@ const WayfarerPanel = (() => {
         const dial = [0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${danger === n ? "on" : ""}" data-action="camp-danger" data-n="${n}" ${dis}>${n}</button>`).join("");
         const members = Party.members();
         const watch = Camp.watchers;
-        const chips = members.map(a => {
-            const i = watch.indexOf(a.id);
-            const on = i >= 0;
-            return `<button class="cwf-toggle ${on ? "on" : ""}" data-action="camp-watch" data-id="${a.id}" ${dis} title="Highest mod −${Danger.highestMod(a)}"><span class="cwf-watch-nm">${on ? `${i + 1}. ` : ""}${esc(a.name)}</span><span class="cwf-rr-sk">−${Danger.highestMod(a)}</span></button>`;
-        }).join("");
         const rl = cwfWatchRestLabel(watch.length);
         const watchNote = watch.length
             ? `${watch.length} on watch · ~${Camp.shiftHours()}h each${rl ? ` · ${rl}` : ""}`
@@ -4108,8 +4180,9 @@ const WayfarerPanel = (() => {
                 <div class="cwf-label">Camp · Night <span class="cwf-muted2">${esc(cls?.label || "")} · base <b>${base}</b>/${Danger.scale()} per hr</span></div>
                 <div class="cwf-card-row"><span class="cwf-card-l">Danger</span><span class="cwf-card-v">score ${danger} + biome ${biomeM} + hostiles ${hostileM}</span></div>
                 <div class="cwf-seg-row">${dial}</div>
-                <div class="cwf-label" style="margin-top:6px">Watch order <span class="cwf-muted2">${watchNote}</span></div>
-                <div class="cwf-toggles cwf-watch">${chips || `<span class="cwf-muted2">No party members found.</span>`}</div>
+                <div class="cwf-label cwf-watch-label" style="margin-top:6px">Watch order <span class="cwf-muted2">${watchNote}</span>
+                    <span class="cwf-watch-bulk"><button class="cwf-mini-btn" data-action="camp-watch-all" ${dis} title="Put the whole party on watch">All</button><button class="cwf-mini-btn" data-action="camp-watch-none" ${dis} title="Clear the watch">Clear</button></span></div>
+                ${cwfWatchRosterHTML({ attr: "action", toggle: "camp-watch", up: "camp-watch-up", down: "camp-watch-down" })}
                 <div class="cwf-actions">
                     <button class="cwf-btn" data-action="camp-cancel" ${dis}><i class="fa-solid fa-xmark"></i> Cancel</button>
                     <button class="cwf-btn cwf-primary" data-action="camp-resolve" ${dis}><i class="fa-solid fa-moon"></i> Resolve night → dawn</button>
@@ -4428,6 +4501,8 @@ function wireCardButtons(root) {
                 else if (act === "camp") { cwfTrek = null; await WayfarerPanel.makeCamp(); }
                 else if (act === "cdanger") { Camp.setDanger(Number(el.dataset.n)); }   // setDanger refreshes the card
                 else if (act === "cwatch") { Camp.toggleWatcher(el.dataset.id); }
+                else if (act === "cwatch-up") { Camp.moveWatcher(el.dataset.id, "up"); }
+                else if (act === "cwatch-down") { Camp.moveWatcher(el.dataset.id, "down"); }
                 else if (act === "cwatch-all") { Camp.setAllWatch(true); }
                 else if (act === "cwatch-none") { Camp.setAllWatch(false); }
                 else if (act === "cresolve") { await Camp.resolveNight(); }

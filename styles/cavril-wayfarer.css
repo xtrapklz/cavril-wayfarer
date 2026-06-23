@@ -233,6 +233,39 @@
 .cwf-watch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
 .cwf-watch-grid .cwf-cardbtn { min-width: 0; justify-content: flex-start; padding: 0 9px; }
 .cwf-watch-nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- Watch roster (shared by the chat camp card + the HUD panel) ----------
+   Ordered shift rows (number · name · hour-window · best mod · reorder ▲▼ · drop ✕) over a "Resting" add-chip pool, so
+   watch order is set by intent rather than click sequence and each shift shows when it runs + how capable the watcher is. */
+.cwf-watch-roster { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.cwf-watch-shifts { display: flex; flex-direction: column; gap: 4px; }
+.cwf-shift { display: flex; align-items: center; gap: 7px; padding: 3px 5px 3px 4px; border-radius: 8px; border: 1px solid var(--cwf-line); background: color-mix(in srgb, var(--cwf-accent) 9%, var(--cwf-bg2)); }
+.cwf-shift-n { flex: 0 0 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: color-mix(in srgb, var(--cwf-accent) 32%, transparent); color: #fff; font-size: 10px; font-weight: 800; }
+.cwf-shift-nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cwf-text); font-weight: 600; font-size: 12px; }
+.cwf-shift-win { flex: 0 0 auto; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: var(--cwf-accent); opacity: .85; }
+.cwf-shift-mod { flex: 0 0 auto; min-width: 20px; text-align: right; font-size: 10px; font-weight: 700; color: var(--cwf-gold); }
+.cwf-shift-ctl { flex: 0 0 auto; display: inline-flex; gap: 2px; }
+.cwf-shift-btn { width: 19px; height: 19px; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; border: 1px solid transparent; background: transparent; color: var(--cwf-muted); cursor: pointer; font-size: 10px; padding: 0; }
+.cwf-shift-btn:hover:not(:disabled) { color: #fff; border-color: var(--cwf-accent); background: color-mix(in srgb, var(--cwf-accent) 16%, transparent); }
+.cwf-shift-btn:disabled { opacity: .25; cursor: default; }
+.cwf-shift-x:hover:not(:disabled) { color: #fff; border-color: var(--cwf-severe); background: color-mix(in srgb, var(--cwf-severe) 20%, transparent); }
+.cwf-watch-empty { padding: 6px 8px; border-radius: 8px; border: 1px dashed var(--cwf-line); color: var(--cwf-muted); font-size: 11px; font-style: italic; }
+.cwf-watch-empty i { margin-right: 5px; opacity: .7; }
+.cwf-watch-rest { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.cwf-watch-rest-l { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--cwf-muted); font-weight: 700; }
+.cwf-watch-rest-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.cwf-rest-chip { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 9px; border-radius: 11px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-dim); cursor: pointer; font-size: 11px; }
+.cwf-rest-chip:hover { color: #fff; border-color: var(--cwf-accent); background: color-mix(in srgb, var(--cwf-accent) 14%, transparent); }
+.cwf-rest-chip i { font-size: 8px; opacity: .7; }
+.cwf-watch-label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cwf-watch-bulk { margin-left: auto; display: inline-flex; gap: 4px; }
+.cwf-mini-btn { height: 18px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-muted); cursor: pointer; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+.cwf-mini-btn:hover { color: #fff; border-color: var(--cwf-accent); }
+
+/* "Why" adv/dis source icons on the travel-turn roles — a glanceable cause (pace gauge, weather glyph) beside ADV/DIS. */
+.cwf-why { font-size: 10px; margin-left: 4px; opacity: .9; }
+.cwf-why-adv { color: var(--cwf-easy); }
+.cwf-why-dis { color: var(--cwf-severe); }
 /* Biome → Maestro ambience assignment dialog */
 .cwf-mm { display: flex; flex-direction: column; gap: 6px; max-height: 58vh; overflow: auto; padding-right: 4px; }
 .cwf-mm-hint { font-size: 12px; color: #9a9a9a; margin: 0 0 4px; line-height: 1.45; }
