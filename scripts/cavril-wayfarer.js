@@ -4700,6 +4700,9 @@ Hooks.once("ready", () => {
         merchantShop: (opts) => CodexShop.merchantShop(opts),   // generate a merchant → a real Campaign Codex storefront stocked with SRD items
         buildMerchantTables: (force) => CodexShop.buildMerchantTables(force),   // create per-type SRD RollTables (for the Merchant Counter restock widget)
         codexShop: CodexShop,
+        token: (q, opts) => globalThis.CavrilEncounterStage?.tokenPick?.(q, opts),                  // best/wildcard CZEPEKU token for a description (durable). CavrilWayfarer.token("grizzled dwarf smith") · .token("", {wildcard:true})
+        tokenSearch: (q, n) => globalThis.CavrilEncounterStage?.tokenRank?.(q, { n: n || 24 }),      // ranked matches (no download) — inspect the scoring
+        tokenPicker: (q) => globalThis.CavrilEncounterStage?.openTokenPicker?.(q || ""),             // open the searchable GM picker dialog
         automation: (mode) => cwfApplyAutomation(mode),
         journeyStatus: () => Tables.journeyStatus(),
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, _installed: true
@@ -4858,6 +4861,8 @@ Hooks.on("getSceneControlButtons", (controls) => {
         // Wayfarer HUD toggle lives in the Token Controls group.
         const tokenGrp = groupList.find(c => c?.name === "token" || c?.name === "tokens");
         const { isVisible, ...wt } = wayfarerTool(); addTool(tokenGrp, wt);
+        // CZEPEKU token picker — GM-only quick face search (also CavrilWayfarer.tokenPicker()).
+        if (game.user?.isGM) addTool(tokenGrp, { name: "cwf-token-picker", title: `${TITLE} — token picker (CZEPEKU)`, icon: "fa-solid fa-masks-theater", button: true, order: 98, onClick: () => globalThis.CavrilEncounterStage?.openTokenPicker?.("") });
         // Return-to-overworld: on a staged scene, put it in EVERY tool group so it never
         // vanishes when you switch to walls / lighting / drawings / the Augur set, etc.
         if (canvas?.scene?.getFlag?.(MOD, "originScene")) {

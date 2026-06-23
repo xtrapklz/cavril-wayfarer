@@ -468,3 +468,36 @@ button.cwf-pm-v:hover { background: rgba(189,169,232,.18); color: #fff; }
     display: block; font-style: normal; font-size: 9px; text-transform: uppercase;
     letter-spacing: 0.1em; color: var(--cwf-accent, #bda9e8); font-weight: 700; margin-bottom: 3px;
 }
+
+/* ===== CZEPEKU token picker dialog ===== */
+#cwf-tokpick {
+    position: fixed; left: 50%; top: 11vh; transform: translateX(-50%);
+    width: min(700px, 94vw); max-height: 72vh; z-index: 75; display: flex; flex-direction: column;
+    background: color-mix(in srgb, var(--cwf-accent, #bda9e8) 15%, rgba(16, 16, 22, 0.97));
+    border: 1px solid var(--cwf-accent, #bda9e8); border-radius: 12px;
+    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.62); backdrop-filter: blur(7px);
+    color: #fff; font-family: "Signika", sans-serif;
+}
+#cwf-tokpick .cwf-tp-hd { display: flex; align-items: center; gap: 6px; padding: 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+#cwf-tokpick .cwf-tp-grip { cursor: grab; opacity: 0.45; padding: 4px 3px; touch-action: none; }
+#cwf-tokpick .cwf-tp-grip:hover { opacity: 0.8; }
+#cwf-tokpick .cwf-tp-q {
+    flex: 1; background: rgba(0, 0, 0, 0.38); border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 8px;
+    color: #fff; padding: 8px 11px; font-size: 13px; font-family: inherit;
+}
+#cwf-tokpick .cwf-tp-q:focus { outline: none; border-color: var(--cwf-accent, #bda9e8); }
+#cwf-tokpick .cwf-tp-hd button { background: rgba(255, 255, 255, 0.1); border: 0; color: #fff; border-radius: 8px; padding: 8px 11px; cursor: pointer; font-size: 13px; }
+#cwf-tokpick .cwf-tp-hd button:hover { background: rgba(255, 255, 255, 0.22); }
+#cwf-tokpick .cwf-tp-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(94px, 1fr)); gap: 8px;
+    padding: 10px; overflow-y: auto;
+}
+#cwf-tokpick .cwf-tp-cell {
+    display: flex; flex-direction: column; align-items: center; gap: 3px; cursor: pointer;
+    border-radius: 8px; padding: 4px; background: rgba(0, 0, 0, 0.28); border: 1px solid transparent;
+}
+#cwf-tokpick .cwf-tp-cell:hover { border-color: var(--cwf-accent, #bda9e8); background: rgba(255, 255, 255, 0.08); }
+#cwf-tokpick .cwf-tp-cell img { width: 100%; aspect-ratio: 1; object-fit: contain; border-radius: 6px; background: rgba(0, 0, 0, 0.25); }
+#cwf-tokpick .cwf-tp-cell span { font-size: 9px; line-height: 1.12; text-align: center; opacity: 0.82; max-height: 2.3em; overflow: hidden; }
+#cwf-tokpick .cwf-tp-empty { grid-column: 1 / -1; text-align: center; opacity: 0.7; padding: 26px 12px; font-size: 13px; }
+#cwf-tokpick .cwf-tp-foot { padding: 6px 11px; border-top: 1px solid rgba(255, 255, 255, 0.12); font-size: 10px; opacity: 0.6; }

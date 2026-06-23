@@ -746,17 +746,95 @@
   // (incl the noisy pack title), then a random token so a face is always returned. Returns { url, subject, name, pack }.
   async function tokenFor(keywords) {
     try {
-      const cat = await tokenCatalog(); if (!cat.items.length) return null;
-      const kws = (Array.isArray(keywords) ? keywords : String(keywords || "").split(/[\s,]+/)).map(k => k.toLowerCase()).filter(Boolean);
-      let pool = cat.items;
-      if (kws.length) {
-        const bySubj = cat.items.filter(t => kws.some(k => t.subjHay.includes(k)));
-        const matched = bySubj.length ? bySubj : cat.items.filter(t => kws.some(k => t.hay.includes(k)));
-        if (matched.length) pool = matched;
-      }
-      const t = pool[Math.floor(Math.random() * pool.length)];
-      return t ? { url: t.url, subject: t.subjLabel, name: t.name, pack: t.packLabel } : null;
+      const q = Array.isArray(keywords) ? keywords.join(" ") : String(keywords || "");
+      const ranked = await tokenRank(q, { n: 12 });                                  // SCORED match (subject-weighted) — much better than first-hit
+      if (ranked.length) { const t = ranked[Math.floor(Math.random() * Math.min(ranked.length, 8))]; return { url: t.url, subject: t.subject, name: t.name, pack: t.pack }; }   // random among the TOP fits → on-theme variety
+      const cat = await tokenCatalog(); if (!cat.items.length) return null;           // nothing scored → any face
+      const t = cat.items[Math.floor(Math.random() * cat.items.length)];
+      return { url: t.url, subject: t.subjLabel, name: t.name, pack: t.packLabel };
     } catch (e) { warn("tokenFor failed", e); return null; }
+  }
+  // ===== TOKEN PICKER — smart search over the ~4.5k CZEPEKU library =========================================
+  // CZEPEKU has no generative endpoint — getSessionData returns a fixed catalog — so we "generate" by SCORING every
+  // token by how well its SUBJECT descriptor (e.g. "Dwarf Wizard Blacksmith") matches your words. Powers the merchant
+  // faces, a GM picker dialog (openTokenPicker), and the CavrilWayfarer.token() / .tokenSearch() API.
+  const TOK_STOP = new Set(["a", "an", "the", "of", "with", "and", "or", "in", "on", "at", "to", "for", "by", "his", "her", "their", "that", "this", "who", "very"]);
+  const tokenize = (q) => String(q || "").toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 1 && !TOK_STOP.has(w));
+  const _shufTok = (a) => { const c = a.slice(); for (let i = c.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = c[i]; c[i] = c[j]; c[j] = t; } return c; };
+  function _scoreTok(t, words) {
+    let s = 0, subjHits = 0;
+    for (const w of words) { if (t.subjHay.includes(w)) { s += 3; subjHits++; } else if (t.hay.includes(w)) s += 1; }   // subject (the descriptor) weighted 3×; anywhere-else 1×
+    if (words.length && subjHits === words.length) s += 4;   // every word present in the subject = a precise, specific match
+    return s;
+  }
+  const _pubTok = (t) => ({ id: t.id, url: t.url, subject: t.subjLabel, name: t.name, pack: t.packLabel });
+  // Ranked matches for a description. Empty query → a random wildcard sample (browse).
+  async function tokenRank(query, { n = 24 } = {}) {
+    const cat = await tokenCatalog(); if (!cat.items.length) return [];
+    const words = tokenize(query);
+    if (!words.length) return _shufTok(cat.items).slice(0, n).map(t => ({ ..._pubTok(t), score: 0 }));
+    return cat.items.map(t => ({ t, s: _scoreTok(t, words) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s).slice(0, n).map(x => ({ ..._pubTok(x.t), score: x.s }));
+  }
+  // One token for a description: the BEST fit (or a random pick among the top fits with vary:true; or a pure wildcard).
+  // durable:true (default) downloads the art to local storage so it persists. Returns { url, src, subject, name, pack, score } or null.
+  async function tokenPick(query, { wildcard = false, vary = false, durable = true, prefix = "token" } = {}) {
+    const ranked = await tokenRank(wildcard ? "" : query, { n: (wildcard || vary) ? 12 : 1 });
+    if (!ranked.length) return null;
+    const chosen = (wildcard || vary) ? ranked[Math.floor(Math.random() * ranked.length)] : ranked[0];
+    if (!durable) return { ...chosen, src: chosen.url };
+    const local = await saveExternalImage(chosen.url, prefix);
+    return { ...chosen, src: chosen.url, url: local || chosen.url };
+  }
+  // The GM picker dialog: a searchable, draggable panel — type a description → ranked faces → click to apply to the
+  // selected token(s) (durable), right-click to copy the URL, dice for a wildcard. CavrilWayfarer.tokenPicker().
+  let _tpEl = null, _tpDrag = null;
+  function closeTokenPicker() { try { _tpEl?.remove(); } catch (e) {} _tpEl = null; }
+  async function openTokenPicker(initial = "") {
+    if (!game.user?.isGM) return null;
+    if (_tpEl) { const qi = _tpEl.querySelector(".cwf-tp-q"); if (qi) qi.focus(); return _tpEl; }
+    const el = document.createElement("div"); el.id = "cwf-tokpick"; el.className = "cwf-tokpick";
+    el.innerHTML = `
+      <div class="cwf-tp-hd">
+        <span class="cwf-tp-grip" title="Drag to move"><i class="fa-solid fa-grip-vertical"></i></span>
+        <input class="cwf-tp-q" type="text" placeholder="Describe a token — e.g. grizzled dwarf smith, hooded elf rogue…">
+        <button class="cwf-tp-go" title="Search"><i class="fa-solid fa-magnifying-glass"></i></button>
+        <button class="cwf-tp-rnd" title="Wildcard (random)"><i class="fa-solid fa-dice"></i></button>
+        <button class="cwf-tp-x" title="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="cwf-tp-grid"></div>
+      <div class="cwf-tp-foot"><i class="fa-solid fa-arrow-pointer"></i> click a face → apply to selected token(s) · right-click → copy URL</div>`;
+    document.body.appendChild(el); _tpEl = el;
+    const qi = el.querySelector(".cwf-tp-q"), grid = el.querySelector(".cwf-tp-grid");
+    const render = (rows, note) => {
+      grid.innerHTML = (rows && rows.length)
+        ? rows.map(r => `<div class="cwf-tp-cell" data-url="${esc(r.url)}" title="${esc((r.subject || r.name || "") + (r.score ? ` · score ${r.score}` : ""))}"><img src="${esc(r.url)}" loading="lazy"><span>${esc(r.subject || r.name || "")}</span></div>`).join("")
+        : `<div class="cwf-tp-empty">${esc(note || "no matches — try fewer or different words, or roll a wildcard.")}</div>`;
+    };
+    const search = async (wild) => {
+      grid.innerHTML = `<div class="cwf-tp-empty">searching…</div>`;
+      try { render(await tokenRank(wild ? "" : qi.value, { n: 48 }), "no matches — try fewer or different words, or roll a wildcard."); }
+      catch (e) { render([], "token library unavailable — is CZEPEKU connected?"); }
+    };
+    const apply = async (url) => {
+      const toks = canvas.tokens?.controlled || [];
+      if (!toks.length) { ui.notifications?.warn("Cavril: select a token first (or right-click a face to copy its URL)."); return; }
+      const local = await saveExternalImage(url, "token"); let n = 0;
+      for (const t of toks) { try { await t.document.update({ "texture.src": local }); n++; } catch (e) {} try { await t.actor?.update({ img: local, "prototypeToken.texture.src": local }); } catch (e) {} }
+      ui.notifications?.info(`Cavril: applied to ${n} token${n === 1 ? "" : "s"}.`);
+    };
+    el.querySelector(".cwf-tp-go").addEventListener("click", () => search(false));
+    el.querySelector(".cwf-tp-rnd").addEventListener("click", () => search(true));
+    el.querySelector(".cwf-tp-x").addEventListener("click", closeTokenPicker);
+    qi.addEventListener("keydown", (e) => { if (e.key === "Enter") search(false); });
+    grid.addEventListener("click", (e) => { const c = e.target.closest(".cwf-tp-cell"); if (c) apply(c.dataset.url); });
+    grid.addEventListener("contextmenu", (e) => { const c = e.target.closest(".cwf-tp-cell"); if (!c) return; e.preventDefault(); try { navigator.clipboard.writeText(c.dataset.url); ui.notifications?.info("Cavril: token URL copied."); } catch (x) {} });
+    const grip = el.querySelector(".cwf-tp-grip");
+    grip.addEventListener("pointerdown", (e) => { e.preventDefault(); const r = el.getBoundingClientRect(); _tpDrag = { dx: e.clientX - r.left, dy: e.clientY - r.top }; try { grip.setPointerCapture(e.pointerId); } catch (x) {} });
+    grip.addEventListener("pointermove", (e) => { if (!_tpDrag) return; el.style.left = Math.max(2, Math.min(window.innerWidth - 80, e.clientX - _tpDrag.dx)) + "px"; el.style.top = Math.max(2, Math.min(window.innerHeight - 60, e.clientY - _tpDrag.dy)) + "px"; el.style.right = "auto"; el.style.bottom = "auto"; el.style.transform = "none"; });
+    const drop = () => { _tpDrag = null; }; grip.addEventListener("pointerup", drop); grip.addEventListener("pointercancel", drop);
+    qi.value = initial || ""; setTimeout(() => qi.focus(), 30);
+    await search(!initial);   // a query → search it; nothing → show a wildcard sample
+    return el;
   }
 
   // Download an external image (e.g. a CZEPEKU token thumbnail) into durable module storage, so an Actor's portrait /
@@ -2302,6 +2380,7 @@
     getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, storyMaps, previewMap, czepekuProbe,
     tokenCatalog, tokenProbe, tokenPacks, tokenSubjects, tokenSample, tokenFor, tokenUrl,   // CZEPEKU NPC art: tokenSubjects() lists the character vocab, tokenFor(keywords) matches a face
     tokenArtFor, saveExternalImage, stageInterior, sceneImage,   // durable art (download → local path) + keyword-matched enterable interior scenes for storefronts
+    tokenRank, tokenPick, openTokenPicker, closeTokenPicker,     // CZEPEKU token picker: scored search (tokenRank), best/wildcard single pick (tokenPick), GM dialog (openTokenPicker)
     purgeStagedScenes, isStagedScene,   // cleanup: delete encounter-generated scenes (CavrilEncounterStage.purgeStagedScenes())
     encounterLog, showEncounterLog, logEncounter, markEncounterResolved,   // ledger: CavrilEncounterStage.showEncounterLog()
     // Preview the top matches for a biome without creating anything.
