@@ -759,6 +759,78 @@
     } catch (e) { warn("tokenFor failed", e); return null; }
   }
 
+  // Download an external image (e.g. a CZEPEKU token thumbnail) into durable module storage, so an Actor's portrait /
+  // token art keeps resolving across sessions instead of pointing at a live session URL. Idempotent (skips if present).
+  // Returns the stored path (Forge: the upload URL; local: the relative path), or the original url on any failure.
+  async function saveExternalImage(url, prefix = "art") {
+    try {
+      if (!url || /^(data:|icons\/|systems\/|modules\/)/.test(url)) return url;   // already local/inlined — leave it
+      const clean = String(url).split("?")[0];
+      const seg = decodeURIComponent(clean.split("/").pop() || "").replace(/[^a-z0-9._-]+/gi, "-");
+      const ext = (seg.match(/\.(webp|png|jpe?g|gif)$/i)?.[1] || "webp").toLowerCase();
+      const stem = (seg.replace(/\.(webp|png|jpe?g|gif)$/i, "") || "img").slice(0, 48);
+      const dir = `${ROOT}/portraits/`;
+      const filename = `${String(prefix).replace(/[^a-z0-9._-]+/gi, "-")}-${stem}.${ext}`;
+      const rel = `${dir}${filename}`;
+      try { await FP.createDirectory(SOURCE, dir); } catch (e) {}
+      let exists = false;
+      try { const ex = await FP.browse(SOURCE, dir); exists = ex.files.some(f => decodeURIComponent(f.split("/").pop()) === filename); } catch (e) {}
+      if (exists) return rel;
+      const r = await fetch(url); if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const up = await FP.upload(SOURCE, dir, new File([await r.blob()], filename));
+      return up?.path || rel;
+    } catch (e) { warn("saveExternalImage failed", e); return url; }   // graceful: fall back to the live URL
+  }
+
+  // tokenFor() + durable download in one step — for art that must PERSIST (an Actor's portrait + token texture),
+  // not just a throwaway chat card. Returns { url(durable local path), src(original), subject, name, pack }.
+  async function tokenArtFor(keywords) {
+    const tk = await tokenFor(keywords);
+    if (!tk?.url) return tk;
+    const local = await saveExternalImage(tk.url, "merchant");
+    return { ...tk, src: tk.url, url: local || tk.url };
+  }
+
+  // Best hero/background image path for a staged scene, across core versions (V14 levels[] vs Scene#background).
+  const sceneImage = (sc) => sc?.background?.src || sc?.levels?.[0]?.background?.src || sc?.thumb || null;
+
+  // Stage a CZEPEKU INTERIOR (a built/inhabited "scenes"-genre place) matching keywords like ["forge","smithy"], in the
+  // BACKGROUND (created but not activated/viewed). For shop/building interiors. Reuses the proven authored-scene path so
+  // the result is a real, enterable Scene. Returns the Scene (or null). Best-effort: returns null if CZEPEKU is offline or
+  // nothing matches, so callers degrade gracefully.
+  async function stageInterior(keywords, { when = "day" } = {}) {
+    if (!game.user.isGM) return null;
+    try {
+      const cat = await getCatalog();
+      const kws = (Array.isArray(keywords) ? keywords : [keywords]).map(norm).filter(Boolean);
+      if (!kws.length) return null;
+      const candTags = new Map();
+      kws.forEach(k => candTags.set(k, 10));                         // the trade's own words score highest
+      SOCIAL_TAGS.forEach(t => { if (!candTags.has(t)) candTags.set(t, 2); });   // …then any built/indoor place
+      const scored = cat.items
+        .filter(it => it.dataKey === "scenes" && it.genre === "fantasy")
+        .map(it => ({ it, score: scoreItem(it, candTags), kw: norm(it.name).split(/\W+/).some(w => kws.includes(w)) || it.variants.some(v => wordHit(v, kws)) }))
+        .filter(x => x.kw || x.score > 0)
+        .sort((a, b) => (Number(b.kw) - Number(a.kw)) || (b.score - a.score));
+      if (!scored.length) { warn(`stageInterior: no scene matched ${JSON.stringify(kws)}`); return null; }
+      const pool = scored.slice(0, 12);
+      const allKeys = pool.flatMap(x => x.it.variants.flatMap(v => [v.key, ...v.animated.map(a => a.key)]));
+      let exist = {}; try { exist = await importableFor(allKeys); } catch (e) { warn("stageInterior importability failed", e.message); }
+      for (const { it } of pool) {
+        const variant = pickVariant(it, { when });
+        const variantKey = [variant.key, ...variant.animated.map(a => a.key)].find(k => exist[k])
+          || it.variants.flatMap(v => [v.key, ...v.animated.map(a => a.key)]).find(k => exist[k]);
+        if (!variantKey) continue;
+        const resp = await scenePayload(variantKey);
+        const scene = await createAuthoredScene(resp, { activate: "create" });   // background — don't yank the GM off the overworld
+        log(`stageInterior: "${it.name}" → ${scene?.name}`);
+        return scene;
+      }
+      warn("stageInterior: matches found but none importable from this CZEPEKU session");
+      return null;
+    } catch (e) { warn("stageInterior failed", e); return null; }
+  }
+
   // ===== STAGING ===========================================================
   let pending = null;   // { pick, cls, ctx, paths?, ts }
   let _staging = false; // true while stageEncounter runs — suppresses the createCombat auto-stage
@@ -2161,6 +2233,7 @@
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
     getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, storyMaps, previewMap, czepekuProbe,
     tokenCatalog, tokenProbe, tokenPacks, tokenSubjects, tokenSample, tokenFor, tokenUrl,   // CZEPEKU NPC art: tokenSubjects() lists the character vocab, tokenFor(keywords) matches a face
+    tokenArtFor, saveExternalImage, stageInterior, sceneImage,   // durable art (download → local path) + keyword-matched enterable interior scenes for storefronts
     purgeStagedScenes, isStagedScene,   // cleanup: delete encounter-generated scenes (CavrilEncounterStage.purgeStagedScenes())
     encounterLog, showEncounterLog, logEncounter, markEncounterResolved,   // ledger: CavrilEncounterStage.showEncounterLog()
     // Preview the top matches for a biome without creating anything.

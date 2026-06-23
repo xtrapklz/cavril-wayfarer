@@ -426,6 +426,7 @@ const Store = (() => {
         g.register(MOD, "merchantCards", { name: "Spawn merchant shop cards", hint: "When a roadside 'trade' travel beat fires, also whisper the GM a generated merchant — a rotating shop with curated stock (priced, scaled to party level) and sometimes a quest hook. Off = just the flavour line. Roll one by hand any time with CavrilWayfarer.merchant().", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "merchantPortraits", { name: "Merchant portraits (CZEPEKU)", hint: "Give each generated merchant a fitting character portrait pulled from your CZEPEKU token library (matched by trade — a robed alchemist, a hooded fence, a grizzled smith). Needs the CZEPEKU module connected. Off = no portrait.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "merchantTables", { scope: "world", config: false, type: Object, default: {} });   // {merchantTypeKey: RollTable uuid} — per-type SRD stock tables (CavrilWayfarer.buildMerchantTables())
+        g.register(MOD, "merchantInteriors", { scope: "world", config: false, type: Object, default: {} });   // {merchantTypeKey: Scene uuid} — per-type CZEPEKU interior staged once + reused as a shop's enterable scene + hero image
         // Per-hex travel events: a roll on every hex entered → mostly mundane flavor,
         // a danger-scaled chance of a real event (combat/puzzle/site) that halts the day.
         g.register(MOD, "travelEvents", { name: "Per-hex travel events", hint: "As the party crosses each hex, roll for an event — mostly mundane flavor, with a danger-scaled chance of a real encounter that halts the day. Whispered to the GM to narrate.", scope: "world", config: true, type: Boolean, default: true });
@@ -3565,24 +3566,103 @@ const CodexShop = (() => {
         return shop;
     }
 
-    // Headline command: generate a merchant (reusing MerchantEconomy) → stock from SRD → a real CC storefront with its
-    // portrait + greeting + buys + quest hook as the shop description. CavrilWayfarer.merchantShop("blacksmith").
+    // === SHOPKEEPER + INTERIOR ENRICHMENT ===========================================================
+    // Per-merchant-type interior keywords → matched against CZEPEKU "scenes" (built/inhabited places) by stageInterior.
+    const INT_KW = {
+        peddler:      ["market", "shop", "store", "stall", "caravan"],
+        general:      ["store", "shop", "market", "emporium", "trading"],
+        blacksmith:   ["forge", "smithy", "blacksmith", "anvil", "foundry"],
+        fletcher:     ["fletcher", "bowyer", "workshop", "carpenter", "woodshop"],
+        alchemist:    ["alchemist", "laboratory", "alchemy", "apothecary", "lab"],
+        herbalist:    ["herbalist", "greenhouse", "garden", "apothecary", "witch"],
+        apothecary:   ["apothecary", "healer", "clinic", "infirmary", "shop"],
+        fence:        ["hideout", "den", "cellar", "tavern", "thieves"],
+        relicdealer:  ["curio", "antiquities", "study", "collector", "library"],
+        beasttrader:  ["stable", "menagerie", "kennel", "barn", "zoo"],
+        partsbuyer:   ["butcher", "tannery", "workshop", "shop"],
+        spicetrader:  ["bazaar", "market", "emporium", "silk", "spice"],
+        cartographer: ["study", "library", "map", "scriptorium", "office"],
+        jeweller:     ["jeweller", "goldsmith", "workshop", "vault", "shop"],
+        provisioner:  ["store", "granary", "warehouse", "market", "shop"],
+        tinker:       ["workshop", "tinker", "forge", "shop", "clutter"],
+    };
+    async function ensureFolder(type, name) {
+        try { let f = (game.folders?.contents || []).find(x => x.type === type && x.name === name); if (!f) f = await Folder.create({ name, type }); return f?.id || null; }
+        catch (e) { return null; }
+    }
+    const intMap = () => { try { return foundry.utils.duplicate(game.settings.get(MOD, "merchantInteriors") || {}); } catch (e) { return {}; } };
+    // One enterable CZEPEKU interior per merchant TYPE — staged once, then reused (every smith shares one forge). Returns
+    // { scene, image } or null. Cached in the merchantInteriors world setting; idempotent.
+    async function ensureInterior(typeKey, type) {
+        const ES = globalThis.CavrilEncounterStage;
+        if (typeof ES?.stageInterior !== "function") return null;
+        const map = intMap();
+        if (map[typeKey]) { const sc = await fromUuid(map[typeKey]).catch(() => null); if (sc) return { scene: sc, image: ES.sceneImage?.(sc) || sc.thumb || null }; }
+        const kw = INT_KW[typeKey] || [String(type?.name || "shop").toLowerCase(), "shop", "interior"];
+        const scene = await ES.stageInterior(kw);
+        if (!scene) return null;
+        try { const fid = await ensureFolder("Scene", TBL_FOLDER); if (fid) await scene.update({ folder: fid }); } catch (e) {}
+        const m = intMap(); m[typeKey] = scene.uuid; try { await game.settings.set(MOD, "merchantInteriors", m); } catch (e) {}
+        return { scene, image: ES.sceneImage?.(scene) || scene.thumb || null };
+    }
+    // Create the merchant as a real NPC Actor (token art = portrait = the CZEPEKU face) and wire it into the CC shop as a
+    // linked shopkeeper. Best-effort: any failure here leaves the storefront intact. Returns the Actor (or null).
+    async function makeShopkeeper(m, portrait, shop) {
+        try {
+            if (!portrait || !game.actors) return null;
+            const folder = await ensureFolder("Actor", TBL_FOLDER);
+            const disp = globalThis.CONST?.TOKEN_DISPOSITIONS?.NEUTRAL ?? 0;
+            const dispName = globalThis.CONST?.TOKEN_DISPLAY_MODES?.HOVER ?? 1;
+            const actor = await Actor.create({
+                name: m.name, type: "npc", img: portrait, folder,
+                prototypeToken: { name: m.name, texture: { src: portrait }, actorLink: false, disposition: disp, displayName: dispName },
+                flags: { "cavril-wayfarer": { merchantShop: shop?.uuid || null, merchantType: m.key } },
+            });
+            if (!actor) return null;
+            const cc = game.campaignCodex;
+            if (typeof cc?.createNPCJournal === "function") {
+                const npc = await cc.createNPCJournal(actor, m.name).catch(() => null);
+                if (npc) {
+                    try { await npc.setFlag(MOD_CC, "image", portrait); } catch (e) {}                 // CC hero image = the face
+                    try { if (typeof cc.linkShopToNPC === "function") await cc.linkShopToNPC(shop, npc); } catch (e) {}   // shopkeeper shows on the shop
+                }
+            }
+            return actor;
+        } catch (e) { warn("makeShopkeeper failed", e); return null; }
+    }
+
+    // Headline command: generate a merchant (reusing MerchantEconomy) → stock from SRD → a real Campaign Codex storefront,
+    // with a linked shopkeeper NPC (token + portrait = a CZEPEKU face) and an enterable CZEPEKU interior as the hero image.
+    // CavrilWayfarer.merchantShop("blacksmith").
     async function merchantShop(opts = {}) {
         if (typeof opts === "string") opts = { type: opts };
         if (!game.user.isGM) return null;
         const m = MerchantEconomy.rollMerchant(opts);
         const want = m.type.count ? m.type.count[1] : 8;
         const picks = await pickStock(m.type, m.level, want);
+        // durable shopkeeper art (DOWNLOADED so the Actor's portrait/token survive across sessions, not a live session URL)
         let portrait = "";
-        try { const tk = await globalThis.CavrilEncounterStage?.tokenFor?.(MerchantEconomy.TOK_KW?.[m.key] || [m.type.name]); if (tk?.url) portrait = tk.url; } catch (e) {}
+        try { const tk = await globalThis.CavrilEncounterStage?.tokenArtFor?.(MerchantEconomy.TOK_KW?.[m.key] || [m.type.name]); if (tk?.url) portrait = tk.url; } catch (e) {}
         const pImg = portrait ? `<p style="text-align:center"><img src="${portrait}" style="max-width:160px;border-radius:10px"></p>` : "";
         const desc = `${pImg}<p><em>${cwfEsc(m.greet)}</em></p><p><b>Buys:</b> ${cwfEsc(m.type.buys || "—")}.</p>${m.quest ? `<p><b>⚑ Hook:</b> ${cwfEsc(m.quest)}</p>` : ""}`;
         const cash = 40 + (m.level | 0) * 40;
         const shop = await createShop(`${m.name} — ${m.type.name}`, picks, { markup: m.type.markup ?? 1.0, cash, description: desc });
-        if (shop) {
-            try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell(m.type.icon || "fa-store", `Storefront: ${cwfEsc(m.name)}`, cwfRow(m.type.name, `${picks.length} SRD items · APL ${m.level} · markup ×${(m.type.markup ?? 1).toFixed(2)} — open it in the Journal (Campaign Codex shop) to manage stock & trade.`)) }); } catch (e) {}
-            ui.notifications?.info(`Cavril: created storefront "${shop.name}" — ${picks.length} items.`);
-        }
+        if (!shop) return shop;
+        // shopkeeper NPC (token + portrait) + enterable interior (hero image + linkedScene) — both best-effort, neither blocks the shop
+        const actor = await makeShopkeeper(m, portrait, shop);
+        let interior = null;
+        try {
+            interior = await ensureInterior(m.key, m.type);
+            if (interior?.scene) {
+                const data = foundry.utils.duplicate(shop.getFlag(MOD_CC, "data") || {});
+                data.linkedScene = interior.scene.uuid;            // CC "linked scene" — walk the party in
+                await shop.setFlag(MOD_CC, "data", data);
+                if (interior.image) await shop.setFlag(MOD_CC, "image", interior.image);   // CC hero image = the interior
+            }
+        } catch (e) { warn("merchant interior wire failed", e); }
+        const extras = [actor ? "shopkeeper" : null, interior?.scene ? "interior" : null].filter(Boolean).join(" + ");
+        try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell(m.type.icon || "fa-store", `Storefront: ${cwfEsc(m.name)}`, cwfRow(m.type.name, `${picks.length} SRD items · APL ${m.level} · markup ×${(m.type.markup ?? 1).toFixed(2)}${extras ? ` · ${extras}` : ""} — open it in the Journal (Campaign Codex shop) to manage stock & trade.`)) }); } catch (e) {}
+        ui.notifications?.info(`Cavril: created storefront "${shop.name}" — ${picks.length} items${extras ? ` (+ ${extras})` : ""}.`);
         return shop;
     }
 
@@ -3609,7 +3689,7 @@ const CodexShop = (() => {
         const cands = tableCandidates(type); if (!cands.length) return null;
         const CT = (globalThis.CONST?.TABLE_RESULT_TYPES) || {};
         const results = cands.map((e, i) => ({
-            type: CT.COMPENDIUM ?? CT.DOCUMENT ?? 2,
+            type: CT.DOCUMENT ?? CT.COMPENDIUM ?? 2,   // V13+ merged "compendium" into "document" (resolved by documentCollection = pack id)
             documentCollection: String(e.uuid).split(".").slice(1, 3).join("."),   // "dnd5e.items"
             documentId: String(e.uuid).split(".").pop(),
             text: e.name, img: e.img || "icons/svg/item-bag.svg", weight: 1, range: [i + 1, i + 1],
