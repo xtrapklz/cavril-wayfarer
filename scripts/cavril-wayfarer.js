@@ -3479,6 +3479,8 @@ const MerchantEconomy = (() => {
  * ========================================================================= */
 const MOD_CC = "campaign-codex";   // Campaign Codex flag scope
 const CodexShop = (() => {
+    const rint = (a, b) => a + Math.floor(Math.random() * (b - a + 1));   // (shuffle/rint live inside MerchantEconomy's IIFE — out of scope here, so CodexShop carries its own)
+    const shuffle = (a) => { const c = a.slice(); for (let i = c.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = c[i]; c[i] = c[j]; c[j] = t; } return c; };
     const GP = { pp: 10, gp: 1, ep: 0.5, sp: 0.1, cp: 0.01 };          // → gold-piece value
     const gpVal = (e) => (Number(e.price) || 0) * (GP[e.denom] ?? 1);
     const TYPE_CAT = { weapon: "Weapons", equipment: "Armor & Gear", consumable: "Consumables", tool: "Tools", loot: "Goods", container: "Containers" };

@@ -2249,7 +2249,12 @@
     hookIds.tgtMove   = Hooks.on("updateToken", (d, chg) => { if (("x" in chg) || ("y" in chg)) { TargetHelper.kick(false, true, canvas?.tokens?.get(d.id)); TargetHelper.recenterSoon(d); } });
     hookIds.tgtCtrl   = Hooks.on("controlToken", () => TargetHelper.kick(false, false));
     hookIds.tgtTgt    = Hooks.on("targetToken", () => TargetHelper.reflectSoon());   // target changed elsewhere → just re-skin chips (no auto-target, so deselects stick)
-    hookIds.tgtCanvas = Hooks.on("canvasReady", () => TargetHelper.kick(false, false));
+    hookIds.tgtCanvas = Hooks.on("canvasReady", () => {
+      // Drop targets whose token isn't on the NEW scene — a target left over from a torn-down scene makes Foundry's
+      // Token#_drawTargetArrows throw "Cannot read properties of null (reading 'clear')" while animating the reticule.
+      try { const u = game.user; if (u?.targets?.size) { const keep = [...u.targets].filter(t => canvas.tokens?.get(t.id)).map(t => t.id); if (keep.length !== u.targets.size) u.updateTokenTargets(keep); } } catch (e) {}
+      TargetHelper.kick(false, false);
+    });
     hookIds.tgtEnd    = Hooks.on("deleteCombat", () => TargetHelper.kick(false, false));
     globalThis.CavrilEncounterStage = buildApi();
     // Formalize the cross-module contract: Cavril: Cities reaches getCatalog/stageMapByKey via
