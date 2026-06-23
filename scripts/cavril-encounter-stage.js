@@ -667,6 +667,51 @@
     } catch (e) { warn("czepeku probe failed", e); ui.notifications?.warn(`Cavril: CZEPEKU probe failed — connected? ${e?.message || ""}`); return null; }
   }
 
+  // ===== CZEPEKU TOKENS (NPC art) =========================================
+  // CZEPEKU's session serves ~4500 fantasy character TOKENS: { id, name, thumbnailKey, subject, pack }. The portrait URL
+  // is urls.tokenThumbnail with <THUMBNAIL_KEY> swapped for the token's thumbnailKey. We match NPC/merchant types by
+  // keyword against subject+name+pack. tokenPacks()/tokenSample() reveal the vocabulary; tokenFor(keywords) picks one.
+  let _tokenCat = null, _tokenCatAt = 0;
+  async function tokenCatalog(force = false) {
+    if (!force && _tokenCat && (Date.now() - _tokenCatAt) < (CFG.catalogTtlMs ?? 300000)) return _tokenCat;
+    const data = await czQuery("fvtt.getSessionData", null);
+    const base = data?.urls?.tokenThumbnail || "";
+    const items = (data?.fantasy?.tokens ?? []).map(t => ({
+      id: t.id, name: t.name || "", subject: t.subject || "", pack: t.pack || "",
+      url: (t.thumbnailKey && base) ? base.replace("<THUMBNAIL_KEY>", t.thumbnailKey) : null,
+      hay: `${t.subject || ""} ${t.name || ""} ${t.pack || ""}`.toLowerCase(),
+    })).filter(t => t.url);
+    _tokenCat = { items, base }; _tokenCatAt = Date.now();
+    return _tokenCat;
+  }
+  const tokenUrl = (t) => t?.url || null;
+  async function tokenPacks() {
+    const cat = await tokenCatalog(); const m = {};
+    for (const t of cat.items) { const k = t.pack || "(none)"; m[k] = (m[k] || 0) + 1; }
+    const rows = Object.entries(m).sort((a, b) => b[1] - a[1]).map(([pack, count]) => ({ pack, count }));
+    console.log(`%c[EncounterStage] CZEPEKU token packs (${cat.items.length} tokens, top 60 packs):`, CSS); console.table(rows.slice(0, 60));
+    return rows;
+  }
+  async function tokenSample(query = "", n = 25) {
+    const cat = await tokenCatalog(); const q = String(query).toLowerCase().trim();
+    const items = q ? cat.items.filter(t => t.hay.includes(q)) : cat.items;
+    const sample = items.slice(0, n).map(t => ({ subject: t.subject, name: t.name, pack: t.pack }));
+    console.log(`%c[EncounterStage] token sample — ${items.length} match "${query}" (showing ${sample.length}):`, CSS); console.table(sample);
+    return sample;
+  }
+  // Pick a token whose subject/name/pack matches ANY keyword (random among matches); falls back to a random token. Returns
+  // { url, subject, pack, name } or null. Used by NPC generators (the merchant economy) to give each NPC a face.
+  async function tokenFor(keywords) {
+    try {
+      const cat = await tokenCatalog(); if (!cat.items.length) return null;
+      const kws = (Array.isArray(keywords) ? keywords : String(keywords || "").split(/[\s,]+/)).map(k => k.toLowerCase()).filter(Boolean);
+      let pool = cat.items;
+      if (kws.length) { const m = cat.items.filter(t => kws.some(k => t.hay.includes(k))); if (m.length) pool = m; }
+      const t = pool[Math.floor(Math.random() * pool.length)];
+      return t ? { url: t.url, subject: t.subject, name: t.name, pack: t.pack } : null;
+    } catch (e) { warn("tokenFor failed", e); return null; }
+  }
+
   // ===== STAGING ===========================================================
   let pending = null;   // { pick, cls, ctx, paths?, ts }
   let _staging = false; // true while stageEncounter runs — suppresses the createCombat auto-stage
@@ -2018,6 +2063,7 @@
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
     getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, storyMaps, previewMap, czepekuProbe,
+    tokenCatalog, tokenPacks, tokenSample, tokenFor, tokenUrl,   // CZEPEKU NPC art: tokenPacks()/tokenSample("smith") to explore, tokenFor(keywords) to match a face
     purgeStagedScenes, isStagedScene,   // cleanup: delete encounter-generated scenes (CavrilEncounterStage.purgeStagedScenes())
     encounterLog, showEncounterLog, logEncounter, markEncounterResolved,   // ledger: CavrilEncounterStage.showEncounterLog()
     // Preview the top matches for a biome without creating anything.

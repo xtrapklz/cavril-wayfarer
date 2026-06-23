@@ -410,6 +410,7 @@ const Store = (() => {
         g.register(MOD, "lastOverworld", { scope: "world", config: false, type: String, default: "" });   // the overworld we left for an encounter — the robust Return target
         g.register(MOD, "journeyThreads", { scope: "world", config: false, type: String, default: "{}" });   // JSON {threadId: nextBeatIndex} — journey-storyline progress; CavrilWayfarer.resetJourney() restarts it
         g.register(MOD, "merchantCards", { name: "Spawn merchant shop cards", hint: "When a roadside 'trade' travel beat fires, also whisper the GM a generated merchant — a rotating shop with curated stock (priced, scaled to party level) and sometimes a quest hook. Off = just the flavour line. Roll one by hand any time with CavrilWayfarer.merchant().", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "merchantPortraits", { name: "Merchant portraits (CZEPEKU)", hint: "Give each generated merchant a fitting character portrait pulled from your CZEPEKU token library (matched by trade — a robed alchemist, a hooded fence, a grizzled smith). Needs the CZEPEKU module connected. Off = no portrait.", scope: "world", config: true, type: Boolean, default: true });
         // Per-hex travel events: a roll on every hex entered → mostly mundane flavor,
         // a danger-scaled chance of a real event (combat/puzzle/site) that halts the day.
         g.register(MOD, "travelEvents", { name: "Per-hex travel events", hint: "As the party crosses each hex, roll for an event — mostly mundane flavor, with a danger-scaled chance of a real encounter that halts the day. Whispered to the GM to narrate.", scope: "world", config: true, type: Boolean, default: true });
@@ -3318,6 +3319,27 @@ const MerchantEconomy = (() => {
     };
     const ALL = Object.keys(TYPES);
 
+    // keyword hints for matching a CZEPEKU character token (its subject/name/pack) to each merchant type, so the shop card
+    // gets a fitting face — handed to CavrilEncounterStage.tokenFor(). Broad on purpose; tune once tokenSample() shows the vocab.
+    const TOK_KW = {
+        peddler:      ["peddler", "merchant", "trader", "commoner", "villager", "traveler"],
+        general:      ["merchant", "shopkeeper", "trader", "commoner", "villager"],
+        blacksmith:   ["blacksmith", "smith", "dwarf", "artisan", "forge"],
+        fletcher:     ["fletcher", "bowyer", "archer", "hunter", "ranger"],
+        alchemist:    ["alchemist", "wizard", "mage", "apothecary", "scholar", "robed"],
+        herbalist:    ["herbalist", "druid", "witch", "hedge", "gatherer"],
+        apothecary:   ["apothecary", "healer", "priest", "cleric", "physician"],
+        fence:        ["fence", "rogue", "thief", "bandit", "hooded", "cutthroat", "smuggler"],
+        relicdealer:  ["relic", "wizard", "scholar", "collector", "noble", "antiquarian"],
+        beasttrader:  ["beast", "hunter", "ranger", "handler", "tamer", "trapper"],
+        partsbuyer:   ["hunter", "butcher", "trapper", "skinner"],
+        spicetrader:  ["spice", "merchant", "trader", "noble", "exotic"],
+        cartographer: ["cartographer", "scholar", "explorer", "scribe", "surveyor"],
+        jeweller:     ["jeweller", "jeweler", "noble", "merchant", "artisan"],
+        provisioner:  ["provisioner", "merchant", "farmer", "commoner", "villager"],
+        tinker:       ["tinker", "gnome", "artisan", "commoner", "inventor"],
+    };
+
     function genName() {
         const firsts = ["Bram", "Oda", "Cass", "Henrik", "Mirela", "Tobin", "Yara", "Esk", "Wend", "Pell", "Lhena", "Garr", "Sorrel", "Cobb", "Vask", "Ilsa", "Dunmore", "Petra", "Quill", "Maddox", "Nool", "Tamsin"];
         const eps = ["the Fair", "Quicksilver", "One-Eye", "of the Long Road", "Goldtooth", "the Patient", "Saltbeard", "Greenfingers", "Threadbare", "the Honest (so-called)", "Far-Walker", "Coppercoat", "of Nowhere", "the Lender", "Brassneck", "Ashfoot"];
@@ -3358,18 +3380,31 @@ const MerchantEconomy = (() => {
         const quest = (type.quests && type.quests.length && Math.random() < (opts.questChance ?? 0.5)) ? pick(type.quests) : null;
         return { key, type, name: genName(), greet: pick(type.greet), stock: stockFor(type, level), quest, level };
     }
+    // attach a CZEPEKU character-token portrait to the merchant (a face for the shop), matched by keyword. Async + best-effort:
+    // if the encounter-stage token catalog is absent or the fetch fails, the card just renders portrait-less.
+    async function resolvePortrait(m) {
+        try {
+            if (m.portrait || !game.settings.get(MOD, "merchantPortraits")) return m;
+            const tokenFor = globalThis.CavrilEncounterStage?.tokenFor;
+            if (typeof tokenFor !== "function") return m;
+            const tk = await tokenFor(TOK_KW[m.key] || [m.type.name]);
+            if (tk?.url) { m.portrait = tk.url; m.portraitSubject = tk.subject || ""; }
+        } catch (e) { /* no portrait — card still renders */ }
+        return m;
+    }
     function card(m) {
         const rows = m.stock.map(s => `<div class="cwf-card-row"><span class="cwf-card-l">${s.name}${s.tier > 1 ? ` <em style="opacity:.6;font-size:.85em">${tierName(s.tier)}</em>` : ""}</span><span class="cwf-card-v">${s.price} gp</span></div>`).join("");
         const buys = m.type.buys ? `<div class="cwf-muted2" style="margin-top:5px"><b>Buys:</b> ${m.type.buys}.</div>` : "";
         const quest = m.quest ? cwfRow("⚑ Hook", m.quest) : "";
-        const body = `<div class="cwf-muted2" style="font-style:italic;margin-bottom:6px">${m.greet}</div>${rows}${buys}${quest}`;
+        const portrait = m.portrait ? `<img class="cwf-merch-portrait" src="${m.portrait}" alt="" title="${String(m.portraitSubject || "").replace(/"/g, "&quot;")}" onerror="this.remove()">` : "";
+        const body = `${portrait}<div class="cwf-muted2" style="font-style:italic;margin-bottom:6px">${m.greet}</div>${rows}${buys}${quest}`;
         return cwfCardShell(m.type.icon || "fa-store", `${m.name} — ${m.type.name}`, body, { sub: `APL ${m.level}` });
     }
-    function post(m) { try { ChatMessage.create({ content: card(m), whisper: cwfGmIds() }); } catch (e) { warn("merchant card failed", e); } return m; }
+    async function post(m) { try { await resolvePortrait(m); ChatMessage.create({ content: card(m), whisper: cwfGmIds() }); } catch (e) { warn("merchant card failed", e); } return m; }
     function roll(opts) { return post(rollMerchant(opts)); }
-    function onTrade(cls) { try { if (!game.user.isGM || !game.settings.get(MOD, "merchantCards")) return; post(rollMerchant({ cls })); } catch (e) { warn("merchant onTrade failed", e); } }
+    async function onTrade(cls) { try { if (!game.user.isGM || !game.settings.get(MOD, "merchantCards")) return; await post(rollMerchant({ cls })); } catch (e) { warn("merchant onTrade failed", e); } }
 
-    return { roll, rollMerchant, post, card, onTrade, TYPES, POOLS };
+    return { roll, rollMerchant, post, card, onTrade, resolvePortrait, TYPES, POOLS, TOK_KW };
 })();
 
 /* =========================================================================

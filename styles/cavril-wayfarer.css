@@ -214,6 +214,8 @@
 .cwf-card, .cwf-card-bd { max-width: 100%; box-sizing: border-box; }
 .cwf-card-bd, .cwf-card-bd * { overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
 .cwf-night-h { white-space: normal; }
+/* Merchant portrait — a CZEPEKU character token floated into the shop card; round to match the token aesthetic. */
+.cwf-merch-portrait { float: right; width: 62px; height: 62px; margin: 0 0 6px 10px; border-radius: 50%; object-fit: cover; border: 1px solid rgba(180, 150, 255, .5); box-shadow: 0 1px 7px rgba(0, 0, 0, .45); background: rgba(0, 0, 0, .25); }
 .cwf-card-row { display: flex; align-items: baseline; gap: 10px; font-size: 12px; line-height: 1.45; }
 .cwf-card-l { flex: 0 0 68px; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--cwf-coral); font-weight: 700; padding-top: 1px; }
 .cwf-card-v { color: #f4f4f4; }
