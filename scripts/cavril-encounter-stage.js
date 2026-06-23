@@ -1755,8 +1755,11 @@
         autoT = null;
         try {
           if (!game.settings.get(MOD, "tgtAutoTarget")) return;
-          if (!(fresh || repick || !game.user.targets?.size)) return;
-          const c = game.combats?.active; if (!c?.started) return;
+          // A MOVE (repick) or a TURN start (fresh) always re-picks — IN OR OUT OF COMBAT, so positioning foes during
+          // encounter SETUP (before you roll initiative) auto-targets too. Incidental triggers (select / canvas ready)
+          // only act in an active+started combat and only when nothing is targeted, so they never surprise you mid-explore.
+          // (The >300-token guard in ranked() keeps overworld / city scenes safe; no enemy in sight → simply no-op.)
+          if (!(fresh || repick)) { const c = game.combats?.active; if (!c?.started || game.user.targets?.size) return; }
           // Prefer the token that TRIGGERED this (the one just moved) when it's one the GM drives — a non-player token,
           // or any token the GM has selected — so "move a token → it targets" works no matter what's selected. A player
           // moving their own PC falls through to driver() so it can't hijack the GM's reticle.
@@ -1790,11 +1793,9 @@
       let verdict;
       if (!out.isGM) verdict = "BLOCKED: not the GM (auto-target is GM-only)";
       else if (!out.settings.tgtAutoTarget) verdict = "BLOCKED: the 'Auto-target the best enemy' setting is OFF — turn it on";
-      else if (!out.combat.active) verdict = "BLOCKED: no active combat (auto-target is combat-only)";
-      else if (!out.combat.started) verdict = "BLOCKED: combat exists but is NOT STARTED — roll initiative / click Begin Combat";
-      else if (!out.driverHasActor) verdict = "BLOCKED: no driver — SELECT the token you're moving (or it must be the active combatant)";
-      else if (!out.bestEnemy) verdict = `NO ENEMY VISIBLE to '${out.driver}': check token DISPOSITIONS (hostile vs friendly must be opposite) + wall line-of-sight + vision range. Visible = ${JSON.stringify(out.visible)}`;
-      else verdict = `OK — would target '${out.bestEnemy}'. If it's not happening on move, confirm the module version is 0.55.50+ and reload.`;
+      else if (!out.driverHasActor) verdict = "SELECT a token to test — pick the token you'd move (the diagnostic reads the selected token, or the active combatant). Moving/selecting it live is what triggers the real auto-target.";
+      else if (!out.bestEnemy) verdict = `NO ENEMY VISIBLE to '${out.driver}': the foes must be set HOSTILE (red disposition) and the party FRIENDLY (green) — opposite signs — and be within wall line-of-sight + vision range. Visible now = ${JSON.stringify(out.visible)}`;
+      else verdict = `OK — moving '${out.driver}' (or starting its turn) auto-targets '${out.bestEnemy}'. As of 0.55.51 this works IN OR OUT of combat, so it fires during encounter setup too.`;
       out.verdict = verdict;
       console.log("%c[Targeting] diagnose — " + verdict, CSS, out);
       return out;

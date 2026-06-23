@@ -1160,12 +1160,15 @@ function cwfRefreshVisionSoon() {   // coalesce a burst of clock changes (per-he
     try { if (_cwfVisionTimer) clearTimeout(_cwfVisionTimer); } catch (e) {}
     _cwfVisionTimer = setTimeout(() => { _cwfVisionTimer = null; cwfRefreshVision(); }, 450);
 }
-// After a LARGE clock jump (camp → night → dawn) the day/night module ANIMATES darkness over ~1s. A single (debounced)
-// refresh can fire mid-animation and leave the overworld black with stale vision — the "entire hex map goes blank at camp /
-// night" bug. Stagger several recomputes so the final vision state matches the settled darkness no matter how long the
-// animation runs. perception.update coalesces, so the extra calls are cheap + idempotent.
+// After a darkness change (camp's night/dawn jump, OR a travel transition where Mini Calendar re-applies time+weather as the
+// token settles) the day/night module ANIMATES darkness over ~1-2s. A single refresh can fire mid-animation and leave the
+// map BLACK with stale vision until something forces a recompute (the user's "switch to tile tools and back fixes it" =
+// the layer switch forces canvas.perception to refresh). Stagger several recomputes so vision catches up to the settled
+// darkness no matter how long the animation runs. Coalesces a burst (per-hex travel) into one batch; cheap + idempotent.
+let _cwfSettleTimers = [];
 function cwfSettleVision() {
-    for (const ms of [250, 700, 1400, 2200]) setTimeout(cwfRefreshVision, ms);
+    try { _cwfSettleTimers.forEach(clearTimeout); } catch (e) {}
+    _cwfSettleTimers = [200, 600, 1200, 2000, 3000].map(ms => setTimeout(cwfRefreshVision, ms));
 }
 // Wait for the party token's MOVE animation to actually FINISH. token.document.update({animate:true}) resolves on the data
 // write, not the glide — so without this the cinematic curtain fires mid-move, starves the animation's frames, and the token
@@ -4456,13 +4459,15 @@ Hooks.once("ready", () => {
 });
 
 // Badge follows the token and re-classifies as it moves between hexes.
-Hooks.on("canvasReady", () => { Canvasry.invalidateTileIndex(); Music.reset(); MiniCal.resetBiome(); BiomeBadge.update(); WayfarerPanel.renderExternal(); MiniCal.refresh(); });
+Hooks.on("canvasReady", () => { Canvasry.invalidateTileIndex(); Music.reset(); MiniCal.resetBiome(); BiomeBadge.update(); WayfarerPanel.renderExternal(); MiniCal.refresh(); cwfSettleVision(); });   // settle vision on every scene draw — a freshly-staged battlemap can otherwise load black under Mini Calendar's darkness until you switch tools
 // Repainting/moving terrain, river, road, or coast tiles (or road drawings)
 // invalidates the spatial classify index so reach/route stay accurate.
 for (const h of ["createTile", "updateTile", "deleteTile", "createDrawing", "updateDrawing", "deleteDrawing"])
     Hooks.on(h, () => { try { Canvasry.invalidateTileIndex(); if (Travel.plotting) Travel.refresh?.(); } catch { /* noop */ } });
 // Mini Calendar updates weather as in-game time passes — re-read it.
-Hooks.on("updateWorldTime", () => { if (!cwfBusy) MiniCal.refresh(); cwfRefreshVisionSoon(); });
+// Any world-time change drives Mini Calendar's darkness/weather; settle vision over the whole animation so the map can't
+// be left black after a travel transition (the single debounced refresh used to fire mid-animation — the black-scene bug).
+Hooks.on("updateWorldTime", () => { if (!cwfBusy) MiniCal.refresh(); cwfSettleVision(); });
 // D&D Beyond rolls (via ddb-roll-cards v4.78+) auto-fill the claimed role slot.
 Hooks.on("ddb-roll-cards.roll", (payload) => { try { Turn.ingestRoll(payload); } catch (e) { warn("ddb roll ingest failed", e); } });
 // Work WITH the native dnd5e rest: when Wayfarer has flagged a member (long watch, or
