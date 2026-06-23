@@ -1684,26 +1684,29 @@
     function reflect() { if (last) render(last.list, last.viewer); }   // re-skin highlights only (never auto-targets)
     function hide() { last = null; if (el) el.style.display = "none"; }
     let autoT = null;
-    function recompute(fresh) {
+    function recompute(fresh, repick) {
       try {
         if (!game.user?.isGM || !game.settings.get(MOD, "tgtHelper")) return hide();
         const c = game.combats?.active; if (!c?.started) return hide();
         const viewer = driver(); if (!viewer?.actor) return hide();
         const list = ranked(viewer); if (!list.length) return hide();
-        render(list, viewer);          // chips update instantly…
-        autoTargetSoon(!!fresh);       // …the auto-pick settles a beat later (tgtAutoDelay)
+        render(list, viewer);              // chips update instantly…
+        autoTargetSoon(!!fresh, !!repick); // …the auto-pick settles a beat later (tgtAutoDelay)
       } catch (e) { warn("target helper recompute failed", e); }
     }
-    // Delayed auto-target: ~tgtAutoDelay seconds after a token moves or starts its turn, target the best ENEMY (never an
-    // ally / neutral / self). On a fresh turn it always re-picks; after a move only when nothing is currently targeted.
-    function autoTargetSoon(fresh) {
+    // Delayed auto-target: ~tgtAutoDelay seconds after the trigger, target the best ENEMY (never ally / neutral / self),
+    // RELEASING whatever was targeted before. Both `fresh` (a turn started) and `repick` (a token MOVED) force a fresh pick
+    // even if something is already targeted — so every move and every turn re-chooses the best target. Incidental triggers
+    // (selecting a token, canvas / combat ready) pass neither, so they only auto-pick when nothing is targeted — they never
+    // yank a target you set by hand between moves.
+    function autoTargetSoon(fresh, repick) {
       clearTimeout(autoT);
       const d = Number(game.settings.get(MOD, "tgtAutoDelay")); const delay = (Number.isFinite(d) ? Math.max(0, d) : 1) * 1000;
       autoT = setTimeout(() => {
         autoT = null;
         try {
           if (!game.settings.get(MOD, "tgtAutoTarget")) return;
-          if (!(fresh || !game.user.targets?.size)) return;
+          if (!(fresh || repick || !game.user.targets?.size)) return;
           const c = game.combats?.active; if (!c?.started) return;
           const viewer = driver(); if (!viewer?.actor) return;
           const best = ranked(viewer).find((r) => r.rel === "enemy");
@@ -1711,7 +1714,7 @@
         } catch (e) {}
       }, delay);
     }
-    function recomputeSoon(fresh) { clearTimeout(timer); timer = setTimeout(() => { timer = null; recompute(fresh); }, 120); }
+    function recomputeSoon(fresh, repick) { clearTimeout(timer); timer = setTimeout(() => { timer = null; recompute(fresh, repick); }, 120); }
     function reflectSoon() { clearTimeout(rTimer); rTimer = setTimeout(() => { rTimer = null; reflect(); }, 60); }
     // QoL: ~3s after a token settles, pan the GM's camera back onto it (combat only; gated by tgtRecenter).
     let recT = null;
@@ -1951,7 +1954,7 @@
     reg("esEncounterLog",     { scope: "world", config: false, type: Array, default: [] });    // ledger of staged encounters [{wt,ts,biome,when,weather,foes,map,sceneId}]
     reg("esBiomeOverrides",   { scope: "world", config: false, type: Object, default: {} });   // GM review-panel overrides {id→{biome?,generic?,exclude?}}
     reg("tgtHelper",          { name: "Targeting helper — suggest targets in combat", hint: "During combat, show a chip bar of the tokens the selected/active token can SEE, ranked: advantage (flanking or an advantage-granting condition) on an enemy → nearest enemy → nearest neutral → nearest ally. Click a chip to target / untarget. GM-only.", scope: "world", config: true, type: Boolean, default: true });
-    reg("tgtAutoTarget",      { name: "  · Auto-target the best enemy", hint: "Automatically target the best enemy at the start of EVERY token's turn (players included) and after it moves with no target. Only ever auto-targets an enemy — neutrals, allies and self stay click-only. OFF = the suggestion is only highlighted; you click a chip to target.", scope: "world", config: true, type: Boolean, default: true });
+    reg("tgtAutoTarget",      { name: "  · Auto-target the best enemy", hint: "Automatically target the best enemy at the start of EVERY token's turn AND every time a token moves (players included) — releasing the previous target each time, so the pick always tracks the current best. Only ever auto-targets an enemy — neutrals, allies and self stay click-only. OFF = the suggestion is only highlighted; you click a chip to target.", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtAutoDelay",       { name: "  · Auto-target delay (seconds)", hint: "How long after a token moves or starts its turn before the best enemy is auto-targeted. The target chips still update instantly — only the auto-pick waits. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 5, step: 0.5 } });
     reg("tgtRecenter",        { name: "  · Re-centre the GM camera on moves", hint: "During combat, pan the GM's camera onto whatever token just moved — player OR monster — so your display stays on the action. GM-side only: it pans YOUR view, never the players' (a monster's move never yanks their camera).", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtRecenterDelay",   { name: "  · Re-centre delay (seconds)", hint: "How long after a player token settles before the camera pans onto it. 0 = immediate. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 10, step: 0.5 } });
@@ -2149,7 +2152,7 @@
     });
     // Targeting helper — recompute on turn change (fresh suggestion), movement, selection, scene + combat end.
     hookIds.tgtTurn   = Hooks.on("updateCombat", (cb, chg) => { if (("turn" in chg) || ("round" in chg)) TargetHelper.recomputeSoon(true); });
-    hookIds.tgtMove   = Hooks.on("updateToken", (d, chg) => { if (("x" in chg) || ("y" in chg)) { TargetHelper.recomputeSoon(false); TargetHelper.recenterSoon(d); } });
+    hookIds.tgtMove   = Hooks.on("updateToken", (d, chg) => { if (("x" in chg) || ("y" in chg)) { TargetHelper.recomputeSoon(false, true); TargetHelper.recenterSoon(d); } });
     hookIds.tgtCtrl   = Hooks.on("controlToken", () => TargetHelper.recomputeSoon(false));
     hookIds.tgtTgt    = Hooks.on("targetToken", () => TargetHelper.reflectSoon());   // target changed elsewhere → just re-skin chips (no auto-target, so deselects stick)
     hookIds.tgtCanvas = Hooks.on("canvasReady", () => TargetHelper.recomputeSoon(false));
