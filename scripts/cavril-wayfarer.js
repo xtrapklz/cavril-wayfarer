@@ -409,6 +409,7 @@ const Store = (() => {
         g.register(MOD, "lastWatch", { scope: "world", config: false, type: Array, default: [] });
         g.register(MOD, "lastOverworld", { scope: "world", config: false, type: String, default: "" });   // the overworld we left for an encounter — the robust Return target
         g.register(MOD, "journeyThreads", { scope: "world", config: false, type: String, default: "{}" });   // JSON {threadId: nextBeatIndex} — journey-storyline progress; CavrilWayfarer.resetJourney() restarts it
+        g.register(MOD, "merchantCards", { name: "Spawn merchant shop cards", hint: "When a roadside 'trade' travel beat fires, also whisper the GM a generated merchant — a rotating shop with curated stock (priced, scaled to party level) and sometimes a quest hook. Off = just the flavour line. Roll one by hand any time with CavrilWayfarer.merchant().", scope: "world", config: true, type: Boolean, default: true });
         // Per-hex travel events: a roll on every hex entered → mostly mundane flavor,
         // a danger-scaled chance of a real event (combat/puzzle/site) that halts the day.
         g.register(MOD, "travelEvents", { name: "Per-hex travel events", hint: "As the party crosses each hex, roll for an event — mostly mundane flavor, with a danger-scaled chance of a real encounter that halts the day. Whispered to the GM to narrate.", scope: "world", config: true, type: Boolean, default: true });
@@ -1349,6 +1350,7 @@ async function cwfHexEvent(cls, { scoutGood = false } = {}) {
     // A real event. Narrative is most common (continue); combat scales with danger;
     // puzzle and site are rare and halt the day.
     const kind = cwfWeightedPick({ narrative: 5, combat: 3 + x, puzzle: 2, site: 2, trade: cls?.infrastructure ? 6 : 2 });   // site bumped for more hook-discoveries; trade weighted up on roads (infrastructure)
+    if (kind === "trade") MerchantEconomy.onTrade(cls);   // also whisper the GM a generated shop — rotating stock (level-scaled) + maybe a quest hook
     if (kind === "narrative" || kind === "trade") return { halt: false, line: await Tables.drawEvent(kind, cls) };   // both are non-halting opportunity beats the GM can choose to run
     const hours = Math.max(0, Number(game.settings.get(MOD, "encounterHours")) || 1);
     const meta = ({
@@ -2872,7 +2874,7 @@ const Tables = (() => {
             "A bounty-broker collecting proof of slain monsters — and issuing fresh contracts."
         ]
     };
-    // ---- per-biome THEMED content (in-code) — pickBiome mixes these in ≈75% over the generic editable tables, so each
+    // ---- per-biome THEMED content (in-code) — pickFor mixes these (and the terrain FEATURE_THEMES below) over the generic editable tables, so each
     // biome's flavor / discoveries / roadside merchants feel distinct. Keys match cls.biome (Danger.DEF_BIOME). Biomes
     // not listed (swamp, unknown) just use the generic pool. Narrative + puzzle stay generic (universal).
     const BIOME_THEMES = {
@@ -3100,6 +3102,115 @@ const Tables = (() => {
     }
 
     return { ensureAll, draw, ensureEncounter, drawEncounter, drawFlavor, drawEvent, reseed, nextThreadBeat, resetJourney, journeyStatus, DEFS, FOLDER };
+})();
+
+/* =========================================================================
+ * MERCHANT ECONOMY — rotating general + specialized merchants, each with a
+ * curated stock rolled from item pools SPECIFIC to their trade (priced + scaled
+ * to party level) and their own quest hooks. Roadside "trade" beats spawn a
+ * GM-whispered shop card; or by hand: globalThis.CavrilWayfarer.merchant()
+ *   .merchant("alchemist")   .merchant({ type:"fence", level:8 })
+ * ========================================================================= */
+const MerchantEconomy = (() => {
+    const rint = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+    const pick = (a) => a[Math.floor(Math.random() * a.length)];
+    const shuffle = (a) => { const c = a.slice(); for (let i = c.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = c[i]; c[i] = c[j]; c[j] = t; } return c; };
+    const tierName = (t) => t === 3 ? "rare" : t === 2 ? "uncommon" : "common";
+
+    // item pools — [name, base gp, tier 1=common 2=uncommon 3=rare]. Merchants stock from a SUBSET of these.
+    const POOLS = {
+        provisions: [["Rations (1 day)", 0.5, 1], ["Waterskin", 0.2, 1], ["Torches (×5)", 0.5, 1], ["Oil flask", 0.1, 1], ["Hempen rope (50 ft)", 1, 1], ["Bedroll", 1, 1], ["Tinderbox", 0.5, 1], ["Hardtack & trail mix", 1, 1], ["Hooded lantern", 5, 1], ["Two-person tent", 2, 1], ["Climber's kit", 25, 2]],
+        weapons: [["Dagger", 2, 1], ["Handaxe", 5, 1], ["Shortsword", 10, 1], ["Spear", 1, 1], ["Mace", 5, 1], ["Longsword", 15, 1], ["Warhammer", 15, 1], ["Battleaxe", 10, 1], ["Rapier", 25, 2], ["Fine steel blade (masterwork)", 120, 2], ["Silvered weapon", 110, 2]],
+        armor: [["Padded armor", 5, 1], ["Leather armor", 10, 1], ["Studded leather", 45, 1], ["Shield", 10, 1], ["Chain shirt", 50, 2], ["Scale mail", 50, 2], ["Helm & greaves", 30, 1], ["Breastplate", 400, 3], ["Half plate", 750, 3]],
+        ammo: [["Arrows (×20)", 1, 1], ["Crossbow bolts (×20)", 1, 1], ["Sling bullets (×20)", 0.04, 1], ["Silvered arrows (×10)", 30, 2], ["Barbed broadheads (×10)", 8, 2]],
+        tools: [["Smith's tools", 20, 1], ["Thieves' tools", 25, 1], ["Healer's kit", 5, 1], ["Cartographer's tools", 15, 1], ["Herbalism kit", 5, 1], ["Tinker's tools", 50, 2], ["Disguise kit", 25, 2], ["Whetstone & oils", 2, 1]],
+        potions: [["Potion of Healing", 50, 1], ["Potion of Greater Healing", 150, 2], ["Potion of Climbing", 75, 1], ["Antitoxin", 50, 1], ["Potion of Water Breathing", 180, 2], ["Potion of Fire Resistance", 300, 3], ["Oil of Slipperiness", 480, 3], ["Elixir of Health", 120, 2]],
+        reagents: [["Powdered silver (vial)", 25, 1], ["Quicksilver (vial)", 30, 1], ["Sulphur & saltpetre", 10, 1], ["Mandrake root", 40, 2], ["Phosphorescent moss", 20, 1], ["Vial of troll blood", 75, 3], ["Basilisk-eye dust", 90, 3], ["Ground unicorn horn (a pinch)", 250, 3]],
+        poisons: [["Basic poison (vial)", 100, 1], ["Serpent venom", 200, 2], ["Essence of ether", 300, 2], ["Drow poison", 300, 3], ["Truth serum", 150, 2], ["Midnight tears", 1500, 3]],
+        herbs: [["Healing poultice", 10, 1], ["Numbing salve", 8, 1], ["Antitoxin herbs", 25, 1], ["Fever-bark", 15, 1], ["Dreamleaf (sedative)", 30, 2], ["Wound-knit moss", 40, 2], ["Witchbane sprig", 60, 2]],
+        trinkets: [["Carved bone charm", 2, 1], ["Tarnished locket", 3, 1], ["Deck of odd cards", 1, 1], ["A key to no known lock", 1, 1], ["Glass eye that weeps in rain", 5, 2], ["Music box with one cracked note", 8, 2], ["Dried fey-flower, still warm", 15, 2], ["Map to a place that isn't there", 10, 2]],
+        relics: [["Unidentified wand (3 charges?)", 250, 3], ["Ring, faintly warm", 300, 3], ["Cloak-clasp that hums", 180, 2], ["Sealed scroll, ward-marked", 200, 3], ["Idol of a forgotten saint", 150, 2], ["Shard of a shattered mirror", 220, 3], ["Bottled whisper", 400, 3]],
+        spices: [["Saffron (oz)", 15, 2], ["Black pepper (lb)", 2, 1], ["Ghostpepper, dried", 8, 2], ["Bolt of dyed silk", 60, 2], ["Temple-grade incense", 12, 1], ["Brick of pressed tea", 10, 1], ["Sea-fine salt (lb)", 1, 1], ["Honeyed dates", 3, 1]],
+        gems: [["Quartz", 10, 1], ["Moonstone", 50, 2], ["Amber with an insect inside", 80, 2], ["Garnet", 100, 2], ["Pearl", 100, 2], ["Silver signet ring", 25, 1], ["Sapphire", 1000, 3], ["Star-ruby", 1000, 3]],
+        books: [["Regional road-map", 10, 1], ["A traveller's journal", 5, 1], ["Sea-chart of the coast", 25, 2], ["Scroll of a cantrip", 30, 1], ["Scroll of a 1st-level spell", 90, 2], ["Water-stained bestiary", 40, 2], ["Half-burnt cipher-book", 60, 2], ["Survey of a 'lost' valley", 75, 3]],
+        beasts: [["Mule", 8, 1], ["Riding horse", 75, 1], ["Draft horse", 50, 1], ["War-trained mastiff", 25, 2], ["Pair of carrier pigeons", 10, 1], ["Pony", 30, 1], ["Hooded falcon", 120, 2], ["Caged exotic specimen", 300, 3]],
+        parts: [["Prime beast hide", 15, 1], ["Pair of horns", 20, 1], ["Sealed venom gland", 60, 2], ["Monster bone, marrow intact", 30, 2], ["Vial of luminous ichor", 90, 3], ["A still-warm heart", 120, 3], ["Shed antler-tine that hums", 150, 3]],
+        contraband: [["'Recovered' silverware", 40, 1], ["Untaxed spirits (cask)", 25, 1], ["Forged writ of passage", 80, 2], ["Filed-down stolen signet", 120, 2], ["A name, and where to find them", 50, 2], ["Banned alchemical text", 200, 3]]
+    };
+
+    // merchant types — pools they stock from, line count, price markup, terrain affinity, what they BUY, quest hooks, greetings
+    const TYPES = {
+        peddler:      { name: "Peddler", kind: "general", icon: "fa-cart-flatbed", pools: ["provisions", "trinkets", "tools", "ammo", "herbs"], count: [5, 8], markup: 1.1, terrain: ["road"], buys: "oddments and small valuables", quests: ["Asks you to carry a sealed package to a name two days up the road — no questions, fair coin.", "Was robbed of a strongbox at the last ford; offers its contents, halved, to whoever returns it."], greet: ["A wagon of everything and nothing creaks to a halt. 'Travellers! Everything has a price, and today the price is friendly.'", "'Long road, light purse? I have just the thing. I always have just the thing.'"] },
+        general:      { name: "General Store (travelling)", kind: "general", icon: "fa-store", pools: ["provisions", "tools", "weapons", "armor", "ammo"], count: [6, 9], markup: 1.0, terrain: ["road", "settlement"], buys: "used gear in fair condition", quests: ["Short a wagon-load of nails and salt that never arrived; pays for news of it.", "A regular customer hasn't been seen in a month; worried, offers credit for word of them."], greet: ["'Step up, step up — if I don't have it, you didn't need it.'"] },
+        blacksmith:   { name: "Smith (forge-wagon)", kind: "specialized", icon: "fa-hammer", pools: ["weapons", "armor", "tools", "ammo"], count: [5, 7], markup: 1.15, terrain: ["road", "mountain", "settlement"], buys: "scrap metal, broken arms, raw ore", quests: ["Needs dark-iron ore from a mine the local folk won't enter — pays in steel.", "A blade he forged turned up at a murder; wants it found and brought back before questions are asked."], greet: ["Sparks and the ring of hammer on anvil. 'Edge gone dull on the road? Sit. I'll see to it.'"] },
+        fletcher:     { name: "Fletcher & Bowyer", kind: "specialized", icon: "fa-bullseye", pools: ["weapons", "ammo", "tools"], count: [4, 6], markup: 1.1, terrain: ["road", "forest"], buys: "feathers, sinew, good stave-wood", quests: ["Wants feathers from a bird that nests only past a haunted mere.", "Lost a prized bow to a thief headed your way; describes both in loving detail."], greet: ["'A bow is a promise, friend. Let me sell you one that keeps.'"] },
+        alchemist:    { name: "Alchemist", kind: "specialized", icon: "fa-flask", pools: ["potions", "reagents", "poisons", "tools"], count: [5, 7], markup: 1.2, terrain: ["road", "settlement", "tainted"], buys: "reagents, rare glands, strange waters", quests: ["Pays handsomely for a venom gland from a specific beast — bring it sealed and fresh.", "A batch went wrong and walked off; the symptoms, he admits, are 'spreading.'"], greet: ["A reek of sulphur and rosewater. 'Mind the green bottles. Actually — mind all the bottles.'"] },
+        herbalist:    { name: "Herbalist", kind: "specialized", icon: "fa-seedling", pools: ["herbs", "potions", "reagents"], count: [4, 6], markup: 1.1, terrain: ["forest", "hill", "jungle"], buys: "rare blooms and fresh-cut simples", quests: ["Needs a moonbloom that opens only where someone recently died.", "Her apprentice went gathering past the old boundary stones and hasn't come home."], greet: ["'You look road-worn. I have a salve for that, and a tea for the rest.'"] },
+        apothecary:   { name: "Apothecary", kind: "specialized", icon: "fa-mortar-pestle", pools: ["potions", "herbs", "reagents", "tools"], count: [4, 6], markup: 1.15, terrain: ["road", "settlement"], buys: "cures, herbs, clean water", quests: ["A plague stirs in a village downriver; she'll outfit you to carry medicine in.", "Seeks a recipe a rival took to the grave — and the grave's location."], greet: ["'Cures, comforts, and a few quiet questions answered. What ails you?'"] },
+        fence:        { name: "Fence", kind: "specialized", icon: "fa-mask", pools: ["contraband", "trinkets", "poisons", "relics", "gems"], count: [4, 6], markup: 0.9, terrain: ["road", "settlement", "wasteland"], buys: "anything, no questions, low coin", quests: ["Has a hot item to move up the road to a buyer who pays in favours.", "A rival crew lifted goods promised to him; wants them back, quietly, by any means."], greet: ["A low voice from a hooded face. 'You didn't see me. I didn't see that. Now — what've you got?'"] },
+        relicdealer:  { name: "Relic-Dealer", kind: "specialized", icon: "fa-gem", pools: ["relics", "trinkets", "books", "gems"], count: [4, 6], markup: 1.3, terrain: ["road", "wasteland", "tainted", "void"], buys: "odd finds — the old and the wrong", quests: ["A buyer wants a specific cursed thing; he'll fund the expedition to fetch it.", "One of his pieces 'woke up' and is missed; he'd like it found before it's missed by others."], greet: ["A locked case, a nervous guard. 'Each of these has a story. Some are still going.'"] },
+        beasttrader:  { name: "Beast-Trader", kind: "specialized", icon: "fa-paw", pools: ["beasts", "provisions", "parts"], count: [3, 5], markup: 1.1, terrain: ["road", "savanna", "hill"], buys: "live specimens, hides, exotic stock", quests: ["A prize specimen slipped its cage in the night; recapture it or bring a replacement.", "Wants something living and rare from the deep wilds, and pays a bounty per pound."], greet: ["A reek of straw and musk. 'Sound of limb, sweet of temper — mostly. Riding, or hunting?'"] },
+        partsbuyer:   { name: "Parts-Buyer", kind: "specialized", icon: "fa-bone", pools: ["parts", "reagents", "poisons", "tools"], count: [3, 5], markup: 1.0, terrain: ["road", "jungle", "frozen", "volcanic"], buys: "MONSTER PARTS — hide, horn, ichor, gland, bone (fresh pays best)", quests: ["Standing bounty: bring the harvestable parts of a named beast loose in the region — paid by the piece.", "Lost a hunting partner to the very thing she sends others after; wants the parts, and the truth."], greet: ["Scales out, knives clean. 'You hunt, I buy. Hide, horn, ichor, gland — what did you bring me?'"] },
+        spicetrader:  { name: "Spice & Silk Trader", kind: "specialized", icon: "fa-jar", pools: ["spices", "provisions", "trinkets", "gems"], count: [5, 7], markup: 1.25, terrain: ["road", "desert", "coast", "savanna"], buys: "exotic goods, rare flavours, news", quests: ["A caravan of his was raided up the road; recover even a chest and he'll make it worth your while.", "Needs a banned spice carried past a checkpoint — discreetly. Good coin, real risk."], greet: ["Colour and scent spill from the wagon. 'Taste the far world, friend — saffron, silk, secrets.'"] },
+        cartographer: { name: "Cartographer", kind: "specialized", icon: "fa-map", pools: ["books", "tools", "trinkets"], count: [3, 5], markup: 1.15, terrain: ["road", "mountain", "coast"], buys: "survey notes, true accounts, sketches", quests: ["Pays by the hex for an honest map of uncharted country — bring back notes, not stories.", "A survey crew he funded went silent past the ridge; he'd settle for knowing what happened."], greet: ["Charts to the ceiling. 'Everywhere you've been, I want it on paper — especially the dangerous parts.'"] },
+        jeweller:     { name: "Jeweller", kind: "specialized", icon: "fa-ring", pools: ["gems", "trinkets", "relics"], count: [3, 5], markup: 1.4, terrain: ["road", "settlement"], buys: "gems, fine metal, curiosities", quests: ["Commissioned a stone he can't source legally; pays a finder's fee and forgets where it came from.", "A betrothal ring he sold has gone missing with the bride — wants the ring back, not the gossip."], greet: ["A loupe, a velvet tray. 'Light likes my wares. So will you. May I?'"] },
+        provisioner:  { name: "Provisioner", kind: "general", icon: "fa-wheat-awn", pools: ["provisions", "ammo", "tools", "herbs"], count: [6, 9], markup: 1.0, terrain: ["road", "settlement"], buys: "surplus supplies, fresh game", quests: ["Outfitting an expedition that's short two hands; provisions you free to escort his wagons a way.", "A supplier shorted him and skipped town up your road; recover the goods or the coin."], greet: ["'Beans, bandages, and boot-leather — the unglamorous things that keep you breathing. Stock up.'"] },
+        tinker:       { name: "Tinker", kind: "general", icon: "fa-screwdriver-wrench", pools: ["tools", "trinkets", "provisions"], count: [4, 6], markup: 1.05, terrain: ["road", "hill"], buys: "broken things and odd parts", quests: ["Swears a 'self-winding' contraption walked off; would like it back before it 'finishes.'", "Needs a rare cog cast at a forge two valleys on; trades a free repair for the errand."], greet: ["A wagon hung with pots and gears that tick. 'Broke it? I'll mend it. Bored of it? I'll trade it.'"] }
+    };
+    const ALL = Object.keys(TYPES);
+
+    function genName() {
+        const firsts = ["Bram", "Oda", "Cass", "Henrik", "Mirela", "Tobin", "Yara", "Esk", "Wend", "Pell", "Lhena", "Garr", "Sorrel", "Cobb", "Vask", "Ilsa", "Dunmore", "Petra", "Quill", "Maddox", "Nool", "Tamsin"];
+        const eps = ["the Fair", "Quicksilver", "One-Eye", "of the Long Road", "Goldtooth", "the Patient", "Saltbeard", "Greenfingers", "Threadbare", "the Honest (so-called)", "Far-Walker", "Coppercoat", "of Nowhere", "the Lender", "Brassneck", "Ashfoot"];
+        return Math.random() < 0.55 ? `${pick(firsts)} ${pick(eps)}` : pick(firsts);
+    }
+    // bias stock tier by party level: low APL → mostly common; high APL → more uncommon/rare in reach
+    function tierGate(level) { const L = Math.max(1, level | 0); return { unc: Math.min(0.7, 0.12 + L * 0.045), rare: Math.min(0.45, L * 0.028) }; }
+    function affordTier(t, g) { return t === 3 ? Math.random() < g.rare : t === 2 ? Math.random() < g.unc : true; }
+
+    function stockFor(type, level) {
+        const g = tierGate(level), candidates = [];
+        for (const pk of type.pools) for (const it of (POOLS[pk] || [])) candidates.push(it);
+        const want = rint(type.count[0], type.count[1]), out = [], seen = new Set();
+        for (const it of shuffle(candidates)) {
+            if (out.length >= want) break;
+            const [name, gp, tier] = it; if (seen.has(name) || !affordTier(tier, g)) continue;
+            seen.add(name);
+            out.push({ name, tier, price: Math.round(gp * type.markup * (0.85 + Math.random() * 0.4) * 100) / 100 });
+        }
+        if (out.length < 3) for (const it of shuffle(candidates)) { if (out.length >= 3) break; const [name, gp, tier] = it; if (seen.has(name) || tier > 1) continue; seen.add(name); out.push({ name, tier, price: Math.round(gp * type.markup * 100) / 100 }); }
+        return out.sort((a, b) => a.tier - b.tier || a.price - b.price);
+    }
+    // which merchant types suit this hex's terrain (falls back to all)
+    function terrainTypes(cls) {
+        const want = [];
+        if (cls?.infrastructure) want.push("road");
+        if (cls?.river || cls?.water) want.push("coast", "road");
+        if (cls?.vegetation === "high") want.push("forest");
+        if (cls?.elevation === "high") want.push("mountain");
+        if (cls?.biome) want.push(cls.biome);
+        const m = ALL.filter(k => TYPES[k].terrain.some(t => want.includes(t)));
+        return m.length ? m : ALL;
+    }
+    function rollMerchant(opts = {}) {
+        if (typeof opts === "string") opts = { type: opts };
+        let key = opts.type && TYPES[opts.type] ? opts.type : pick(opts.cls ? terrainTypes(opts.cls) : ALL);
+        const type = TYPES[key], level = opts.level || cwfAvgPartyLevel();
+        const quest = (type.quests && type.quests.length && Math.random() < (opts.questChance ?? 0.5)) ? pick(type.quests) : null;
+        return { key, type, name: genName(), greet: pick(type.greet), stock: stockFor(type, level), quest, level };
+    }
+    function card(m) {
+        const rows = m.stock.map(s => `<div class="cwf-card-row"><span class="cwf-card-l">${s.name}${s.tier > 1 ? ` <em style="opacity:.6;font-size:.85em">${tierName(s.tier)}</em>` : ""}</span><span class="cwf-card-v">${s.price} gp</span></div>`).join("");
+        const buys = m.type.buys ? `<div class="cwf-muted2" style="margin-top:5px"><b>Buys:</b> ${m.type.buys}.</div>` : "";
+        const quest = m.quest ? cwfRow("⚑ Hook", m.quest) : "";
+        const body = `<div class="cwf-muted2" style="font-style:italic;margin-bottom:6px">${m.greet}</div>${rows}${buys}${quest}`;
+        return cwfCardShell(m.type.icon || "fa-store", `${m.name} — ${m.type.name}`, body, { sub: `APL ${m.level}` });
+    }
+    function post(m) { try { ChatMessage.create({ content: card(m), whisper: cwfGmIds() }); } catch (e) { warn("merchant card failed", e); } return m; }
+    function roll(opts) { return post(rollMerchant(opts)); }
+    function onTrade(cls) { try { if (!game.user.isGM || !game.settings.get(MOD, "merchantCards")) return; post(rollMerchant({ cls })); } catch (e) { warn("merchant onTrade failed", e); } }
+
+    return { roll, rollMerchant, post, card, onTrade, TYPES, POOLS };
 })();
 
 /* =========================================================================
@@ -4029,6 +4140,7 @@ Hooks.once("ready", () => {
         createTables: () => Tables.ensureAll(),
         reseedTables: () => Tables.reseed(),
         resetJourney: () => Tables.resetJourney(),
+        merchant: (opts) => MerchantEconomy.roll(opts),
         journeyStatus: () => Tables.journeyStatus(),
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, _installed: true
     };
