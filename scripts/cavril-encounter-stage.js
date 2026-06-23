@@ -1748,7 +1748,7 @@
     // even if something is already targeted — so every move and every turn re-chooses the best target. Incidental triggers
     // (selecting a token, canvas / combat ready) pass neither, so they only auto-pick when nothing is targeted — they never
     // yank a target you set by hand between moves.
-    function autoTargetSoon(fresh, repick) {
+    function autoTargetSoon(fresh, repick, hintTok) {
       clearTimeout(autoT);
       const d = Number(game.settings.get(MOD, "tgtAutoDelay")); const delay = (Number.isFinite(d) ? Math.max(0, d) : 1) * 1000;
       autoT = setTimeout(() => {
@@ -1757,7 +1757,12 @@
           if (!game.settings.get(MOD, "tgtAutoTarget")) return;
           if (!(fresh || repick || !game.user.targets?.size)) return;
           const c = game.combats?.active; if (!c?.started) return;
-          const viewer = driver(); if (!viewer?.actor) return;
+          // Prefer the token that TRIGGERED this (the one just moved) when it's one the GM drives — a non-player token,
+          // or any token the GM has selected — so "move a token → it targets" works no matter what's selected. A player
+          // moving their own PC falls through to driver() so it can't hijack the GM's reticle.
+          let viewer = (hintTok?.actor && (hintTok.controlled || !hintTok.actor.hasPlayerOwner)) ? hintTok : null;
+          if (!viewer) viewer = driver();
+          if (!viewer?.actor) return;
           const best = ranked(viewer).find((r) => r.rel === "enemy");
           if (best) best.t.setTarget(true, { user: game.user, releaseOthers: true });
         } catch (e) {}
@@ -1767,7 +1772,33 @@
     // The combined tick the hooks fire on turn-change / move / select. Auto-target runs INDEPENDENTLY of the chip bar, so
     // it works even with the bar hidden (tgtHelper off); the bar only redraws when tgtHelper is on. This is what makes
     // "I just want reliable auto-targeting, I don't need the bar" work — leave tgtAutoTarget on, turn tgtHelper off.
-    function kick(fresh, repick) { try { autoTargetSoon(!!fresh, !!repick); } catch (e) {} recomputeSoon(); }
+    function kick(fresh, repick, hintTok) { try { autoTargetSoon(!!fresh, !!repick, hintTok || null); } catch (e) {} recomputeSoon(); }
+    // On-demand diagnostic: select the token you'd move (or have an active combatant) and run CavrilTargeting.diagnose()
+    // — it reports which gate (setting / combat / driver / disposition) is stopping the auto-target, so we stop guessing.
+    function diagnose() {
+      const out = {};
+      out.isGM = !!game.user?.isGM;
+      out.settings = { tgtAutoTarget: !!game.settings.get(MOD, "tgtAutoTarget"), tgtHelperBar: !!game.settings.get(MOD, "tgtHelper"), tgtAutoDelaySec: Number(game.settings.get(MOD, "tgtAutoDelay")) };
+      const c = game.combats?.active;
+      out.combat = { active: !!c, started: !!c?.started, activeCombatant: c?.combatant?.token?.name || c?.combatant?.name || null };
+      out.controlled = (canvas?.tokens?.controlled || []).map(t => t.name);
+      const v = driver();
+      out.driver = v?.name || null; out.driverHasActor = !!v?.actor;
+      out.currentTargets = Array.from(game.user?.targets || []).map(t => t.name);
+      if (v?.actor) { const list = ranked(v); out.visible = list.map(r => `${r.t.name} [${r.rel}${r.adv ? "/adv" : ""}] ${Math.round(r.dist)}ft`); out.bestEnemy = list.find(r => r.rel === "enemy")?.t?.name || null; }
+      else { out.visible = []; out.bestEnemy = null; }
+      let verdict;
+      if (!out.isGM) verdict = "BLOCKED: not the GM (auto-target is GM-only)";
+      else if (!out.settings.tgtAutoTarget) verdict = "BLOCKED: the 'Auto-target the best enemy' setting is OFF — turn it on";
+      else if (!out.combat.active) verdict = "BLOCKED: no active combat (auto-target is combat-only)";
+      else if (!out.combat.started) verdict = "BLOCKED: combat exists but is NOT STARTED — roll initiative / click Begin Combat";
+      else if (!out.driverHasActor) verdict = "BLOCKED: no driver — SELECT the token you're moving (or it must be the active combatant)";
+      else if (!out.bestEnemy) verdict = `NO ENEMY VISIBLE to '${out.driver}': check token DISPOSITIONS (hostile vs friendly must be opposite) + wall line-of-sight + vision range. Visible = ${JSON.stringify(out.visible)}`;
+      else verdict = `OK — would target '${out.bestEnemy}'. If it's not happening on move, confirm the module version is 0.55.50+ and reload.`;
+      out.verdict = verdict;
+      console.log("%c[Targeting] diagnose — " + verdict, CSS, out);
+      return out;
+    }
     function reflectSoon() { clearTimeout(rTimer); rTimer = setTimeout(() => { rTimer = null; reflect(); }, 60); }
     // QoL: ~3s after a token settles, pan the GM's camera back onto it (combat only; gated by tgtRecenter).
     let recT = null;
@@ -1783,7 +1814,7 @@
       }, delay);
     }
     function destroy() { clearTimeout(timer); clearTimeout(rTimer); clearTimeout(recT); clearTimeout(autoT); el?.remove(); el = null; last = null; }
-    return { recompute, recomputeSoon, kick, reflect, reflectSoon, recenterSoon, hide, destroy };
+    return { recompute, recomputeSoon, kick, diagnose, reflect, reflectSoon, recenterSoon, hide, destroy };
   })();
   globalThis.CavrilTargeting = TargetHelper;
 
@@ -2205,7 +2236,7 @@
     });
     // Targeting helper — recompute on turn change (fresh suggestion), movement, selection, scene + combat end.
     hookIds.tgtTurn   = Hooks.on("updateCombat", (cb, chg) => { if (("turn" in chg) || ("round" in chg)) TargetHelper.kick(true, true); });
-    hookIds.tgtMove   = Hooks.on("updateToken", (d, chg) => { if (("x" in chg) || ("y" in chg)) { TargetHelper.kick(false, true); TargetHelper.recenterSoon(d); } });
+    hookIds.tgtMove   = Hooks.on("updateToken", (d, chg) => { if (("x" in chg) || ("y" in chg)) { TargetHelper.kick(false, true, canvas?.tokens?.get(d.id)); TargetHelper.recenterSoon(d); } });
     hookIds.tgtCtrl   = Hooks.on("controlToken", () => TargetHelper.kick(false, false));
     hookIds.tgtTgt    = Hooks.on("targetToken", () => TargetHelper.reflectSoon());   // target changed elsewhere → just re-skin chips (no auto-target, so deselects stick)
     hookIds.tgtCanvas = Hooks.on("canvasReady", () => TargetHelper.kick(false, false));
