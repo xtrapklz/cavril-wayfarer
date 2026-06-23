@@ -365,7 +365,7 @@ button.cwf-pm-v:hover { background: rgba(189,169,232,.18); color: #fff; }
 }
 @keyframes cavril-advance-in { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
-/* ===== Targeting helper — minimalist target reticules (no bar chrome); grip drags to move, scroll resizes ===== */
+/* ===== Targeting helper — minimalist target circles (no bar chrome); colour+glow = disposition, white highlight = targeted; grip drags to move, scroll resizes ===== */
 #cavril-targets {
     position: fixed; left: 50%; bottom: 22vh; transform: translateX(-50%);
     --tgt-size: 40px;
@@ -385,27 +385,18 @@ button.cwf-pm-v:hover { background: rgba(189,169,232,.18); color: #fff; }
     padding: 0; border: none; background: none; cursor: pointer; transition: transform 0.12s ease;
 }
 .cwf-tgt img {
-    position: absolute; top: 7%; left: 7%; width: 86%; height: 86%;
+    position: absolute; top: 3%; left: 3%; width: 94%; height: 94%;   /* portrait hugs the circle boundary */
     border-radius: 50%; object-fit: cover; display: block;
-    box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ring) 50%, transparent);
+    /* disposition = ring colour + soft glow of the same colour */
+    box-shadow: 0 0 0 2px var(--ring), 0 0 7px 1px color-mix(in srgb, var(--ring) 50%, transparent);
+    transition: box-shadow 0.12s ease, transform 0.12s ease;
 }
 .cwf-tgt.enemy { --ring: #e0566a; }
 .cwf-tgt.neutral { --ring: #c8a24a; }
 .cwf-tgt.ally { --ring: #5bbf7a; }
 .cwf-tgt:hover { transform: translateY(-2px); }
-.cwf-tgt.sug img { box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.85); }
-.cwf-tgt.on img { box-shadow: 0 0 0 2px var(--ring); }
-.cwf-tgt.sug { --ret: rgba(255, 255, 255, 0.8); }
-.cwf-tgt.on { --ret: var(--ring); }
-.cwf-tgt.sug::before, .cwf-tgt.on::before, .cwf-tgt.sug::after, .cwf-tgt.on::after { content: ""; position: absolute; pointer-events: none; }
-.cwf-tgt.sug::before, .cwf-tgt.on::before {
-    top: 50%; left: -3px; right: -3px; height: 1.5px; transform: translateY(-50%);
-    background: linear-gradient(90deg, var(--ret) 0 5px, transparent 5px calc(100% - 5px), var(--ret) calc(100% - 5px) 100%);
-}
-.cwf-tgt.sug::after, .cwf-tgt.on::after {
-    left: 50%; top: -3px; bottom: -3px; width: 1.5px; transform: translateX(-50%);
-    background: linear-gradient(180deg, var(--ret) 0 5px, transparent 5px calc(100% - 5px), var(--ret) calc(100% - 5px) 100%);
-}
+/* targeted = bright white highlight ring + intensified disposition glow */
+.cwf-tgt.on img { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--ring), 0 0 12px 3px color-mix(in srgb, var(--ring) 75%, #fff); }
 .cwf-tgt-adv { position: absolute; top: -2px; right: -2px; font-size: 8px; color: #ffd34d; background: rgba(20, 20, 26, 0.9); border-radius: 50%; padding: 2px; line-height: 1; z-index: 2; }
 
 /* ---------- Read-aloud boxed text on encounter cards ---------- */

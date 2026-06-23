@@ -1478,11 +1478,13 @@
     let recT = null;
     function recenterSoon(doc) {
       if (!game.user?.isGM || !game.settings.get(MOD, "tgtRecenter")) return;
+      if (!doc?.actor?.hasPlayerOwner) return;   // PLAYER tokens only — never auto-pan the camera on a monster's move
       const id = doc?.id; clearTimeout(recT);
+      const d = Number(game.settings.get(MOD, "tgtRecenterDelay")); const delay = (Number.isFinite(d) ? Math.max(0, d) : 1) * 1000;
       recT = setTimeout(() => {
         recT = null;
         try { if (!game.combats?.active?.started) return; const tok = id ? canvas.tokens?.get(id) : null; if (tok) canvas.animatePan({ x: tok.center.x, y: tok.center.y, duration: 400 }); } catch (e) {}
-      }, 3000);
+      }, delay);
     }
     function destroy() { clearTimeout(timer); clearTimeout(rTimer); clearTimeout(recT); el?.remove(); el = null; last = null; }
     return { recompute, recomputeSoon, reflect, reflectSoon, recenterSoon, hide, destroy };
@@ -1710,7 +1712,8 @@
     reg("esBiomeOverrides",   { scope: "world", config: false, type: Object, default: {} });   // GM review-panel overrides {id→{biome?,generic?,exclude?}}
     reg("tgtHelper",          { name: "Targeting helper — suggest targets in combat", hint: "During combat, show a chip bar of the tokens the selected/active token can SEE, ranked: advantage (flanking or an advantage-granting condition) on an enemy → nearest enemy → nearest neutral → nearest ally. Click a chip to target / untarget. GM-only.", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtAutoTarget",      { name: "  · Auto-target the best enemy", hint: "Automatically target the best enemy at the start of EVERY token's turn (players included) and after it moves with no target. Only ever auto-targets an enemy — neutrals, allies and self stay click-only. OFF = the suggestion is only highlighted; you click a chip to target.", scope: "world", config: true, type: Boolean, default: true });
-    reg("tgtRecenter",        { name: "  · Re-centre camera after a move", hint: "During combat, pan the GM's camera back onto a token ~3s after it finishes moving, so the acting token stays framed.", scope: "world", config: true, type: Boolean, default: true });
+    reg("tgtRecenter",        { name: "  · Re-centre camera on player moves", hint: "During combat, pan the GM's camera back onto a PLAYER token after it finishes moving, so the acting hero stays framed. Never pans on monster moves.", scope: "world", config: true, type: Boolean, default: true });
+    reg("tgtRecenterDelay",   { name: "  · Re-centre delay (seconds)", hint: "How long after a player token settles before the camera pans onto it. 0 = immediate. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 10, step: 0.5 } });
     reg("tgtBarPos",          { scope: "client", config: false, type: Object, default: null });   // GM-dragged bar position {left,top}px
     reg("tgtBarScale",        { scope: "client", config: false, type: Number, default: 40 });      // GM-scrolled circle size (px)
   }
