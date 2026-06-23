@@ -413,6 +413,7 @@ const Store = (() => {
         // Per-hex travel events: a roll on every hex entered → mostly mundane flavor,
         // a danger-scaled chance of a real event (combat/puzzle/site) that halts the day.
         g.register(MOD, "travelEvents", { name: "Per-hex travel events", hint: "As the party crosses each hex, roll for an event — mostly mundane flavor, with a danger-scaled chance of a real encounter that halts the day. Whispered to the GM to narrate.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "playerTravelCard", { name: "Player arrival card", hint: "On a peaceful arrival, post a clean PUBLIC card for the players — where the road brought them and the day's mood, with no mechanics, events, or spoilers. The full hex-by-hex trek card stays GM-only. (Nothing posts when an encounter halts the day — the cinematic + map handle that.)", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "eventScale", { name: "Travel event die (x/N per hex)", hint: "Denominator for the per-hex event check. x = scene Danger (0-5) + biome danger (0-2). Lower N = more events. Default 20.", scope: "world", config: true, type: Number, default: 20 });
         g.register(MOD, "encounterHours", { name: "Hours an encounter costs", hint: "Default time a halting encounter adds to the clock (you can adjust in the moment). Default 1.", scope: "world", config: true, type: Number, default: 1 });
         // Off by default → travel checks roll a single straight die. On → Slow gives
@@ -1399,6 +1400,18 @@ function cwfHexLineHTML(off, idx, biome, weatherLabel, content, hit, extraCls = 
     const wx = weatherLabel ? ` · ${cwfEsc(weatherLabel)}` : "";
     return `<div class="cwf-night-h ${hit ? "hit" : ""} ${extraCls} cwf-hexline" data-cwf="ping" data-x="${x}" data-y="${y}" title="Click to ping this hex on the map"><span class="cwf-rr-sk">Hex ${idx} · ${biome}${wx} · ${cwfClockLabel()}</span> ${content}</div>`;
 }
+// A clean, PUBLIC, spoiler-free arrival card for the players — where the road brought them and the day's mood, no
+// mechanics, no events, no upcoming hints. Posted (un-whispered) on a peaceful arrival; the GM keeps the full trek card.
+function cwfPlayerSummaryHTML(t) {
+    const biome = t?.lastBiome || "the wilds";
+    const tod = (() => { try { return cwfTimeOfDay(); } catch (e) { return null; } })();
+    const todLabel = tod?.label || "", todIcon = tod?.icon || "fa-route";
+    const weather = (() => { try { return MiniCal.label() || ""; } catch (e) { return ""; } })();
+    const clock = cwfClockLabel(), hexes = t?.idx || 0;
+    const lead = `After ${hexes} hex${hexes === 1 ? "" : "es"} on the road, the party comes to <b>${cwfEsc(biome)}</b>${todLabel ? ` as ${cwfEsc(todLabel.toLowerCase())} settles in` : ""}${weather ? `, under ${cwfEsc(weather.toLowerCase())}` : ""}.`;
+    const chips = `<div class="cwf-psum-chips"><span><i class="fa-solid ${todIcon}"></i> ${cwfEsc(clock)}</span><span><i class="fa-solid fa-mountain-sun"></i> ${cwfEsc(biome)}</span>${weather ? `<span><i class="fa-solid fa-cloud"></i> ${cwfEsc(weather)}</span>` : ""}</div>`;
+    return cwfCardShell("fa-route", "The Party Travels On", `<div class="cwf-psum">${lead}${chips}</div>`, { sub: clock });
+}
 function cwfTrekCardHTML() {
     const t = cwfTrek; if (!t) return "";
     const log = t.lines.length
@@ -1550,6 +1563,8 @@ async function cwfFinishTravel() {
     try { const fm = await cwfForcedMarch(t.pace); if (fm?.html) { t.marchHTML = fm.html; t.marchSub = fm.sub || ""; } } catch (e) { warn("forced march failed", e); }
     t.done = true;
     await cwfTrekRefresh();
+    // Players get a clean, public, spoiler-free arrival card — only on a PEACEFUL arrival (a halt = an encounter, which the cinematic/map reveals).
+    try { if (!t.halted && t.idx > 0 && game.settings.get(MOD, "playerTravelCard")) ChatMessage.create({ content: cwfPlayerSummaryHTML(t) }); } catch (e) { warn("player travel card failed", e); }
     WayfarerPanel.renderExternal(); BiomeBadge.update();
     cwfRefreshVision();   // travel ended (maybe at dusk/night) → recompute vision now so the map never stays black
     try { cwfMaybeOfferSettlement(); } catch (e) { warn("settlement arrival check failed", e); }

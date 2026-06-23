@@ -276,6 +276,11 @@
 .cwf-night-h.cwf-ln-thread .cwf-rr-sk { display: none; }
 .cwf-night-h.hit { color: #fff; border-left-color: var(--cwf-hard, #e0554d); background: color-mix(in srgb, var(--cwf-severe) 52%, transparent); font-weight: 600; }       /* encounters */
 .cwf-night-sec { margin: 7px 0 3px; padding-top: 6px; border-top: 1px solid var(--cwf-line); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--cwf-coral); font-weight: 700; }
+/* player-facing arrival card (public, spoiler-free) */
+.cwf-psum { font-size: 13px; line-height: 1.5; color: #ece9f2; }
+.cwf-psum-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.cwf-psum-chips span { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 11px; color: #e7e1f3; background: color-mix(in srgb, var(--cwf-accent, #bda9e8) 16%, rgba(20, 20, 26, 0.5)); border: 1px solid color-mix(in srgb, var(--cwf-accent, #bda9e8) 35%, transparent); }
+.cwf-psum-chips i { opacity: .85; }
 
 /* chat */
 .cwf-chat { line-height: 1.4; }
