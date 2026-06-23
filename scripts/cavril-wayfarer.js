@@ -1394,10 +1394,10 @@ function cwfTimeOfDay() {
 }
 // A travel-log line that links back to its hex — click pings/pans the map there so the
 // GM can retrace the party's steps. Records biome · weather · time at that hex.
-function cwfHexLineHTML(off, idx, biome, weatherLabel, content, hit) {
+function cwfHexLineHTML(off, idx, biome, weatherLabel, content, hit, extraCls = "") {
     let x = 0, y = 0; try { const c = canvas.grid.getCenterPoint(off); x = Math.round(c.x); y = Math.round(c.y); } catch { /* noop */ }
     const wx = weatherLabel ? ` · ${cwfEsc(weatherLabel)}` : "";
-    return `<div class="cwf-night-h ${hit ? "hit" : ""} cwf-hexline" data-cwf="ping" data-x="${x}" data-y="${y}" title="Click to ping this hex on the map"><span class="cwf-rr-sk">Hex ${idx} · ${biome}${wx} · ${cwfClockLabel()}</span> ${content}</div>`;
+    return `<div class="cwf-night-h ${hit ? "hit" : ""} ${extraCls} cwf-hexline" data-cwf="ping" data-x="${x}" data-y="${y}" title="Click to ping this hex on the map"><span class="cwf-rr-sk">Hex ${idx} · ${biome}${wx} · ${cwfClockLabel()}</span> ${content}</div>`;
 }
 function cwfTrekCardHTML() {
     const t = cwfTrek; if (!t) return "";
@@ -1498,7 +1498,7 @@ async function cwfAdvanceHex(auto) {
         const bits = []; if (biomeChanged) bits.push(biome); if (todChanged) bits.push(tod.label); if (weatherChanged && weatherLabel) bits.push(weatherLabel);
         const icon = todChanged ? tod.icon : weatherChanged ? (Domain.WEATHER[wxAfter]?.icon || "fa-cloud") : (cls?.icon || "fa-mountain-sun");
         Cinematic.broadcast({ icon, title: bits[0] || "The road turns", subtitle: bits.slice(1).join(" · ") || `${biome} · ${t.pace} pace`, tone: todChanged ? tod.tone : "weather" });
-        t.lines.push(`<div class="cwf-night-h"><i class="fa-solid ${icon}"></i> ${cwfEsc(bits.join(" · "))}.</div>`);
+        t.lines.push(`<div class="cwf-night-h cwf-ln-turn"><i class="fa-solid ${icon}"></i> ${cwfEsc(bits.join(" · "))}.</div>`);
     }
     if (encounter) {
         if (ev.hours) await Store.advanceWorldTime(ev.hours);
@@ -1507,7 +1507,8 @@ async function cwfAdvanceHex(auto) {
         Music.combat(true);   // hostile beat → tension music (where the encounter generator will hook in)
         if (ev.cinematic) Cinematic.broadcast(ev.cinematic);
     } else {
-        t.lines.push(cwfHexLineHTML(off, t.idx, biome, weatherLabel, `— ${ev?.line || "the way is clear."}`, false));
+        const _ln = ev?.line || "the way is clear."; const _thread = /^✦/.test(_ln);   // journey-thread beats read as prose → their own purple style, drop the "—"
+        t.lines.push(cwfHexLineHTML(off, t.idx, biome, weatherLabel, _thread ? cwfEsc(_ln) : `— ${_ln}`, false, _thread ? "cwf-ln-thread" : ""));
     }
     return { signal: true, encounter };
 }
@@ -1515,7 +1516,7 @@ async function cwfAdvanceHex(auto) {
 function cwfFlushLeg() {
     const t = cwfTrek; if (!t?.leg) return;
     const L = t.leg; t.leg = null;
-    if (L.count > 0) t.lines.push(`<div class="cwf-night-h"><span class="cwf-rr-sk">${L.count} hex${L.count === 1 ? "" : "es"} of ${cwfEsc(L.biome)} · ${L.from}–${L.to}</span> — uneventful going.</div>`);
+    if (L.count > 0) t.lines.push(`<div class="cwf-night-h cwf-ln-leg"><span class="cwf-rr-sk">${L.count} hex${L.count === 1 ? "" : "es"} of ${cwfEsc(L.biome)} · ${L.from}–${L.to}</span> uneventful going.</div>`);
 }
 // Single manual hex (the "Step" button) — emits a line + pauses.
 async function cwfDoHexStep() {

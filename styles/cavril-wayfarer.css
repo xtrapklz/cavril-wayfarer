@@ -266,9 +266,15 @@
 /* Same stable grid as the chat card — toggling a watcher never rewraps the HUD row. */
 .cwf-watch { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 5px; }
 .cwf-watch .cwf-toggle { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; justify-content: flex-start; gap: 5px; padding: 0 8px; }
-.cwf-night { display: flex; flex-direction: column; gap: 2px; margin: 5px 0; font-size: 11px; }
-.cwf-night-h { color: #9a9a9a; padding: 2px 6px; border-radius: 4px; line-height: 1.4; }
-.cwf-night-h.hit { color: #fff; background: color-mix(in srgb, var(--cwf-severe) 70%, transparent); font-weight: 600; }
+.cwf-night { display: flex; flex-direction: column; gap: 3px; margin: 6px 0; font-size: 12px; }
+.cwf-night-h { color: #b4b4ba; padding: 4px 9px; border-radius: 5px; line-height: 1.45; border-left: 2px solid transparent; }
+.cwf-night-h i { opacity: .9; margin-right: 3px; }
+.cwf-night-h .cwf-rr-sk { display: inline-block; margin-right: 5px; font-size: 9px; opacity: .55; font-weight: 600; }   /* dim, small meta prefix — less density */
+.cwf-night-h.cwf-ln-leg { color: #8b8b91; font-style: italic; }                                                       /* uneventful legs: quiet */
+.cwf-night-h.cwf-ln-turn { color: #e7e1f3; border-left-color: var(--cwf-accent, #bda9e8); background: color-mix(in srgb, var(--cwf-accent, #bda9e8) 10%, transparent); }   /* biome/weather/time turns */
+.cwf-night-h.cwf-ln-thread { color: #efe8ff; border-left-color: #c9a6ff; background: color-mix(in srgb, #c9a6ff 11%, transparent); }                                       /* ✦ story beats */
+.cwf-night-h.cwf-ln-thread .cwf-rr-sk { display: none; }
+.cwf-night-h.hit { color: #fff; border-left-color: var(--cwf-hard, #e0554d); background: color-mix(in srgb, var(--cwf-severe) 52%, transparent); font-weight: 600; }       /* encounters */
 .cwf-night-sec { margin: 7px 0 3px; padding-top: 6px; border-top: 1px solid var(--cwf-line); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--cwf-coral); font-weight: 700; }
 
 /* chat */
