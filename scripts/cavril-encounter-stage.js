@@ -1315,6 +1315,125 @@
   })();
   globalThis.CavrilAdvance = CavrilAdvance;
 
+  // ===== TARGET HELPER =====================================================
+  // Live, vision-aware target suggester for the GM. During combat, for the "driver" token (the one
+  // controlled token, else the active combatant) it computes which tokens that token can SEE (wall
+  // LOS + vision/senses range), ranks them — advantage (flanking or an advantage-granting condition)
+  // on an enemy → nearest enemy → nearest neutral → nearest ally — highlights the top pick, and renders
+  // clickable chips to target/untarget any of them. Refreshes on turn change + movement. The LOS / flank /
+  // condition / disposition logic mirrors CavrilCombatStep. GM-only; gated on the tgtHelper setting.
+  const TargetHelper = (() => {
+    let el = null, timer = null, rTimer = null, last = null;
+    const ADV_COND = new Set(["paralyzed", "unconscious", "petrified", "stunned", "restrained", "blinded", "incapacitated"]);
+    const grid = () => canvas?.grid;
+    const statusesOf = (t) => { const s = t?.actor?.statuses; return (s instanceof Set) ? s : new Set(); };
+    const isDead = (t) => { if (statusesOf(t).has("dead")) return true; const hp = t?.actor?.system?.attributes?.hp; return !!(hp && Number(hp.value) <= 0 && t?.actor?.type !== "character"); };
+    const targeted = (t) => !!game.user?.targets?.has(t);
+    function distFt(a, b) {
+      try { return grid().measurePath([a.center, b.center]).distance; }
+      catch (e) { const g = grid(); return Math.hypot(a.center.x - b.center.x, a.center.y - b.center.y) / (g?.size || 100) * (g?.distance || 5); }
+    }
+    function hasLOS(a, b) {
+      try { return !CONFIG.Canvas.polygonBackends.sight.testCollision(a.center, b.center, { type: "sight", mode: "any" }); }
+      catch (e) { return true; }   // sight backend unavailable → fail open (assume visible)
+    }
+    function visionFt(t) {
+      const d = t.document; let r = Number(d.sight?.range) || 0;
+      for (const m of (d.detectionModes || [])) r = Math.max(r, Number(m.range) || 0);
+      try { const s = t.actor?.system?.attributes?.senses; if (s) for (const k of ["darkvision", "blindsight", "tremorsense", "truesight"]) r = Math.max(r, Number(s[k] ?? s.ranges?.[k]) || 0); } catch (e) {}
+      return r;   // 0 → treat as unlimited (global illumination / always-see)
+    }
+    function canSee(viewer, t) {
+      if (!viewer || !t || viewer === t || !t.actor || isDead(t)) return false;
+      const range = visionFt(viewer);
+      if (range > 0 && distFt(viewer, t) > range) return false;
+      return hasLOS(viewer, t);
+    }
+    function relation(viewer, t) {
+      const a = viewer.document.disposition, b = t.document.disposition;
+      if (a !== 0 && a === b) return "ally";
+      if ((a === 1 && b === -1) || (a === -1 && b === 1)) return "enemy";
+      return "neutral";
+    }
+    function conditionAdv(viewer, t) {
+      const st = statusesOf(t);
+      for (const c of ADV_COND) if (st.has(c)) return true;
+      return st.has("prone") && distFt(viewer, t) <= 5;   // prone → melee advantage only
+    }
+    function flanking(viewer, t) {
+      if (distFt(viewer, t) > 5) return false;   // attacker must be adjacent to flank
+      const tc = t.center, vAng = Math.atan2(viewer.center.y - tc.y, viewer.center.x - tc.x);
+      for (const ally of (canvas.tokens?.placeables || [])) {
+        if (ally === viewer || ally === t || !ally.actor || isDead(ally) || relation(viewer, ally) !== "ally") continue;
+        if (distFt(ally, t) > 5) continue;
+        const aAng = Math.atan2(ally.center.y - tc.y, ally.center.x - tc.x);
+        let diff = vAng - aAng; while (diff > Math.PI) diff -= 2 * Math.PI; while (diff < -Math.PI) diff += 2 * Math.PI;
+        if (Math.abs(Math.abs(diff) - Math.PI) < Math.PI / 3) return true;   // ally on the ~opposite side
+      }
+      return false;
+    }
+    function driver() {
+      const ctrl = canvas?.tokens?.controlled || [];
+      if (ctrl.length === 1) return ctrl[0];
+      const c = game.combats?.active?.combatant; const id = c?.token?.id || c?.tokenId;
+      return id ? canvas?.tokens?.get(id) : null;
+    }
+    function ranked(viewer) {
+      const toks = canvas.tokens?.placeables || [];
+      if (toks.length > 300) return [];   // safety valve on city-scale scenes
+      const out = [];
+      for (const t of toks) {
+        if (!canSee(viewer, t)) continue;
+        const rel = relation(viewer, t);
+        const adv = rel === "enemy" && (conditionAdv(viewer, t) || flanking(viewer, t));
+        const tier = rel === "enemy" ? (adv ? 0 : 1) : rel === "neutral" ? 2 : 3;
+        out.push({ t, rel, adv, tier, dist: distFt(viewer, t) });
+      }
+      out.sort((a, b) => a.tier - b.tier || a.dist - b.dist);
+      return out;
+    }
+    function chip(r, suggested) {
+      const t = r.t, img = t.document?.texture?.src || t.actor?.img || "";
+      const tip = `${t.name} · ${Math.round(r.dist)} ft · ${r.rel}${r.adv ? " · advantage" : ""}${suggested ? " · suggested" : ""}`;
+      return `<button class="cwf-tgt ${r.rel}${suggested ? " sug" : ""}${targeted(t) ? " on" : ""}" data-tid="${t.id}" title="${esc(tip)}"><img src="${esc(img)}" alt="">${r.adv ? '<i class="fa-solid fa-bolt cwf-tgt-adv"></i>' : ""}<span class="cwf-tgt-d">${Math.round(r.dist)}</span></button>`;
+    }
+    function render(list, viewer) {
+      if (!list || !list.length || !viewer) return hide();
+      last = { list, viewer };
+      if (!el) {
+        el = document.createElement("div"); el.id = "cavril-targets";
+        el.addEventListener("click", (ev) => {
+          const b = ev.target.closest("[data-tid]"); if (!b) return;
+          const t = canvas.tokens?.get(b.dataset.tid); if (!t) return;
+          try { t.setTarget(!targeted(t), { user: game.user, releaseOthers: false }); } catch (e) {}
+          reflect();
+        });
+        document.body.appendChild(el);
+      }
+      el.innerHTML = `<span class="cwf-tgt-h"><i class="fa-solid fa-crosshairs"></i> ${esc(viewer.name || "Targets")}</span>` + list.slice(0, 14).map((r, i) => chip(r, i === 0)).join("");
+      el.style.display = "flex";
+    }
+    function reflect() { if (last) render(last.list, last.viewer); }   // re-skin highlights only (never auto-targets)
+    function hide() { last = null; if (el) el.style.display = "none"; }
+    function recompute(fresh) {
+      try {
+        if (!game.user?.isGM || !game.settings.get(MOD, "tgtHelper")) return hide();
+        const c = game.combats?.active; if (!c?.started) return hide();
+        const viewer = driver(); if (!viewer?.actor) return hide();
+        const list = ranked(viewer); if (!list.length) return hide();
+        // Auto-target the suggestion on a foe's turn (fresh) or when it's moved with no target — never on a player's own turn.
+        const autoOk = game.settings.get(MOD, "tgtAutoTarget") && !viewer.actor.hasPlayerOwner;
+        if (autoOk && (fresh || !game.user.targets?.size)) { try { list[0].t.setTarget(true, { user: game.user, releaseOthers: true }); } catch (e) {} }
+        render(list, viewer);
+      } catch (e) { warn("target helper recompute failed", e); }
+    }
+    function recomputeSoon(fresh) { clearTimeout(timer); timer = setTimeout(() => { timer = null; recompute(fresh); }, 120); }
+    function reflectSoon() { clearTimeout(rTimer); rTimer = setTimeout(() => { rTimer = null; reflect(); }, 60); }
+    function destroy() { clearTimeout(timer); clearTimeout(rTimer); el?.remove(); el = null; last = null; }
+    return { recompute, recomputeSoon, reflect, reflectSoon, hide, destroy };
+  })();
+  globalThis.CavrilTargeting = TargetHelper;
+
   function refreshReturnControl() {
     try { _returnBtn?.remove(); _returnBtn = null; document.getElementById("cwf-return-overworld")?.remove(); ui.controls?.render?.(true); }
     catch (e) { warn("return control refresh failed", e); }
@@ -1534,6 +1653,8 @@
     reg("esBiomeIndex",       { scope: "world", config: false, type: Object, default: {} });   // the built per-biome classification {builtAt,count,maps:[{id,name,biome,generic,natVar}]}
     reg("esEncounterLog",     { scope: "world", config: false, type: Array, default: [] });    // ledger of staged encounters [{wt,ts,biome,when,weather,foes,map,sceneId}]
     reg("esBiomeOverrides",   { scope: "world", config: false, type: Object, default: {} });   // GM review-panel overrides {id→{biome?,generic?,exclude?}}
+    reg("tgtHelper",          { name: "Targeting helper — suggest targets in combat", hint: "During combat, show a chip bar of the tokens the selected/active token can SEE, ranked: advantage (flanking or an advantage-granting condition) on an enemy → nearest enemy → nearest neutral → nearest ally. Click a chip to target / untarget. GM-only.", scope: "world", config: true, type: Boolean, default: true });
+    reg("tgtAutoTarget",      { name: "  · Auto-target the suggestion", hint: "Automatically set the top suggestion as your target at the start of each foe's turn (and when the active foe moves with no target). OFF = the suggestion is only highlighted; you click a chip to target it. Never auto-targets on a player's own turn.", scope: "world", config: true, type: Boolean, default: true });
   }
   function syncCfg() {
     try {
@@ -1704,7 +1825,7 @@
       log(`catalog has ${cat.allTags.size} tags. Missing tags above are candidates to remap.`);
       return rows;
     },
-    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("updateCombatant", hookIds.combatant); Hooks.off("deleteCombat", hookIds.cEnd); Hooks.off("updateCombat", hookIds.advTurn); Hooks.off("preCreateScene", hookIds.preScene); _returnBtn?.remove(); _returnBtn = null; try { CavrilAdvance.destroy(); } catch (e) {} delete globalThis.CavrilAdvance; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
+    uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("updateCombatant", hookIds.combatant); Hooks.off("deleteCombat", hookIds.cEnd); Hooks.off("updateCombat", hookIds.advTurn); Hooks.off("preCreateScene", hookIds.preScene); Hooks.off("updateCombat", hookIds.tgtTurn); Hooks.off("updateToken", hookIds.tgtMove); Hooks.off("controlToken", hookIds.tgtCtrl); Hooks.off("targetToken", hookIds.tgtTgt); Hooks.off("canvasReady", hookIds.tgtCanvas); Hooks.off("deleteCombat", hookIds.tgtEnd); _returnBtn?.remove(); _returnBtn = null; try { CavrilAdvance.destroy(); } catch (e) {} try { TargetHelper.destroy(); } catch (e) {} delete globalThis.CavrilAdvance; delete globalThis.CavrilTargeting; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
   });
 
   // ===== INSTALL ===========================================================
@@ -1722,6 +1843,13 @@
     hookIds.preScene  = Hooks.on("preCreateScene", (scene, data) => {   // default new scenes to the configured grid (Foundry's Square default → our grid)
       try { if (CFG.defaultNewSceneGrid && (data?.grid?.type ?? scene.grid?.type) === 1 && scene.grid?.type !== CFG.gridType) scene.updateSource({ "grid.type": CFG.gridType }); } catch (e) {}
     });
+    // Targeting helper — recompute on turn change (fresh suggestion), movement, selection, scene + combat end.
+    hookIds.tgtTurn   = Hooks.on("updateCombat", (cb, chg) => { if (("turn" in chg) || ("round" in chg)) TargetHelper.recomputeSoon(true); });
+    hookIds.tgtMove   = Hooks.on("updateToken", (d, chg) => { if (("x" in chg) || ("y" in chg)) TargetHelper.recomputeSoon(false); });
+    hookIds.tgtCtrl   = Hooks.on("controlToken", () => TargetHelper.recomputeSoon(false));
+    hookIds.tgtTgt    = Hooks.on("targetToken", () => TargetHelper.reflectSoon());   // target changed elsewhere → just re-skin chips (no auto-target, so deselects stick)
+    hookIds.tgtCanvas = Hooks.on("canvasReady", () => TargetHelper.recomputeSoon(false));
+    hookIds.tgtEnd    = Hooks.on("deleteCombat", () => TargetHelper.recomputeSoon(false));
     globalThis.CavrilEncounterStage = buildApi();
     // Formalize the cross-module contract: Cavril: Cities reaches getCatalog/stageMapByKey via
     // game.modules.get("cavril-wayfarer").api.encounterStage (discoverable) alongside the legacy global.
