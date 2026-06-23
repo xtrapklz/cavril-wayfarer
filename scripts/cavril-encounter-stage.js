@@ -1353,6 +1353,7 @@
         const proto = (a.prototypeToken?.toObject?.() ?? foundry.utils.deepClone(a.prototypeToken ?? {})) || {};
         delete proto._id;
         proto.x = x; proto.y = y; proto.actorId = a.id; proto.hidden = faceTarget ? !!CFG.hideFoes : false;   // foes (faceTarget = party muster) spawn hidden for the GM to reveal; party stays visible
+        if (!faceTarget) proto.disposition = (globalThis.CONST?.TOKEN_DISPOSITIONS?.FRIENDLY ?? 1);   // party spawns FRIENDLY (many PC prototype tokens are left at Neutral) → clean party/foe dispositions for targeting, flanking + the combat AI
         if (!proto.name) proto.name = a.name;
         if (faceTarget) {
           // Foes are ALWAYS hostile — don't trust the source actor's prototype disposition (SRD monsters are usually
@@ -1770,7 +1771,11 @@
           let viewer = (hintTok?.actor && (hintTok.controlled || !hintTok.actor.hasPlayerOwner)) ? hintTok : null;
           if (!viewer) viewer = driver();
           if (!viewer?.actor) return;
-          const best = ranked(viewer).find((r) => r.rel === "enemy");
+          // Priority fallback: best ENEMY → best NEUTRAL → best FRIENDLY (ally), excluding self. ranked() is already
+          // sorted enemy(adv)→enemy→neutral→ally by tier then distance, so the first non-self entry is the best available.
+          // This makes auto-target work even when dispositions aren't clean — e.g. PCs left at Neutral, so a foe sees the
+          // party as neutral (not "enemy") and would otherwise never pick anyone.
+          const best = ranked(viewer).find((r) => r.t !== viewer);
           if (best) best.t.setTarget(true, { user: game.user, releaseOthers: true });
         } catch (e) {}
       }, delay);
@@ -1792,14 +1797,14 @@
       const v = driver();
       out.driver = v?.name || null; out.driverHasActor = !!v?.actor;
       out.currentTargets = Array.from(game.user?.targets || []).map(t => t.name);
-      if (v?.actor) { const list = ranked(v); out.visible = list.map(r => `${r.t.name} [${r.rel}${r.adv ? "/adv" : ""}] ${Math.round(r.dist)}ft`); out.bestEnemy = list.find(r => r.rel === "enemy")?.t?.name || null; }
-      else { out.visible = []; out.bestEnemy = null; }
+      if (v?.actor) { const list = ranked(v); out.visible = list.map(r => `${r.t.name} [${r.rel}${r.adv ? "/adv" : ""}] ${Math.round(r.dist)}ft`); const pick = list.find(r => r.t !== v); out.bestTarget = pick ? `${pick.t.name} (${pick.rel})` : null; }
+      else { out.visible = []; out.bestTarget = null; }
       let verdict;
       if (!out.isGM) verdict = "BLOCKED: not the GM (auto-target is GM-only)";
       else if (!out.settings.tgtAutoTarget) verdict = "BLOCKED: the 'Auto-target the best enemy' setting is OFF — turn it on";
       else if (!out.driverHasActor) verdict = "SELECT a token to test — pick the token you'd move (the diagnostic reads the selected token, or the active combatant). Moving/selecting it live is what triggers the real auto-target.";
-      else if (!out.bestEnemy) verdict = `NO ENEMY VISIBLE to '${out.driver}': the foes must be set HOSTILE (red disposition) and the party FRIENDLY (green) — opposite signs — and be within wall line-of-sight + vision range. Visible now = ${JSON.stringify(out.visible)}`;
-      else verdict = `OK — moving '${out.driver}' (or starting its turn) auto-targets '${out.bestEnemy}'. As of 0.55.51 this works IN OR OUT of combat, so it fires during encounter setup too.`;
+      else if (!out.bestTarget) verdict = `NOTHING VISIBLE to '${out.driver}': no token is within wall line-of-sight + vision range. Visible now = ${JSON.stringify(out.visible)}`;
+      else verdict = `OK — moving '${out.driver}' (or starting its turn) auto-targets '${out.bestTarget}' (priority enemy → neutral → friendly). Works in or out of combat.`;
       out.verdict = verdict;
       console.log("%c[Targeting] diagnose — " + verdict, CSS, out);
       return out;
