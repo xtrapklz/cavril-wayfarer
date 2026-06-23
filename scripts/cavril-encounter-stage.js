@@ -1278,14 +1278,15 @@
     const STALE_MS = 5000;
     let rawTopId = null, rawTopAt = 0, staleTimer = null;
     const rawTop = () => { let b = null; for (const a of q.values()) if (!b || (a.priority ?? 0) >= (b.priority ?? 0)) b = a; return b; };
+    const idOf = (a) => a ? (a.id + "|" + (a.label || "")) : null;   // key on id+LABEL so Core relabeling its single "core-advance" step (Confirm hits → Roll damage → Apply damage) restarts the clock instead of letting Next-turn steal the slot
     const topAction = () => {
       const b = rawTop();
-      if (b && b.id !== "next-turn" && q.has("next-turn") && rawTopId === b.id && (Date.now() - rawTopAt) >= STALE_MS) return q.get("next-turn");
+      if (b && b.id !== "next-turn" && q.has("next-turn") && rawTopId === idOf(b) && (Date.now() - rawTopAt) >= STALE_MS) return q.get("next-turn");
       return b;
     };
     function render() {
       const raw = rawTop();
-      const rid = raw?.id ?? null;
+      const rid = idOf(raw);
       if (rid !== rawTopId) { rawTopId = rid; rawTopAt = Date.now(); }   // top changed → restart the staleness clock
       clearTimeout(staleTimer); staleTimer = null;
       if (raw && raw.id !== "next-turn" && q.has("next-turn")) {         // schedule one re-render at the staleness mark
@@ -1350,7 +1351,7 @@
       return r;   // 0 → treat as unlimited (global illumination / always-see)
     }
     function canSee(viewer, t) {
-      if (!viewer || !t || viewer === t || !t.actor || isDead(t)) return false;
+      if (!viewer || !t || !t.actor || isDead(t)) return false;   // self IS included (an ally circle) so the token can target itself for self-buffs/heals
       const range = visionFt(viewer);
       if (range > 0 && distFt(viewer, t) > range) return false;
       return hasLOS(viewer, t);
@@ -1463,16 +1464,28 @@
         const c = game.combats?.active; if (!c?.started) return hide();
         const viewer = driver(); if (!viewer?.actor) return hide();
         const list = ranked(viewer); if (!list.length) return hide();
-        // Auto-target the suggestion on a foe's turn (fresh) or when it's moved with no target — never on a player's own turn.
-        const autoOk = game.settings.get(MOD, "tgtAutoTarget") && !viewer.actor.hasPlayerOwner;
-        if (autoOk && (fresh || !game.user.targets?.size)) { try { list[0].t.setTarget(true, { user: game.user, releaseOthers: true }); } catch (e) {} }
+        // Auto-target the best ENEMY at the start of EVERY token's turn (incl. players) or after it moves with no target — never an ally/neutral/self.
+        if (game.settings.get(MOD, "tgtAutoTarget") && (fresh || !game.user.targets?.size)) {
+          const best = list.find((r) => r.rel === "enemy");
+          if (best) { try { best.t.setTarget(true, { user: game.user, releaseOthers: true }); } catch (e) {} }
+        }
         render(list, viewer);
       } catch (e) { warn("target helper recompute failed", e); }
     }
     function recomputeSoon(fresh) { clearTimeout(timer); timer = setTimeout(() => { timer = null; recompute(fresh); }, 120); }
     function reflectSoon() { clearTimeout(rTimer); rTimer = setTimeout(() => { rTimer = null; reflect(); }, 60); }
-    function destroy() { clearTimeout(timer); clearTimeout(rTimer); el?.remove(); el = null; last = null; }
-    return { recompute, recomputeSoon, reflect, reflectSoon, hide, destroy };
+    // QoL: ~3s after a token settles, pan the GM's camera back onto it (combat only; gated by tgtRecenter).
+    let recT = null;
+    function recenterSoon(doc) {
+      if (!game.user?.isGM || !game.settings.get(MOD, "tgtRecenter")) return;
+      const id = doc?.id; clearTimeout(recT);
+      recT = setTimeout(() => {
+        recT = null;
+        try { if (!game.combats?.active?.started) return; const tok = id ? canvas.tokens?.get(id) : null; if (tok) canvas.animatePan({ x: tok.center.x, y: tok.center.y, duration: 400 }); } catch (e) {}
+      }, 3000);
+    }
+    function destroy() { clearTimeout(timer); clearTimeout(rTimer); clearTimeout(recT); el?.remove(); el = null; last = null; }
+    return { recompute, recomputeSoon, reflect, reflectSoon, recenterSoon, hide, destroy };
   })();
   globalThis.CavrilTargeting = TargetHelper;
 
@@ -1696,7 +1709,8 @@
     reg("esEncounterLog",     { scope: "world", config: false, type: Array, default: [] });    // ledger of staged encounters [{wt,ts,biome,when,weather,foes,map,sceneId}]
     reg("esBiomeOverrides",   { scope: "world", config: false, type: Object, default: {} });   // GM review-panel overrides {id→{biome?,generic?,exclude?}}
     reg("tgtHelper",          { name: "Targeting helper — suggest targets in combat", hint: "During combat, show a chip bar of the tokens the selected/active token can SEE, ranked: advantage (flanking or an advantage-granting condition) on an enemy → nearest enemy → nearest neutral → nearest ally. Click a chip to target / untarget. GM-only.", scope: "world", config: true, type: Boolean, default: true });
-    reg("tgtAutoTarget",      { name: "  · Auto-target the suggestion", hint: "Automatically set the top suggestion as your target at the start of each foe's turn (and when the active foe moves with no target). OFF = the suggestion is only highlighted; you click a chip to target it. Never auto-targets on a player's own turn.", scope: "world", config: true, type: Boolean, default: true });
+    reg("tgtAutoTarget",      { name: "  · Auto-target the best enemy", hint: "Automatically target the best enemy at the start of EVERY token's turn (players included) and after it moves with no target. Only ever auto-targets an enemy — neutrals, allies and self stay click-only. OFF = the suggestion is only highlighted; you click a chip to target.", scope: "world", config: true, type: Boolean, default: true });
+    reg("tgtRecenter",        { name: "  · Re-centre camera after a move", hint: "During combat, pan the GM's camera back onto a token ~3s after it finishes moving, so the acting token stays framed.", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtBarPos",          { scope: "client", config: false, type: Object, default: null });   // GM-dragged bar position {left,top}px
     reg("tgtBarScale",        { scope: "client", config: false, type: Number, default: 40 });      // GM-scrolled circle size (px)
   }
@@ -1889,7 +1903,7 @@
     });
     // Targeting helper — recompute on turn change (fresh suggestion), movement, selection, scene + combat end.
     hookIds.tgtTurn   = Hooks.on("updateCombat", (cb, chg) => { if (("turn" in chg) || ("round" in chg)) TargetHelper.recomputeSoon(true); });
-    hookIds.tgtMove   = Hooks.on("updateToken", (d, chg) => { if (("x" in chg) || ("y" in chg)) TargetHelper.recomputeSoon(false); });
+    hookIds.tgtMove   = Hooks.on("updateToken", (d, chg) => { if (("x" in chg) || ("y" in chg)) { TargetHelper.recomputeSoon(false); TargetHelper.recenterSoon(d); } });
     hookIds.tgtCtrl   = Hooks.on("controlToken", () => TargetHelper.recomputeSoon(false));
     hookIds.tgtTgt    = Hooks.on("targetToken", () => TargetHelper.reflectSoon());   // target changed elsewhere → just re-skin chips (no auto-target, so deselects stick)
     hookIds.tgtCanvas = Hooks.on("canvasReady", () => TargetHelper.recomputeSoon(false));
