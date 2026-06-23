@@ -1179,7 +1179,8 @@ function cwfSettleVision() {
 async function cwfAwaitMove(tok) {
     try {
         const name = tok?.animationName;
-        const anim = (name && globalThis.CanvasAnimation?.getAnimation) ? CanvasAnimation.getAnimation(name) : null;
+        const CA = foundry.canvas?.animation?.CanvasAnimation || globalThis.CanvasAnimation;   // V13+ namespaced the old global
+        const anim = (name && CA?.getAnimation) ? CA.getAnimation(name) : null;
         if (anim?.promise) await Promise.race([anim.promise, new Promise(r => setTimeout(r, 2000))]);
     } catch (e) { /* noop */ }
 }
@@ -2112,12 +2113,19 @@ const Music = (() => {
     // footsteps. Paths are GM-configured (a file, or a soundboard folder ending in "/").
     async function travelSfx(cls, boat) {
         if (!game.user.isGM || !game.settings.get(MOD, "travelSfx") || !globalThis.Maestro) return;
+        const M = globalThis.Maestro;
         const key = (boat && (cls?.river || cls?.terrainKey === "water")) ? "sfxBoat" : (boat && cls?.infrastructure) ? "sfxCart" : "sfxFoot";
         const path = String(game.settings.get(MOD, key) || "").trim();
         if (!path) return;
         try {
-            if (path.endsWith("/") && globalThis.Maestro.playRandomInFolder) await globalThis.Maestro.playRandomInFolder(path);
-            else if (globalThis.Maestro.playOneShot) await globalThis.Maestro.playOneShot(path, {});
+            // The GM may paste a Maestro REFERENCE rather than a file path — a `Maestro.triggerRef("…")` macro snippet,
+            // an `@Maestro[…]` journal link, or a bare `sfx:/music:/amb:` ref. Route those through triggerRef instead of
+            // trying to load the literal string as an audio file (which 404-spammed the console). v0.55.61.
+            const m = path.match(/triggerRef\(\s*["'`](.+?)["'`]\s*\)/) || path.match(/@Maestro\[(.+?)\]/);
+            const ref = m ? m[1] : (/^(sfx|music|amb|ambience|weather|preset|soundboard):/i.test(path) ? path : null);
+            if (ref && typeof M.triggerRef === "function") { await M.triggerRef(ref); return; }
+            if (path.endsWith("/") && M.playRandomInFolder) await M.playRandomInFolder(path);
+            else if (M.playOneShot) await M.playOneShot(path, {});
         } catch (e) { warn("travel sfx failed", e); }
     }
     // Shift the music mood for a hostile encounter (tension) and back (calm) when it's
