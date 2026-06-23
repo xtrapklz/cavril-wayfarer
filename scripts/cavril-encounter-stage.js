@@ -642,6 +642,31 @@
     return rows;
   }
 
+  // Probe: dump what CZEPEKU's getSessionData actually serves, per genre — so we can see whether it offers TOKENS / assets
+  // beyond maps + scenes (the catalog only reads maps/scenes today). CavrilEncounterStage.czepekuProbe() → paste the console.
+  async function czepekuProbe() {
+    try {
+      const data = await czQuery("fvtt.getSessionData", null);
+      const out = {};
+      for (const genre of Object.keys(data || {})) {
+        const g = data[genre];
+        if (genre === "urls" || !g || typeof g !== "object" || Array.isArray(g)) continue;
+        out[genre] = {};
+        for (const dk of Object.keys(g)) {
+          const arr = g[dk];
+          out[genre][dk] = Array.isArray(arr)
+            ? { count: arr.length, sampleName: arr[0]?.name ?? null, sampleKeys: arr[0] ? Object.keys(arr[0]) : [], sampleVariantKeys: arr[0]?.variants?.[0] ? Object.keys(arr[0].variants[0]) : null }
+            : typeof arr;
+        }
+      }
+      console.log("%c[EncounterStage] CZEPEKU getSessionData — data keys per genre (look for a 'tokens'/'assets' key beyond maps/scenes):", CSS);
+      console.log(out);
+      console.log("top-level keys:", Object.keys(data || {}), "· urls keys:", Object.keys(data?.urls || {}));
+      ui.notifications?.info("Cavril: CZEPEKU data shape dumped to the console (F12) — paste it back.");
+      return out;
+    } catch (e) { warn("czepeku probe failed", e); ui.notifications?.warn(`Cavril: CZEPEKU probe failed — connected? ${e?.message || ""}`); return null; }
+  }
+
   // ===== STAGING ===========================================================
   let pending = null;   // { pick, cls, ctx, paths?, ts }
   let _staging = false; // true while stageEncounter runs — suppresses the createCombat auto-stage
@@ -1992,7 +2017,7 @@
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
-    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, storyMaps, previewMap,
+    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, storyMaps, previewMap, czepekuProbe,
     purgeStagedScenes, isStagedScene,   // cleanup: delete encounter-generated scenes (CavrilEncounterStage.purgeStagedScenes())
     encounterLog, showEncounterLog, logEncounter, markEncounterResolved,   // ledger: CavrilEncounterStage.showEncounterLog()
     // Preview the top matches for a biome without creating anything.
