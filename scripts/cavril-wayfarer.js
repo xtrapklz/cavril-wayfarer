@@ -425,6 +425,7 @@ const Store = (() => {
         g.register(MOD, "journeyThreads", { scope: "world", config: false, type: String, default: "{}" });   // JSON {threadId: nextBeatIndex} — journey-storyline progress; CavrilWayfarer.resetJourney() restarts it
         g.register(MOD, "merchantCards", { name: "Spawn merchant shop cards", hint: "When a roadside 'trade' travel beat fires, also whisper the GM a generated merchant — a rotating shop with curated stock (priced, scaled to party level) and sometimes a quest hook. Off = just the flavour line. Roll one by hand any time with CavrilWayfarer.merchant().", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "merchantPortraits", { name: "Merchant portraits (CZEPEKU)", hint: "Give each generated merchant a fitting character portrait pulled from your CZEPEKU token library (matched by trade — a robed alchemist, a hooded fence, a grizzled smith). Needs the CZEPEKU module connected. Off = no portrait.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "merchantTables", { scope: "world", config: false, type: Object, default: {} });   // {merchantTypeKey: RollTable uuid} — per-type SRD stock tables (CavrilWayfarer.buildMerchantTables())
         // Per-hex travel events: a roll on every hex entered → mostly mundane flavor,
         // a danger-scaled chance of a real event (combat/puzzle/site) that halts the day.
         g.register(MOD, "travelEvents", { name: "Per-hex travel events", hint: "As the party crosses each hex, roll for an event — mostly mundane flavor, with a danger-scaled chance of a real encounter that halts the day. Whispered to the GM to narrate.", scope: "world", config: true, type: Boolean, default: true });
@@ -3583,7 +3584,50 @@ const CodexShop = (() => {
         return shop;
     }
 
-    return { merchantShop, createShop, pickStock, srdIndex };
+    // === SRD ROLL TABLES (per merchant type) — real, editable RollTable docs built from the SAME SRD pools the shops
+    // stock from (a "blacksmith" table = weapons/armor/tools/ammo). Drag one onto a Campaign Codex shop's Merchant
+    // Counter widget to RESTOCK from it. Cached by type in the merchantTables world setting; idempotent.
+    const TBL_FOLDER = "Cavril Merchants";
+    async function ensureTableFolder() {
+        try { let f = (game.folders?.contents || []).find(x => x.type === "RollTable" && x.name === TBL_FOLDER); if (!f) f = await Folder.create({ name: TBL_FOLDER, type: "RollTable" }); return f?.id || null; }
+        catch (e) { return null; }
+    }
+    const tableMap = () => { try { return foundry.utils.duplicate(game.settings.get(MOD, "merchantTables") || {}); } catch (e) { return {}; } };
+    // The full SRD candidate list for a type (no level gate — a table is the whole menu the GM can prune).
+    function tableCandidates(type) {
+        const idx = _srd || []; let c = [];
+        for (const p of (type.pools || [])) { const f = POOL_FILTER[p]; if (f) c = c.concat(idx.filter(f)); }
+        const seen = new Set(); return c.filter(x => seen.has(x.uuid) ? false : (seen.add(x.uuid), true)).slice(0, 120);
+    }
+    async function tableForType(typeKey, force = false) {
+        const type = MerchantEconomy.TYPES[typeKey]; if (!type) return null;
+        const map = tableMap();
+        if (!force && map[typeKey]) { const t = await fromUuid(map[typeKey]).catch(() => null); if (t) return t; }
+        await srdIndex();
+        const cands = tableCandidates(type); if (!cands.length) return null;
+        const CT = (globalThis.CONST?.TABLE_RESULT_TYPES) || {};
+        const results = cands.map((e, i) => ({
+            type: CT.COMPENDIUM ?? CT.DOCUMENT ?? 2,
+            documentCollection: String(e.uuid).split(".").slice(1, 3).join("."),   // "dnd5e.items"
+            documentId: String(e.uuid).split(".").pop(),
+            text: e.name, img: e.img || "icons/svg/item-bag.svg", weight: 1, range: [i + 1, i + 1],
+        }));
+        let table = null;
+        try { table = await RollTable.create({ name: `Cavril Merchant: ${type.name}`, folder: await ensureTableFolder(), formula: `1d${results.length}`, replacement: true, results }); }
+        catch (e) { warn(`merchant table for ${typeKey} failed`, e); return null; }
+        if (table) { const m = tableMap(); m[typeKey] = table.uuid; try { await game.settings.set(MOD, "merchantTables", m); } catch (e) {} }
+        return table;
+    }
+    async function buildMerchantTables(force = false) {
+        if (!game.user.isGM) return 0;
+        await srdIndex();
+        let n = 0; for (const k of Object.keys(MerchantEconomy.TYPES)) { try { if (await tableForType(k, force)) n++; } catch (e) {} }
+        ui.notifications?.info(`Cavril: built ${n} merchant roll tables — in the "${TBL_FOLDER}" RollTables folder. Drag one onto a shop's Merchant Counter widget to restock from it.`);
+        log(`[CodexShop] built ${n} merchant tables`);
+        return n;
+    }
+
+    return { merchantShop, createShop, pickStock, srdIndex, buildMerchantTables, tableForType };
 })();
 
 /* =========================================================================
@@ -4564,6 +4608,7 @@ Hooks.once("ready", () => {
         resetJourney: () => Tables.resetJourney(),
         merchant: (opts) => MerchantEconomy.roll(opts),
         merchantShop: (opts) => CodexShop.merchantShop(opts),   // generate a merchant → a real Campaign Codex storefront stocked with SRD items
+        buildMerchantTables: (force) => CodexShop.buildMerchantTables(force),   // create per-type SRD RollTables (for the Merchant Counter restock widget)
         codexShop: CodexShop,
         automation: (mode) => cwfApplyAutomation(mode),
         journeyStatus: () => Tables.journeyStatus(),
