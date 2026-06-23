@@ -1355,6 +1355,10 @@
         proto.x = x; proto.y = y; proto.actorId = a.id; proto.hidden = faceTarget ? !!CFG.hideFoes : false;   // foes (faceTarget = party muster) spawn hidden for the GM to reveal; party stays visible
         if (!proto.name) proto.name = a.name;
         if (faceTarget) {
+          // Foes are ALWAYS hostile — don't trust the source actor's prototype disposition (SRD monsters are usually
+          // hostile, but homebrew/imported ones may be neutral). This is what makes auto-target + the combat AI reliably
+          // see them as enemies (relation() keys off opposite non-zero dispositions). Party tokens keep their own.
+          proto.disposition = (globalThis.CONST?.TOKEN_DISPOSITIONS?.HOSTILE ?? -1);
           // Face from the token's CENTRE (x,y is the top-left corner). Clear lockRotation so it shows.
           const cx = x + (proto.width || 1) * gs / 2, cy = y + (proto.height || 1) * gs / 2;
           proto.rotation = Math.round(faceAngle(cx, cy, faceTarget.x, faceTarget.y));
