@@ -408,6 +408,7 @@ const Store = (() => {
         g.register(MOD, "openCityOnArrival", { name: "Open CityHUD on settlement arrival", hint: "When you enter a site whose scene is a Cavril CityHUD city, raise its CityHUD automatically — the road→town handoff in one motion. No effect if CityHUD isn't installed.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "lastWatch", { scope: "world", config: false, type: Array, default: [] });
         g.register(MOD, "lastOverworld", { scope: "world", config: false, type: String, default: "" });   // the overworld we left for an encounter — the robust Return target
+        g.register(MOD, "journeyThreads", { scope: "world", config: false, type: String, default: "{}" });   // JSON {threadId: nextBeatIndex} — journey-storyline progress; CavrilWayfarer.resetJourney() restarts it
         // Per-hex travel events: a roll on every hex entered → mostly mundane flavor,
         // a danger-scaled chance of a real event (combat/puzzle/site) that halts the day.
         g.register(MOD, "travelEvents", { name: "Per-hex travel events", hint: "As the party crosses each hex, roll for an event — mostly mundane flavor, with a danger-scaled chance of a real encounter that halts the day. Whispered to the GM to narrate.", scope: "world", config: true, type: Boolean, default: true });
@@ -1344,18 +1345,18 @@ async function cwfHexEvent(cls, { scoutGood = false } = {}) {
     if (scoutGood) x = Math.max(0, x - 1);
     let roll = scale; try { roll = (await new Roll(`1d${scale}`).evaluate()).total; } catch { roll = Math.ceil(Math.random() * scale); }
     // Common case — a mundane flavor beat; the party travels on.
-    if (x <= 0 || roll > x) return { halt: false, line: await Tables.drawFlavor(cls?.biome) };
+    if (x <= 0 || roll > x) return { halt: false, line: (await Tables.nextThreadBeat(cls)) || await Tables.drawFlavor(cls) };   // a journey-thread beat (~32%), else a terrain/biome-themed flavor line
     // A real event. Narrative is most common (continue); combat scales with danger;
     // puzzle and site are rare and halt the day.
     const kind = cwfWeightedPick({ narrative: 5, combat: 3 + x, puzzle: 2, site: 2, trade: cls?.infrastructure ? 6 : 2 });   // site bumped for more hook-discoveries; trade weighted up on roads (infrastructure)
-    if (kind === "narrative" || kind === "trade") return { halt: false, line: await Tables.drawEvent(kind, cls?.biome) };   // both are non-halting opportunity beats the GM can choose to run
+    if (kind === "narrative" || kind === "trade") return { halt: false, line: await Tables.drawEvent(kind, cls) };   // both are non-halting opportunity beats the GM can choose to run
     const hours = Math.max(0, Number(game.settings.get(MOD, "encounterHours")) || 1);
     const meta = ({
         combat: { icon: "fa-dragon", label: "Encounter!" },
         puzzle: { icon: "fa-puzzle-piece", label: "An Obstacle" },
         site:   { icon: "fa-dungeon", label: "A Discovery" }
     })[kind];
-    const text = kind === "combat" ? await cwfEncounterText(cls, { when: "day", surprised: !scoutGood }) : await Tables.drawEvent(kind, cls?.biome);
+    const text = kind === "combat" ? await cwfEncounterText(cls, { when: "day", surprised: !scoutGood }) : await Tables.drawEvent(kind, cls);
     const tag = (kind === "combat" && !scoutGood) ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
     return { halt: true, hours, kind, icon: meta.icon, label: meta.label, tag, line: text, cinematic: { icon: meta.icon, title: meta.label, subtitle: biome, tone: "encounter" } };
 }
@@ -2936,6 +2937,91 @@ const Tables = (() => {
             trade: ["A fishmonger-smuggler at a hidden landing, buying news, selling catch and contraband.", "A pearl-diver trading shell and pearl, and the locations of richer, deadlier beds.", "A ferryman who knows the safe crossings and the price of the unsafe ones."]
         }
     };
+    // ---- per-TERRAIN-FEATURE themed content — overlays the biome themes when a hex carries the feature (river / road /
+    // forest [vegetation high] / mountain [elev high] / hill [elev medium] / coast [water]). Built for a river-then-forest
+    // journey toward the Dreaming Forest, so forest/river lean faintly fey. ----
+    const FEATURE_THEMES = {
+        river: {
+            flavor: ["The current works against you; every mile upstream is earned.", "A heron stands sentinel in the shallows and turns its head to mark you pass.", "Something rolls in the deep channel — a back, a fin — gone before it breaks the surface.", "Driftwood snagged on a bar, and among it a child's painted boat.", "The river forks: one branch runs clear, the other dark and slow and wrong.", "Mist lifts off the water at dawn and takes its time about leaving."],
+            site: ["A ferry-landing, the rope cut on the far side, the bell still hanging.", "A drowned shrine, its spire breaking the surface, offerings caught in the current.", "A mill-race and sluice-gate, the wheel turning though no one tends it.", "A weir hung with fish-traps, and in one of them something with too many fingers."],
+            trade: ["A ferryman who'll take you upriver — for coin, or a secret, or a turn at the oars.", "A river-trader's barge riding low, dealing in anything that floats and some that shouldn't.", "An eel-wife selling smoked catch and the names of the deep pools to avoid."]
+        },
+        road: {
+            flavor: ["The road runs on ahead, rutted by wheels that came this way and haven't come back.", "A milestone, its distances scratched out and rewritten in a shaking hand.", "Boot-prints in the mud, all heading the way you are, none returning.", "A gibbet-cage at a crossroads, empty, its chain swaying though there's no wind.", "Fresh horse-dung still steaming, but the road ahead and behind is empty."],
+            site: ["A waystation, hearth cold, the ledger open to a page of names and no dates.", "A toll-bridge, the keeper's hut dark, a coin-bowl set out and full.", "A roadside shrine to travellers, the offerings fresh, the god long forgotten.", "A wrecked coach off the verge, doors open, trunks emptied, no blood and no bodies."],
+            trade: ["A pedlar's wagon drawn up at a wide spot, glad of company on an empty road.", "A courier resting a lathered horse, carrying news upriver — for a price.", "A toll-keeper who takes payment in coin, or in a true story of where you've been."]
+        },
+        forest: {
+            flavor: ["The trees lean close behind you, though you'd swear the path ran straight.", "A clearing where the grass grows in a perfect ring and the air hums faintly.", "Birdsong stops all at once, and the silence is listening.", "A trail of toadstools, too orderly, leads gently off the path.", "Light falls green and gold through the canopy in shafts that seem placed.", "You pass the same lightning-split oak twice, an hour apart."],
+            site: ["A ring of standing stones wound with ivy, the centre worn smooth by dancing.", "A hollow tree with a stair spiralling down into root-dark, a candle-stub on each step.", "A woodcutter's cottage, door open, kettle warm, the woodcutter a hundred years gone.", "A grove where every tree wears a face, and one of them is new."],
+            trade: ["A hedge-witch at a crossing of deer-trails, trading charms, salves, and very specific warnings.", "A wandering luthier who buys fey-touched wood and sells instruments that play themselves a little.", "A masked forager who deals only in barter, never coin, and never quite meets your eye."]
+        },
+        mountain: {
+            flavor: ["The air thins; your breath smokes and your thoughts run slow and clear.", "A cairn marks the pass, each stone laid by a hand that made it over.", "Far below, cloud fills the valley like a second, paler sea.", "Rockfall clatters somewhere above, then a silence that's worse.", "An eagle rides the updraft, watching, patient as the stone."],
+            site: ["A switchback stair cut into the cliff by hands that weren't quite human.", "A wind-shrine at the high point, its prayer-flags shredded to threads.", "A played-out mine, its mouth shored with bone where the timber gave out.", "An eyrie of woven branches and bright stolen things, the size of a wagon."],
+            trade: ["A pass-warden selling safe passage and the day's avalanche-reading.", "A mountain-trader with a string of sure-footed goats, dealing in ore, furs, and rope.", "A hermit at the high shrine who trades bread and shelter for news of the low world."]
+        },
+        hill: {
+            flavor: ["The land rises in long green swells; you can watch weather come for an hour.", "A chalk figure cut into a far hillside, old, and facing the road.", "Sheep scatter from a fold left open — no shepherd, no dog, no sound.", "A hollow way worn shoulder-deep by centuries of feet, cool and green and close.", "Skylarks climb singing until they're lost in the blue, then drop silent."],
+            site: ["A hillfort's grassed-over ramparts, the ditch still deep enough to hide an army.", "A barrow crowning the rise, its entrance a black mouth that faces the dawn.", "A holy spring in a fold of the hills, the path to it worn by bare feet.", "A ring of beacon-ash on the summit, lit recently, by someone signalling someone."],
+            trade: ["A shepherd glad to trade wool, cheese, and the lie of the land ahead.", "A drover moving stock between valleys, full of weather-sense and gossip.", "A barrow-robber turned honest, selling old bronze and older warnings."]
+        },
+        coast: {
+            flavor: ["Salt creeps into the river's smell; gulls take over from the herons.", "The tide has left a margin of weed and wreck and watchful crabs.", "A net dries on a rack, mended with hair that came from no horse.", "Far out, a light that is not a star and not a ship holds steady.", "The waves draw back further than they should, and pause, and wait."],
+            site: ["A fisher-shrine on the point, hung with floats and the jaws of great fish.", "A sea-cave the tide guards, a dry shelf inside scratched with a tally of years.", "A beached hulk gone salt-white, something nesting deep in the hold.", "A line of stakes at low water marking a drowned road out to a drowned door."],
+            trade: ["A fisher-smuggler at a hidden cove, buying news, selling catch and quiet passage.", "A beachcomber trading the sea's gifts — amber, glass, and things best left unnamed.", "A salt-trader whose wares preserve more than meat, if you believe him."]
+        }
+    };
+    // ---- JOURNEY THREADS — interconnected storylines toward the Dreaming Forest (where the fey live). They unfold in
+    // sequence across travel (~32% of mundane beats advance one). Ungated threads run anywhere; "river"/"forest"-gated
+    // threads cluster on that terrain, so the arc emerges: river-debt on the water, the forest waking as you arrive.
+    // They cross-reference each other (the Pilgrim, the Hunt, the Sisters all converge at the threshold). ----
+    const JOURNEY_THREADS = [
+        { id: "pilgrim", title: "The Pilgrim", gate: null, beats: [
+            "A woman walks your way, a child's shoe strung on a cord at her throat. 'You're for the forest too,' she says — not a question. Her name is Wrenna, and she does not ask yours.",
+            "Wrenna shares your fire and her grief: seven years past, the fey took her daughter and left a changeling that withered in a season. She goes to ask for the girl back. 'They always take. I mean to be the one who asks.'",
+            "Wrenna's pack lies abandoned at a fork, the shoe gone from its cord. Drag-marks lead to the water's edge — or she walked in willingly, following something only she could hear.",
+            "Wrenna again, barefoot now, her eyes too bright. 'I heard her singing, just ahead — you heard it too, don't pretend.' There was no singing. Or there was, and only she was meant to hear it.",
+            "At a place that feels like an edge, Wrenna waits, calm at last. 'They'll offer you a bargain. Whatever you give, give it gladly — grudging payment costs double. I learned that the first time.' The first time?",
+            "Long after, word finds you: a woman and a girl walked out of the Dreaming Forest, neither aged a day — and the girl calls the woman 'sister,' and means it. (Or: a child's shoe hangs from a branch at the forest's edge, swaying, though no wind moves it.)"
+        ] },
+        { id: "fading", title: "The Fading", gate: null, beats: [
+            "A butterfly the colour of stained glass lands on your hand and casts no shadow. When it lifts away you cannot recall which hand it touched.",
+            "Every traveller you meet today is humming the same slow tune, and none of them knows it. By dusk, so are you.",
+            "A whole hamlet sleeps at noon, smiling, breathing in time. A sleepwalking child presses a flower into your palm and murmurs, 'She says hello,' then drifts back to bed.",
+            "Your shadow does a thing your body did not — a small wave, half a second late. You decide not to mention it. You notice no one mentions theirs either.",
+            "Last night's dream is still hanging in the morning air as mist, in shapes you know too well. By the time you've struck camp it has become the day's plain weather, and no one remembers it was ever otherwise.",
+            "The boundary is near now. Colours wear names you never learned. The dead you have grieved feel one thin step to the left of here. The forest is dreaming — and somewhere along the road, you walked into the dream."
+        ] },
+        { id: "ferryman", title: "The Ferryman's Debt", gate: "river", beats: [
+            "An old ferryman poles you across a confluence before you can hail him. At the far bank he says only, 'The river gave you the easy water. It will want the favour returned. Upstream.' He waves off your coin.",
+            "A drowned bell tolls from a deep green pool — once, twice — and the current tugs your craft a hand's-width toward it before you pull free. Something down there has counted you now.",
+            "A child sits weeping on a midstream sandbar, bone-dry though the water races around it, and begs you carry her upriver 'to mother.' When she walks, her feet do not quite trouble the ground.",
+            "The ferryman again — or his twin — at a rapid you cannot run. 'The river remembers the bell, and the bell remembers a debt. Pay it at the source, or the source pays itself, out of you.' He points upstream, toward the forest.",
+            "The river's source: a spring welling cold and clear from beneath the great forest. Something is owed here. What you give the spring, the river will remember kindly. What you take from it, the river will come, in time, to collect."
+        ] },
+        { id: "hunt", title: "The Hunt", gate: null, beats: [
+            "A carcass the size of a cart, dragged half from the water and half-eaten: antlers like white branches, hide that still faintly glows. Nothing native did this. Nothing native could.",
+            "A huntsman with a fey-silver arrow and a fever-wound that will not close. 'It came down the river out of the Dreaming. I put three shafts in it; it put this in me. It's going home — and so am I, one road or the other.'",
+            "Tracks of the wounded thing glow faintly upriver toward the forest — and crossing them, the huntsman's, still following. (You could harvest the sign: a shed antler-tine that hums in the hand, a smear of luminous ichor that will not dry.)",
+            "The huntsman's last camp: fire cold, bow snapped, the fey-silver arrow laid pointing the way like a final word. Something watched this camp from the treeline a long while — the grass is pressed flat where it sat, and waited.",
+            "At the forest's edge the wounded beast turns at bay — vast, lovely, dying, and not at all sorry. To end it is a mercy and a trophy worth a kingdom. To let it pass is to be owed, by the forest, for the life you chose to spare."
+        ] },
+        { id: "sisters", title: "The Two Sisters", gate: null, beats: [
+            "A green-eyed traveller shares the road an hour, then at parting presses a hazelnut into your hand. 'For a thirst you can't yet name. My sister will offer you water. Do not drink it.' Between one step and the next, she is gone.",
+            "At a well, a woman in river-grey offers a dipper of water — sweet, cold, and longed-for past reason. (Drink, and the forest visits your dreams each night after. Refuse, and she presses a cold thumb to your brow, a mark that will not wash away.)",
+            "Both women, glimpsed at once on facing ridgelines, mirror-images watching each other across the small distance of you. The hazelnut in your pack has put out a green shoot. The thumb-mark, if you bear it, aches toward the forest.",
+            "A child's grave beside the road, two names cut into the stone and one of them scratched out. The sisters' quarrel is older than the road, older than the river — and you are only the latest thing they have found to settle it with.",
+            "At the Dreaming Forest's threshold both sisters wait, and the bargain falls due: the hazelnut, the water, the cold mark — each one a claim on you. Honour the gift you accepted and that sister parts the way. Refuse them both, and the forest rules that you came uninvited."
+        ] },
+        { id: "forest", title: "The Forest Remembers", gate: "forest", beats: [
+            "The road does not fade — it ends, deliberately, as though the forest decided it had come quite far enough. Beyond, the trees stand in ordered rows, like a breath held.",
+            "A guide steps from a trunk you would have sworn was solid — tall, courteous, and wrong in a way you cannot name. 'You are expected. You are always expected. This way, or that way; they arrive at the same place.'",
+            "Carved into every seventh trunk: the faces of travellers — some weeping, some laughing, one of them yours, worn smooth as if it has waited here a very long time.",
+            "Night does not fall; the forest opens its eyes. Lights that are not lanterns drift between the trees, and a music begins that your feet already know the steps to.",
+            "The boundary at last: a pale ring of mushrooms, an arch of living fallen branch, and beyond it the Dreaming Forest itself — where the fey are, where Wrenna's girl is singing, where the river's debt comes due and the sisters' bargain is paid. Cross gladly, or do not cross at all."
+        ] }
+    ];
     const TABLE_NAMES = { flavor: "Travel Flavor", narrative: "Travel — Narrative", puzzle: "Travel — Puzzle", site: "Travel — Site", trade: "Travel — Trade" };
     async function ensureGeneric(key, entries) {
         const cached = ids()?.travel?.[key];
@@ -2955,16 +3041,52 @@ const Tables = (() => {
         try { const t = await ensureGeneric(key, entries); if (!t) return fb; const res = await t.draw({ displayChat: false }); const r = res?.results?.[0]; return (r?.description ?? r?.name ?? r?.text) || fb; }
         catch (e) { warn("generic draw failed", e); return fb; }
     }
-    // Biome-aware draw: ≈75% of the time return one of the biome's THEMED lines (when authored); otherwise fall back to
-    // the generic, GM-editable RollTable. So each biome feels distinct while the editable base still fills gaps.
+    // THEMED draw: pool the hex's terrain FEATURES (river/road/forest/mountain/hill/coast) with its BIOME, and ≈80% of
+    // the time return a random line from a random matching pool; else fall back to the generic, GM-editable RollTable.
+    // Features stack — a forested river hex can draw river, forest, OR biome flavour — so terrain reads through clearly.
     const rnd = (arr) => arr[Math.floor(Math.random() * arr.length)];
-    function pickBiome(biomeKey, kind, generic) {
-        const themed = BIOME_THEMES[biomeKey]?.[kind];
-        if (themed && themed.length && Math.random() < 0.75) return rnd(themed);
+    function themedPools(cls, kind) {
+        const pools = [];
+        const add = (on, key) => { if (on) { const a = FEATURE_THEMES[key]?.[kind]; if (a && a.length) pools.push(a); } };
+        add(cls?.river, "river"); add(cls?.infrastructure, "road"); add(cls?.vegetation === "high", "forest");
+        add(cls?.elevation === "high", "mountain"); add(cls?.elevation === "medium", "hill"); add(cls?.water, "coast");
+        const b = BIOME_THEMES[cls?.biome]?.[kind]; if (b && b.length) pools.push(b);
+        return pools;
+    }
+    function pickFor(cls, kind, generic) {
+        const pools = themedPools(cls, kind);
+        if (pools.length && Math.random() < 0.8) return rnd(rnd(pools));
         return drawGeneric(kind, generic);
     }
-    const drawFlavor = (biomeKey) => pickBiome(biomeKey, "flavor", FLAVOR_ENTRIES);
-    const drawEvent = (kind, biomeKey) => pickBiome(biomeKey, kind, EVENT_SEEDS[kind] || EVENT_SEEDS.narrative);
+    const drawFlavor = (cls) => pickFor(cls, "flavor", FLAVOR_ENTRIES);
+    const drawEvent = (kind, cls) => pickFor(cls, kind, EVENT_SEEDS[kind] || EVENT_SEEDS.narrative);
+
+    // JOURNEY THREADS — advance one interconnected storyline beat (~32% of mundane-flavor beats), in sequence, building
+    // toward the Dreaming Forest. State (next-beat index per thread) lives in the journeyThreads world setting. Gated
+    // threads only fire on matching terrain. Weighted to favour continuing a story already in motion. GM-only.
+    const threadState = () => { try { return JSON.parse(game.settings.get(MOD, "journeyThreads") || "{}") || {}; } catch (e) { return {}; } };
+    async function nextThreadBeat(cls) {
+        try {
+            if (!game.user.isGM || Math.random() >= 0.32) return null;
+            const st = threadState();
+            const onForest = cls?.vegetation === "high", onRiver = !!cls?.river;
+            const eligible = JOURNEY_THREADS.filter(t => {
+                if ((st[t.id] || 0) >= t.beats.length) return false;            // story finished
+                if (t.gate === "forest" && !onForest) return false;
+                if (t.gate === "river" && !onRiver) return false;
+                return true;
+            });
+            if (!eligible.length) return null;
+            const weighted = [];                                                // 2× weight to threads already begun → continuity
+            for (const t of eligible) { const w = (st[t.id] || 0) > 0 ? 2 : 1; for (let k = 0; k < w; k++) weighted.push(t); }
+            const t = rnd(weighted), i = st[t.id] || 0;
+            st[t.id] = i + 1;
+            await game.settings.set(MOD, "journeyThreads", JSON.stringify(st));
+            return `✦ ${t.title} — ${t.beats[i]}`;
+        } catch (e) { warn("journey thread beat failed", e); return null; }
+    }
+    async function resetJourney() { if (!game.user.isGM) return; await game.settings.set(MOD, "journeyThreads", "{}"); ui.notifications?.info(`${TITLE}: journey threads reset — the road to the Dreaming Forest begins anew.`); }
+    function journeyStatus() { const st = threadState(); const rows = JOURNEY_THREADS.map(t => ({ title: t.title, gate: t.gate || "any", beat: (st[t.id] || 0), of: t.beats.length, done: (st[t.id] || 0) >= t.beats.length })); console.table(rows); return rows; }
     // Rebuild the travel flavor/event/trade RollTables from the CURRENT seeds — applies the enriched content to an
     // existing world (the tables are created once and cached by id, so new seeds don't appear until rebuilt). Overwrites GM edits to those tables.
     async function reseed() {
@@ -2977,7 +3099,7 @@ const Tables = (() => {
         ui.notifications?.info(`${TITLE}: travel flavor / event / trade tables rebuilt from the latest seeds.`);
     }
 
-    return { ensureAll, draw, ensureEncounter, drawEncounter, drawFlavor, drawEvent, reseed, DEFS, FOLDER };
+    return { ensureAll, draw, ensureEncounter, drawEncounter, drawFlavor, drawEvent, reseed, nextThreadBeat, resetJourney, journeyStatus, DEFS, FOLDER };
 })();
 
 /* =========================================================================
@@ -3906,6 +4028,8 @@ Hooks.once("ready", () => {
         planRoute: () => Travel.startPlot(),
         createTables: () => Tables.ensureAll(),
         reseedTables: () => Tables.reseed(),
+        resetJourney: () => Tables.resetJourney(),
+        journeyStatus: () => Tables.journeyStatus(),
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, _installed: true
     };
     // Phase-transition cinematics broadcast from the GM → every client plays them.
