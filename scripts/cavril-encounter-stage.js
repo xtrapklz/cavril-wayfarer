@@ -1346,7 +1346,8 @@
         const modes = d?.detectionModes;   // array / Collection / undefined depending on doc state — only iterate a real array
         if (Array.isArray(modes)) for (const m of modes) r = Math.max(r, Number(m?.range) || 0);
         const s = t.actor?.system?.attributes?.senses;
-        if (s) for (const k of ["darkvision", "blindsight", "tremorsense", "truesight"]) r = Math.max(r, Number(s[k] ?? s.ranges?.[k]) || 0);
+        const sr = s?.ranges || s;   // dnd5e 5.3+ moved senses under .ranges — read that first so we never touch the deprecated flat getter (removed in 6.1); fall back to the flat shape on older dnd5e
+        if (sr) for (const k of ["darkvision", "blindsight", "tremorsense", "truesight"]) r = Math.max(r, Number(sr[k]) || 0);
       } catch (e) {}
       return r;   // 0 → treat as unlimited (global illumination / always-see)
     }
