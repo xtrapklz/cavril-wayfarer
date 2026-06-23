@@ -3022,6 +3022,128 @@ const Tables = (() => {
             "Carved into every seventh trunk: the faces of travellers — some weeping, some laughing, one of them yours, worn smooth as if it has waited here a very long time.",
             "Night does not fall; the forest opens its eyes. Lights that are not lanterns drift between the trees, and a music begins that your feet already know the steps to.",
             "The boundary at last: a pale ring of mushrooms, an arch of living fallen branch, and beyond it the Dreaming Forest itself — where the fey are, where Wrenna's girl is singing, where the river's debt comes due and the sisters' bargain is paid. Cross gladly, or do not cross at all."
+        ] },
+
+        // ---- ROAMING ARCS (gate:null — follow the party anywhere; they cross-reference the regional + merchant content) ----
+        { id: "rival", title: "The Gilded Company", gate: null, beats: [
+            "A well-equipped band overtakes you on the road, matched banners and matched smirks. Their captain, Sir Cadoc Vane, tips his helm: 'Leave some glory for the rest of us.' They are gone ahead in a cloud of good horses.",
+            "Every bounty worth taking on the crossroads board has already been claimed — signed, with a flourish, 'the Gilded Company.' A local mutters they pay coin to get first read of the board.",
+            "A Gilded Company camp, struck in haste, and signs it went badly: a dropped sword, drag-marks, a name carved in panic into a tree. Whatever they chased, it chased back.",
+            "Sir Cadoc again, alone now, his company thinned and his smirk gone. 'There's a thing up ahead that doesn't care how fine your gear is. I'd take help. I never thought I'd say it.' Make an ally, a debt, or a corpse of him."
+        ] },
+        { id: "benefactor", title: "The Quiet Hand", gate: null, beats: [
+            "A child you didn't pay hands you a sealed note: directions to a cache, and the words 'A friend goes ahead of you.' The cache is real — supplies, and a little coin.",
+            "Twice more the Quiet Hand has smoothed your road: a bridge mended just before you reached it, a patrol turned aside. Someone spends to ease your way, and no one knows who.",
+            "A note, less warm this time: 'I have spent much on you. Soon I will ask one thing, and you will want to say yes.' The hand that wrote it wore a glove you have seen somewhere before.",
+            "The Quiet Hand shows itself at last, and asks the one thing — something only you can fetch from the road ahead. Honour the debt of all that quiet help, or learn what a smoothed road becomes when it turns against you."
+        ] },
+        { id: "plague", title: "The Sickness Ahead", gate: null, beats: [
+            "A village ahead has shuttered half its doors and chalked white crosses on them. 'Don't drink downstream of us,' a masked elder warns. 'It came up the road. It is going your way too.'",
+            "You reach an inn a day behind the fever — beds full, the healer weeping and out of everything. (An apothecary's medicines or a herbalist's simples would be worth more than gold here.)",
+            "The sick share one symptom no plague should cause: they dream the same dream, and wake describing the same far place. This is not only an illness.",
+            "At its source — a fouled well, a buried relic, a thing in the water — the sickness can be ended, or carried onward, knowing or not. Whole villages downstream live or die by what you choose here."
+        ] },
+        { id: "war", title: "The War's Edge", gate: null, beats: [
+            "Refugees clog the road, handcarts and hollow eyes, all moving the way you came. 'Turn back,' they say. 'The line has moved. The road ahead is theirs now.'",
+            "A press-gang in mismatched colours holds a bridge, 'recruiting.' They will take your coin, your horses, or your hands — unless you talk, or fight, your way across.",
+            "A field still smoking from a days-old battle: crows, looters, and one wounded soldier who will trade everything he knows for water and a kind word.",
+            "The war's edge catches you up: a column on the march, a side pressed upon you, and a commander who remembers — a favour, or a slight, from earlier on this road. Which one decides how this goes."
+        ] },
+        { id: "omen", title: "The Red Star", gate: null, beats: [
+            "A new star burns red in the evening sky, and no two people read it alike. A drover calls it a blessing; his wife spits and calls it the end of things.",
+            "A barefoot prophet preaches beneath the red star at a crossroads, drawing a crowd — and a following. Some faces in that crowd you have seen before, in other towns, a little closer to him each time.",
+            "Beasts born wrong, wells gone sour, a child speaking in a borrowed voice — all laid at the red star's door. Fear is curdling into something that wants a target; best not to be one.",
+            "Beneath the star at its zenith, the prophet's flock gathers for something. Defuse it, expose it, join it, or scatter it — the star will set on a changed country either way."
+        ] },
+        { id: "collector", title: "The Collector", gate: null, beats: [
+            "A pale clerk in funeral black falls into step beside you, a ledger under one arm. 'Not here for you,' he says, consulting it. 'Not yet. Only confirming the route.' He bows, and is gone.",
+            "The clerk again, at dusk, at the edge of the firelight. 'A debt was incurred, long ago — by blood or by bargain, the ledger does not say which of you. Only that it falls due on the road ahead.'",
+            "You meet others he has visited: a man who gave up his name, a woman who pays in years. 'He always collects,' they whisper. 'But the terms can be argued — if you are clever, if you are quick.'",
+            "The debt falls due. The Collector lays the ledger open and names the price at last. Pay it, contest it, or refuse — and learn what interest the ledger charges on a broken word."
+        ] },
+
+        // ---- REGIONAL ARCS (gate:biome — each land's own story; fires only while travelling that biome) ----
+        { id: "thirstking", title: "The Thirst-King's Road", gate: "desert", beats: [
+            "A line of dead palms marks an old road into the deep sand, and a marker promising 'water, and more, to the worthy' in a script three empires dead.",
+            "A wind-mummified caravan, every traveller facing the same dune, hands cupped as if to drink. Beyond them, against all sense, you hear running water.",
+            "A veiled emissary of the Thirst-King offers a skin of impossibly sweet water. 'Drink, and never thirst again — and give, in return, only a memory you will not miss.' Each draught, a name forgotten.",
+            "The buried city of the Thirst-King: his cistern-throne dry, the king himself a husk that still bargains. Free the water he hoards and a region lives; drink his last draught and inherit his unending, thirsting crown."
+        ] },
+        { id: "fogwalker", title: "What Walks in the Fog", gate: "tundra", beats: [
+            "A reindeer-herder shares his fire on one condition: never step beyond it during fog. 'It takes one. Always one. Never two from inside a kept fire.'",
+            "The fog comes. Through it a tall shape passes, unhurried, counting — and at dawn the herder's tally is one short, and no one will say whose.",
+            "The herd-folk's old law: a guest who survives a fog owes the people a death — not their own, but one they will fetch from outside. They look at you, apologetic, and mean it kindly.",
+            "You find what walks in the fog: ancient, and bound by a bargain the herd-folk's ancestors made and have fed ever since. Break it and free them to its hunger; honour it and choose, as they do, who feeds it next."
+        ] },
+        { id: "coolingforge", title: "The Cooling Forge", gate: "volcanic", beats: [
+            "Ash falls grey on a road of black glass, and far off an anvil rings — slow, tired, like a heart winding down.",
+            "A shrine to a smith-god, its eternal flame guttering. The last priest, half-stone himself, rasps: 'He forged the mountains. Now he forges nothing. When the fire goes out—' He does not finish.",
+            "The forge-god's failing servants offer a bargain: feed the fire what it needs — rare fuel, a great heat, a willing hand at the bellows — and take your pick of a hoard of god-forged things.",
+            "At the dying forge the smith-god offers his last work, a thing of legend, for a price paid in heat: a treasure, a memory, a life's warmth. Or let the fire die, and learn what mountains do without the one who shaped them."
+        ] },
+        { id: "scavprophet", title: "The Scavenger-Prophet", gate: "wasteland", beats: [
+            "A figure preaches from a hill of rusted ruin to a ragged flock: 'The old world died of wanting. We are its heirs. We take only what the dead no longer need.'",
+            "The Prophet's people have stripped the road for miles and built of it a town of scrap that almost works. They welcome you — and weigh all you carry with hungry, friendly eyes.",
+            "A defector whispers it: the Prophet feeds the flock's faith with relics he does not understand, and one of them is waking. 'He thinks he is the heir. I think he is the meal.'",
+            "The relic at the scrap-town's heart comes fully awake. Expose the Prophet, seize the relic, or save the flock from the salvation he sold them — the wasteland will remember which you chose."
+        ] },
+        { id: "spreading", title: "The Spreading", gate: "tainted", beats: [
+            "A line of dead grass cuts the land straight as a drawn rule: summer on one side, a humming grey on the other. The line, a hermit warns, stood half a mile back last spring.",
+            "Things on the grey side are wrong in instructive ways — a deer with too-aware eyes, a stream flowing uphill toward a place you can almost see. It does not spread at random. It grows toward something. Or from it.",
+            "A circle of failed wards marks where others tried to stop it, every ward broken outward. Among them a journal: 'It is not a sickness. It is a seed. And someone planted it.'",
+            "At the heart of the Spreading — the seed, the wound, the open door. Close it and the grey recedes; widen it for what it offers; or take a cutting, and carry its slow promise wherever you go next."
+        ] },
+        { id: "minesbelow", title: "Something Mines Below", gate: "mountain", beats: [
+            "The pass-folk have stopped using the deep tunnels. 'We hear digging,' an old miner says, 'from the wrong side. Coming up.'",
+            "Fresh tailings spill from a sealed adit no one opened, the spoil sorted by a hand that wanted only the things that gleam — or the things that scream.",
+            "A surveyor's chalk deep in a dead mine maps a chamber that should not exist, with a note in a shaking hand: 'It is not digging FOR anything. It is digging a DOOR.'",
+            "Where the digging ends, the door is nearly through. Seal it from this side, meet what mines its way in, or hear the bargain it tunnelled all this way to offer — the mountain has stood a long time, and would rather keep standing."
+        ] },
+        { id: "drowntown", title: "The Town That Drowned", gate: "coast", beats: [
+            "At the lowest tide, bells ring underwater off the point, and the locals turn their boats for home. 'Threnmouth,' an old woman says. 'Went under in our grandparents' day. It does not like to be looked at.'",
+            "The tide draws back further than living memory, and there it is: Threnmouth, streaming and barnacled, its doors swinging. The way down is open. The way down is always, briefly, open.",
+            "In drowned Threnmouth the dead keep house — not hostile, only waiting, setting tables, mending nets, expecting a homecoming. One presses a cold key into your hand and points up, toward the living town on the cliff.",
+            "Threnmouth wants its people back — the descendants on the cliff, called home to the deep. Refuse it for them and the tide takes its anger out on the coast; deliver even one willing soul and the bells, a while, go quiet."
+        ] },
+        { id: "greathunt", title: "The Great Hunt", gate: "savanna", beats: [
+            "The grass thunders: a migration miles wide, and pacing its flanks every predator for a hundred leagues, fat and unbothered, watching you watch them.",
+            "A hunt-camp of many peoples gathers for the season's great hunt, rivalries set aside under truce. They feast you — and expect you on the line when the beasts turn, as the beasts always turn.",
+            "Something hunts the hunters this year: a beast that should not be here, too clever, taking the camp's best by night. The truce frays; old rivalries smell opportunity in the fear.",
+            "On the last day, the wrong-beast and the rivalries come to a head at once. Hold the line and earn a people's friendship; let the camp turn on itself; or take the beast's head, and the name that comes with it."
+        ] },
+        { id: "greenremembers", title: "The Green That Remembers", gate: "jungle", beats: [
+            "A road of cyclopean stones runs straight into the green and is swallowed. Carved faces watch from the canopy — and the carving looks, somehow, recent.",
+            "A people live here still among the reclaimed ruins, tending shrines to a god the outside world forgot. They are courteous, and they are counting your party, and they smile when the count pleases them.",
+            "The truth of the Green: the god is not forgotten — it is FED, and has been, unbroken, for an age. Their courtesy is the courtesy of those who have never once failed to make the offering.",
+            "The offering comes due, and you are guests at it — or for it. Break the ancient cycle and free a people from their god; or step aside, and let the green go on remembering what the world chose to forget."
+        ] },
+        { id: "wolfwinter", title: "The Wolf-Winter", gate: "boreal", beats: [
+            "Wolves cross the road in daylight, gaunt and many, running south and not stopping to hunt. Whatever they flee, they fear more than they fear you.",
+            "A palisaded village rings its bells against a siege of wolves grown bold and strange — wolves that test the gate like soldiers, that wait, that watch the wall for its weak place.",
+            "A trapper shows you a wolf-pelt branded with a mark burned into the hide: someone drives them, herds them south like dogs. 'The wolves aren't the winter,' he says. 'They run from it. Same as us, soon.'",
+            "Behind the Wolf-Winter stands its cause — a thing in the deep wood the wolves would sooner die at a wall than face. Turn the pack, face what drives them, or bar the gate and let the forest freeze shut behind you."
+        ] },
+
+        // ---- FEATURE ARCS (gate:road / river) ----
+        { id: "roadking", title: "The King of the Road", gate: "road", beats: [
+            "A toll-post where no lord holds sway. 'The King of the Road takes his tenth,' says the one-eyed collector — 'of coin, of goods, or a story he has not heard. Refuse, and the road stops being friendly.'",
+            "Cheat or refuse the toll and the road turns: a wheel shatters on a stone that wasn't there, a shortcut becomes a circle, every milestone reads the same distance now, forever.",
+            "Travellers speak of the King in hushed tones — bandit, ghost, or a thing older than roads. He has never been seen to leave the road. He has never been seen to sleep.",
+            "You meet the King at a midnight crossroads where four counties meet and none hold sway. Pay his tenth and pass blessed; best him and inherit a crown you can never set down; refuse him, and walk crossed roads the rest of your days."
+        ] },
+        { id: "weirwar", title: "The Weir-War", gate: "river", beats: [
+            "Two river-towns glare across the water, and between them a contested weir, half-built and half-burned. Both hail your boat. Both want you to choose.",
+            "Upstream claims the weir by old right; downstream says it is starving their mills. Each offers passage, payment, and a 'small favour' that would gut the other.",
+            "Sabotage in the night — and both towns blame the convenient stranger. The weir's weary keeper slips you the truth: a third party has profited from this feud for years.",
+            "The Weir-War breaks at the half-built dam. Broker a peace and open the river for all; take a side and open it for one; or expose the hidden hand stoking it — and find why the river itself seems to want the weir gone."
+        ] },
+
+        // ---- MYSTERY (slow-burn, ungated; resolves into one of the other arcs at the GM's choosing) ----
+        { id: "following", title: "The One Who Follows", gate: null, beats: [
+            "Boot-prints in soft ground behind you — your number, plus one. By the next soft ground, the extra set has learned to walk inside yours.",
+            "Things go missing and things appear: a trinket gone from a pack, a fire banked that you left burning, a single fresh-picked flower laid where you would be sure to find it.",
+            "A figure on a far ridge at dusk, unmistakably watching, who raises one hand — not a threat. A greeting. Or a promise. It is there each evening now, and each evening a little nearer.",
+            "The One Who Follows steps into the firelight at last, and is someone tied to a road you have already walked — a debt, a rival, a grief. What they followed you all this way to say bends the road ahead."
         ] }
     ];
     const TABLE_NAMES = { flavor: "Travel Flavor", narrative: "Travel — Narrative", puzzle: "Travel — Puzzle", site: "Travel — Site", trade: "Travel — Trade" };
@@ -3067,28 +3189,37 @@ const Tables = (() => {
     // toward the Dreaming Forest. State (next-beat index per thread) lives in the journeyThreads world setting. Gated
     // threads only fire on matching terrain. Weighted to favour continuing a story already in motion. GM-only.
     const threadState = () => { try { return JSON.parse(game.settings.get(MOD, "journeyThreads") || "{}") || {}; } catch (e) { return {}; } };
+    // a thread's `gate` may be null (anywhere), or a biome key / terrain feature / array of either; it fires only where the hex matches.
+    function hexTags(cls) {
+        const t = [];
+        if (cls?.biome) t.push(cls.biome);
+        if (cls?.river) t.push("river");
+        if (cls?.water) t.push("coast", "water");
+        if (cls?.infrastructure) t.push("road");
+        if (cls?.vegetation === "high") t.push("forest");
+        if (cls?.elevation === "high") t.push("mountain");
+        else if (cls?.elevation === "medium") t.push("hill");
+        return t;
+    }
+    const gateMatches = (gate, cls) => !gate || (Array.isArray(gate) ? gate : [gate]).some(g => hexTags(cls).includes(g));
+    const MAX_CONCURRENT = 3;   // keep at most ~3 storylines in motion at once → coherence, not a thin spray across dozens
     async function nextThreadBeat(cls) {
         try {
             if (!game.user.isGM || Math.random() >= 0.32) return null;
             const st = threadState();
-            const onForest = cls?.vegetation === "high", onRiver = !!cls?.river;
-            const eligible = JOURNEY_THREADS.filter(t => {
-                if ((st[t.id] || 0) >= t.beats.length) return false;            // story finished
-                if (t.gate === "forest" && !onForest) return false;
-                if (t.gate === "river" && !onRiver) return false;
-                return true;
-            });
+            const eligible = JOURNEY_THREADS.filter(t => (st[t.id] || 0) < t.beats.length && gateMatches(t.gate, cls));
             if (!eligible.length) return null;
-            const weighted = [];                                                // 2× weight to threads already begun → continuity
-            for (const t of eligible) { const w = (st[t.id] || 0) > 0 ? 2 : 1; for (let k = 0; k < w; k++) weighted.push(t); }
-            const t = rnd(weighted), i = st[t.id] || 0;
+            const started = eligible.filter(t => (st[t.id] || 0) > 0), fresh = eligible.filter(t => !(st[t.id] || 0));
+            // advance a story already in motion unless there's both room under the cap and a die-roll to open a new arc
+            const pool = (started.length && (started.length >= MAX_CONCURRENT || !fresh.length || Math.random() < 0.6)) ? started : (fresh.length ? fresh : started);
+            const t = rnd(pool), i = st[t.id] || 0;
             st[t.id] = i + 1;
             await game.settings.set(MOD, "journeyThreads", JSON.stringify(st));
             return `✦ ${t.title} — ${t.beats[i]}`;
         } catch (e) { warn("journey thread beat failed", e); return null; }
     }
-    async function resetJourney() { if (!game.user.isGM) return; await game.settings.set(MOD, "journeyThreads", "{}"); ui.notifications?.info(`${TITLE}: journey threads reset — the road to the Dreaming Forest begins anew.`); }
-    function journeyStatus() { const st = threadState(); const rows = JOURNEY_THREADS.map(t => ({ title: t.title, gate: t.gate || "any", beat: (st[t.id] || 0), of: t.beats.length, done: (st[t.id] || 0) >= t.beats.length })); console.table(rows); return rows; }
+    async function resetJourney() { if (!game.user.isGM) return; await game.settings.set(MOD, "journeyThreads", "{}"); ui.notifications?.info(`${TITLE}: journey threads reset — every storyline begins anew.`); }
+    function journeyStatus() { const st = threadState(); const rows = JOURNEY_THREADS.map(t => ({ title: t.title, gate: Array.isArray(t.gate) ? t.gate.join("/") : (t.gate || "any"), beat: (st[t.id] || 0), of: t.beats.length, done: (st[t.id] || 0) >= t.beats.length })); console.table(rows); return rows; }
     // Rebuild the travel flavor/event/trade RollTables from the CURRENT seeds — applies the enriched content to an
     // existing world (the tables are created once and cached by id, so new seeds don't appear until rebuilt). Overwrites GM edits to those tables.
     async function reseed() {
