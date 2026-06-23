@@ -1895,8 +1895,30 @@
         try { if (!game.combats?.active?.started) return; const tok = id ? canvas.tokens?.get(id) : null; if (tok) canvas.animatePan({ x: tok.center.x, y: tok.center.y, duration: 400 }); } catch (e) {}
       }, delay);
     }
-    function destroy() { clearTimeout(timer); clearTimeout(rTimer); clearTimeout(recT); clearTimeout(autoT); el?.remove(); el = null; last = null; }
-    return { recompute, recomputeSoon, kick, diagnose, reflect, reflectSoon, recenterSoon, hide, destroy };
+    // QoL: after a PLAYER-owned token settles from a move, ease its rotation back to 0° (upright) — so the auto-facing
+    // never leaves a hero's art sideways. Non-player tokens (monsters/NPCs) keep whatever facing they were left.
+    // Per-token debounce; same delay as the camera re-centre; GM-side + authoritative. Gated by tgtUpright.
+    const upTimers = new Map();
+    function uprightSoon(doc) {
+      try {
+        if (!game.user?.isGM || !game.settings.get(MOD, "tgtUpright")) return;
+        const id = doc?.id; if (!id) return;
+        const actor = (canvas.tokens?.get(id)?.actor) || doc?.actor;
+        if (!actor?.hasPlayerOwner) return;                                        // ONLY player-owned tokens self-right
+        const d = Number(game.settings.get(MOD, "tgtRecenterDelay")); const delay = (Number.isFinite(d) ? Math.max(0, d) : 1) * 1000;
+        clearTimeout(upTimers.get(id));
+        upTimers.set(id, setTimeout(async () => {
+          upTimers.delete(id);
+          try {
+            const t = canvas.tokens?.get(id); if (!t) return;
+            if (((((t.document.rotation || 0) % 360) + 360) % 360) < 0.5) return;   // already upright — skip the needless update
+            await t.document.update({ rotation: 0 }, { animate: true });            // eased spin back to upright
+          } catch (e) {}
+        }, delay));
+      } catch (e) {}
+    }
+    function destroy() { clearTimeout(timer); clearTimeout(rTimer); clearTimeout(recT); clearTimeout(autoT); for (const t of upTimers.values()) clearTimeout(t); upTimers.clear(); el?.remove(); el = null; last = null; }
+    return { recompute, recomputeSoon, kick, diagnose, reflect, reflectSoon, recenterSoon, uprightSoon, hide, destroy };
   })();
   globalThis.CavrilTargeting = TargetHelper;
 
@@ -2124,6 +2146,7 @@
     reg("tgtAutoDelay",       { name: "  · Auto-target delay (seconds)", hint: "How long after a token moves or starts its turn before the best enemy is auto-targeted. The target chips still update instantly — only the auto-pick waits. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 5, step: 0.5 } });
     reg("tgtRecenter",        { name: "  · Re-centre the GM camera on moves", hint: "During combat, pan the GM's camera onto whatever token just moved — player OR monster — so your display stays on the action. GM-side only: it pans YOUR view, never the players' (a monster's move never yanks their camera).", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtRecenterDelay",   { name: "  · Re-centre delay (seconds)", hint: "How long after a player token settles before the camera pans onto it. 0 = immediate. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 10, step: 0.5 } });
+    reg("tgtUpright",         { name: "Upright player tokens after moving", hint: "After a PLAYER-owned token finishes moving, ease its rotation back to 0° (upright) — so the auto-facing never leaves your heroes' art sideways. Other tokens (monsters / GM-only NPCs) keep whatever facing they were left. Uses the re-centre delay above for timing. OFF = leave every token however it was rotated.", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtBarPos",          { scope: "client", config: false, type: Object, default: null });   // GM-dragged bar position {left,top}px
     reg("advBarPos",          { scope: "client", config: false, type: Object, default: null });   // GM-dragged Advance button position {left,top}px
     reg("tgtBarScale",        { scope: "client", config: false, type: Number, default: 40 });      // GM-scrolled circle size (px)
@@ -2319,7 +2342,7 @@
     });
     // Targeting helper — recompute on turn change (fresh suggestion), movement, selection, scene + combat end.
     hookIds.tgtTurn   = Hooks.on("updateCombat", (cb, chg) => { if (("turn" in chg) || ("round" in chg)) TargetHelper.kick(true, true); });
-    hookIds.tgtMove   = Hooks.on("updateToken", (d, chg) => { if (("x" in chg) || ("y" in chg)) { TargetHelper.kick(false, true, canvas?.tokens?.get(d.id)); TargetHelper.recenterSoon(d); } });
+    hookIds.tgtMove   = Hooks.on("updateToken", (d, chg) => { if (("x" in chg) || ("y" in chg)) { TargetHelper.kick(false, true, canvas?.tokens?.get(d.id)); TargetHelper.recenterSoon(d); TargetHelper.uprightSoon(d); } });
     hookIds.tgtCtrl   = Hooks.on("controlToken", () => TargetHelper.kick(false, false));
     hookIds.tgtTgt    = Hooks.on("targetToken", () => TargetHelper.reflectSoon());   // target changed elsewhere → just re-skin chips (no auto-target, so deselects stick)
     hookIds.tgtCanvas = Hooks.on("canvasReady", () => {
