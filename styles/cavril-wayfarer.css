@@ -390,24 +390,31 @@ button.cwf-pm-v:hover { background: rgba(189,169,232,.18); color: #fff; }
 /* ---------- Universal "Advance" button (lower-centre, surfaces the next pending GM step) ---------- */
 #cavril-advance {
     position: fixed; left: 50%; bottom: 18vh; transform: translateX(-50%);
-    z-index: 70; display: inline-flex; align-items: center; gap: 9px;
-    padding: 11px 22px; border-radius: 24px;
+    z-index: 70; display: inline-flex; align-items: center; gap: 2px;
+    padding: 4px 8px; border-radius: 24px;
     border: 1px solid var(--cwf-accent, #bda9e8);
     background: color-mix(in srgb, var(--cwf-accent, #bda9e8) 26%, rgba(20, 20, 26, 0.92));
-    color: #fff; font-family: "Signika", sans-serif; font-size: 14px; font-weight: 700; letter-spacing: 0.02em;
-    cursor: pointer; white-space: nowrap;
+    color: #fff; font-family: "Signika", sans-serif; white-space: nowrap;
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55), 0 0 0 4px color-mix(in srgb, var(--cwf-accent, #bda9e8) 16%, transparent);
-    backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px); user-select: none; touch-action: none;
     animation: cavril-advance-in 0.2s ease;
 }
-#cavril-advance:hover { background: color-mix(in srgb, var(--cwf-accent, #bda9e8) 42%, rgba(20, 20, 26, 0.92)); }
-#cavril-advance:active { transform: translateX(-50%) scale(0.97); }
-#cavril-advance[disabled] { opacity: 0.55; cursor: default; }
-#cavril-advance i { font-size: 13px; opacity: 0.95; }
-#cavril-advance .cwf-adv-grip { display: inline-flex; align-items: center; margin: -6px 0 -6px -8px; padding: 6px 3px; opacity: 0.4; cursor: grab; touch-action: none; }
-#cavril-advance .cwf-adv-grip:hover { opacity: 0.85; }
-#cavril-advance .cwf-adv-grip:active { cursor: grabbing; }
+#cavril-advance.dragging { opacity: 0.92; cursor: grabbing; }
+#cavril-advance .cwf-adv-grip { display: inline-flex; align-items: center; padding: 8px 4px; opacity: 0.4; cursor: grab; }
+#cavril-advance:hover .cwf-adv-grip { opacity: 0.7; }
 #cavril-advance .cwf-adv-grip i { font-size: 11px; }
+#cavril-advance .cwf-adv-act, #cavril-advance .cwf-adv-next {
+    appearance: none; border: 0; background: transparent; color: #fff;
+    font-family: inherit; font-size: 14px; font-weight: 700; letter-spacing: 0.02em;
+    cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 9px;
+    padding: 8px 12px; border-radius: 18px;
+}
+#cavril-advance .cwf-adv-act:hover, #cavril-advance .cwf-adv-next:hover { background: rgba(255, 255, 255, 0.16); }
+#cavril-advance .cwf-adv-act:active, #cavril-advance .cwf-adv-next:active { transform: scale(0.96); }
+#cavril-advance .cwf-adv-act i { font-size: 13px; opacity: 0.95; }
+#cavril-advance .cwf-adv-next { padding: 8px 11px; opacity: 0.72; border-left: 1px solid rgba(255, 255, 255, 0.22); border-radius: 0 18px 18px 0; }
+#cavril-advance .cwf-adv-next:hover { opacity: 1; }
+#cavril-advance .cwf-adv-next i { font-size: 13px; }
 #cavril-advance.danger {
     border-color: var(--cwf-hard, #e0554d);
     background: color-mix(in srgb, var(--cwf-hard, #e0554d) 30%, rgba(20, 20, 26, 0.92));
