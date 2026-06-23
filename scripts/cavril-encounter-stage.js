@@ -1697,24 +1697,30 @@
     // click (runs the action); once it moves past it, the press repositions the button and the click is suppressed.
     // Persisted per-GM in advBarPos.
     function attachAdvDrag(node) {
-      let sx = 0, sy = 0;
+      let sx = 0, sy = 0, pid = null, pressing = false;
       node.addEventListener("pointerdown", (ev) => {
         if (ev.button != null && ev.button !== 0) return;
-        sx = ev.clientX; sy = ev.clientY; justDragged = false;
+        sx = ev.clientX; sy = ev.clientY; justDragged = false; pressing = true; pid = ev.pointerId;
         const r = node.getBoundingClientRect(); advDrag = { dx: ev.clientX - r.left, dy: ev.clientY - r.top };
-        try { node.setPointerCapture?.(ev.pointerId); } catch (e) {}
+        // Do NOT setPointerCapture here — capturing on the container steals the click from the inner action button
+        // (the click retargets to the container, which has no handler), so the button stops working. Capture only
+        // once a real drag starts (below), so a plain click is left untouched.
       });
       node.addEventListener("pointermove", (ev) => {
-        if (!advDrag) return;
-        if (!justDragged && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;   // below threshold → still a click, not a drag
-        justDragged = true; node.classList.add("dragging"); node.style.animation = "none";
+        if (!pressing || !advDrag) return;
+        if (!justDragged) {
+          if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;   // below threshold → still a click, not a drag
+          justDragged = true; node.classList.add("dragging"); node.style.animation = "none";
+          try { node.setPointerCapture?.(ev.pointerId); } catch (e) {}    // NOW capture so the drag tracks off-element
+        }
         node.style.left = Math.max(2, Math.min(window.innerWidth - 44, ev.clientX - advDrag.dx)) + "px";
         node.style.top  = Math.max(2, Math.min(window.innerHeight - 30, ev.clientY - advDrag.dy)) + "px";
         node.style.right = "auto"; node.style.bottom = "auto"; node.style.transform = "none";
       });
-      const end = (ev) => {
-        if (!advDrag) return; advDrag = null; node.classList.remove("dragging");
-        try { node.releasePointerCapture?.(ev.pointerId); } catch (e) {}
+      const end = () => {
+        if (!pressing) return; pressing = false; advDrag = null; node.classList.remove("dragging");
+        try { if (pid != null) node.releasePointerCapture?.(pid); } catch (e) {}
+        pid = null;
         if (justDragged) { try { game.settings.set(MOD, "advBarPos", { left: parseInt(node.style.left) || 0, top: parseInt(node.style.top) || 0 }); } catch (e) {} }
       };
       node.addEventListener("pointerup", end); node.addEventListener("pointercancel", end);
