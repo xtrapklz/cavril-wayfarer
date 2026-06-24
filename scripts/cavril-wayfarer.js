@@ -433,7 +433,7 @@ const Store = (() => {
         g.register(MOD, "travelEvents", { name: "Per-hex travel events", hint: "As the party crosses each hex, roll for an event — mostly mundane flavor, with a danger-scaled chance of a real encounter that halts the day. Whispered to the GM to narrate.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "playerTravelCard", { name: "Player arrival card", hint: "On a peaceful arrival, post a clean PUBLIC card for the players — where the road brought them and the day's mood, with no mechanics, events, or spoilers. The full hex-by-hex trek card stays GM-only. (Nothing posts when an encounter halts the day — the cinematic + map handle that.)", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "eventScale", { name: "Travel event die (x/N per hex)", hint: "Denominator for the per-hex event check. x = scene Danger (0-5) + biome danger (0-2). Lower N = more events. Default 20. (CLASSIC engine only — ignored when the new engine below is on.)", scope: "world", config: true, type: Number, default: 20 });
-        g.register(MOD, "newEngine", { name: "⚙ New encounter engine (d20 + Danger/Heat)", hint: "Switch the per-hex travel loop to the d20 model: ONE d20 per hex — 1..Danger = combat, the next slots = a personal (Heat/Wanted) reckoning, 20 = discovery, the rest = biome flavour / arc beats / merchants. DANGER = combat frequency (doubled by day, scout/pace adjust it); CHALLENGE = XP budget; HEAT = your Wanted score (roads/rivers expose, deadly biomes hide, −1 per long rest). At most ONE combat encounter per day. Both dials default from your existing Danger, so nothing breaks. OFF = the classic single-danger loop.", scope: "world", config: true, type: Boolean, default: false });
+        g.register(MOD, "newEngine", { name: "⚙ New encounter engine (d20 + Danger/Heat)", hint: "Switch the per-hex travel loop to the d20 model: ONE d20 per hex — 1..Danger = combat, the next slots = a personal (Heat/Wanted) reckoning, 20 = discovery, the rest = biome flavour / arc beats / merchants. DANGER = combat frequency (doubled by day, scout/pace adjust it); CHALLENGE = XP budget; HEAT = your Wanted score (roads/rivers expose, deadly biomes hide, −1 per long rest). At most ONE combat encounter per day, one per night. Both dials default from your existing Danger, so nothing breaks. Turn OFF only to revert to the legacy single-danger loop.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "esWanted", { scope: "world", config: false, type: Number, default: 0 });   // engine v2 Heat/Wanted score (0-5) — GM raises it manually, −1 per long rest. CavrilWayfarer.wanted(±n) / .setWanted(n)
         g.register(MOD, "encounterHours", { name: "Hours an encounter costs", hint: "Default time a halting encounter adds to the clock (you can adjust in the moment). Default 1.", scope: "world", config: true, type: Number, default: 1 });
         // Off by default → travel checks roll a single straight die. On → Slow gives
@@ -4136,7 +4136,7 @@ const Turn = (() => {
         } catch (e) { warn("rollSkill failed", e); }
         finally { s._rolling = false; }
         const rr = Array.isArray(result) ? result[0] : result;
-        if (rr) { s.total = rr.total ?? null; s.nat = natOf(rr); }
+        if (rr) { s.total = rr.total ?? null; s.nat = natOf(rr); pulseTravelGroup(); }
         WayfarerPanel.render();
         // Deliberately NO auto-resolve here: a GM rolling in Foundry is present and may want to adjust totals first,
         // so leave resolution to the "Resolve turn" button. Auto-resolve still fires for rolls that arrive from D&D
@@ -4144,7 +4144,7 @@ const Turn = (() => {
     }
     function enter(roleKey, val) {
         const n = Number(val);
-        if (Number.isFinite(n)) { roles[roleKey].total = n; roles[roleKey].nat = null; held = true; }   // manual entry → GM drives, no auto-resolve
+        if (Number.isFinite(n)) { roles[roleKey].total = n; roles[roleKey].nat = null; held = true; pulseTravelGroup(); }   // manual entry → GM drives, no auto-resolve
         WayfarerPanel.render();
         maybeAutoResolve();
     }
@@ -4169,6 +4169,15 @@ const Turn = (() => {
     }
     const claimedRoles = () => Object.entries(roles).filter(([, v]) => v.actorId);
     const allRolled = () => { const c = claimedRoles(); return c.length > 0 && c.every(([, v]) => v.total != null); };
+    // The party's travel-role rolls land as ONE group cinematic: it appears on the FIRST roll and UPDATES as the rest come
+    // in (progress=persistent declare), then reveals as the result at resolve. progress true = update, false = final reveal.
+    function emitTravelGroup(progress) {
+        try {
+            const parts = claimedRoles().map(([k, v]) => { const a = game.actors.get(v.actorId); return { name: v.actorName || a?.name || ROLE_LABEL[k], img: a?.img || a?.prototypeToken?.texture?.src || "", skill: ROLE_LABEL[k], total: v.total }; });
+            if (parts.length) window.DDBRollCards?.playGroupCinematic?.({ title: "Travel Turn", sub: governing?.label || `${route.length} hex${route.length === 1 ? "" : "es"}`, participants: parts, progress: !!progress });
+        } catch (e) { warn("travel group cinematic failed", e); }
+    }
+    const pulseTravelGroup = () => { try { if (step === "active" && claimedRoles().some(([, v]) => v.total != null)) emitTravelGroup(true); } catch (e) { /* noop */ } };
     // Once every claimed role has a result (rolled in Foundry or arrived from D&D Beyond),
     // resolve the turn on its own — the players' rolls are the trigger, no GM click.
     function maybeAutoResolve() {
@@ -4178,11 +4187,7 @@ const Turn = (() => {
 
     async function resolve() {
         const dc = governing?.dc ?? 10;
-        // The party's travel-role rolls land as ONE group cinematic (the individual ones were suppressed at begin/claim).
-        try {
-            const parts = claimedRoles().map(([k, v]) => { const a = game.actors.get(v.actorId); return { name: v.actorName || a?.name || ROLE_LABEL[k], img: a?.img || a?.prototypeToken?.texture?.src || "", skill: ROLE_LABEL[k], total: v.total }; });
-            if (parts.length) window.DDBRollCards?.playGroupCinematic?.({ title: "Travel Turn", sub: governing?.label || `${route.length} hex${route.length === 1 ? "" : "es"}`, participants: parts });
-        } catch (e) { warn("travel group cinematic failed", e); }
+        emitTravelGroup(false);             // rolls are in → reveal the group cinematic as the RESULT (clears the persistent progress one)
         syncRollSuppress(false);            // rolls are in → release the suppress
         let navEffect = "arrive";
         for (const [k, v] of claimedRoles()) {
@@ -4258,6 +4263,7 @@ const Turn = (() => {
         if (s.total != null && skillId && s.skillId && skillId !== s.skillId) return;
         s.total = Number(total);
         s.nat = Number.isFinite(nat) ? nat : null;
+        pulseTravelGroup();   // a roll landed → the group cinematic appears (first roll) / updates (subsequent)
         ui.notifications?.info(`${TITLE}: ${ROLE_LABEL[key]} (${s.actorName}) rolled ${total} on D&D Beyond.`);
         WayfarerPanel.renderExternal();
         maybeAutoResolve();
@@ -4878,10 +4884,12 @@ const WayfarerPanel = (() => {
                 <div class="cwf-section">
                     <div class="cwf-label">${isGM ? `<button class="cwf-tiny" data-action="set-party" title="Set the selected token as the party marker" style="margin-right:5px"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}Current hex</div>
                     <div class="cwf-here">${here}</div>
-                    ${isGM ? `<div class="cwf-danger-row"><span class="cwf-danger-l" title="Region DANGER — how often combat fires (doubled by day; biome adds on top; scout/pace adjust)"><i class="fa-solid fa-skull"></i> Danger</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${dangerNow === n ? "on" : ""}" data-action="camp-danger" data-n="${n}" title="Set region danger ${n}">${n}</button>`).join("")}</div></div>` : ""}
-                    ${isGM && cwfNewEngine() ? `<div class="cwf-danger-row"><span class="cwf-danger-l" title="CHALLENGE — skill-check DCs + encounter XP budget (decoupled from frequency)"><i class="fa-solid fa-gauge-high"></i> Challenge</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${cwfChallenge() === n ? "on" : ""}" data-action="set-challenge" data-n="${n}" title="Set Challenge ${n}">${n}</button>`).join("")}</div></div>
-                    <div class="cwf-danger-row"><span class="cwf-danger-l" title="WANTED / Heat — personal hunters find you; roads+rivers expose, deadly biomes hide, doubled at night, −1 per long rest"><i class="fa-solid fa-user-secret"></i> Wanted</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${cwfWanted() === n ? "on" : ""}" data-action="set-wanted" data-n="${n}" title="Set Wanted ${n}">${n}</button>`).join("")}</div></div>` : ""}
-                    ${isGM && cls && globalThis.CavrilEncounterStage ? `<button class="cwf-btn cwf-encounter" data-action="encounter-test" title="Test the encounter generator — roll a CR-scaled SRD encounter for the SELECTED token's hex (on a matched CZEPEKU battlemap if connected)"><i class="fa-solid fa-dice-d20"></i> Start random encounter</button>` : ""}
+                    ${isGM ? `<div class="cwf-dials"><div class="cwf-dials-hd"><i class="fa-solid fa-sliders"></i> Region dials${cwfNewEngine() ? "" : ` <span class="cwf-muted2">· legacy loop — only Danger applies</span>`}</div>
+                        <div class="cwf-danger-row" title="DANGER — how OFTEN combat fires (doubled by day; biome adds; scout & pace adjust). The frequency dial."><span class="cwf-danger-l"><i class="fa-solid fa-skull"></i> Danger</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${dangerNow === n ? "on" : ""}" data-action="camp-danger" data-n="${n}" title="Danger ${n}">${n}</button>`).join("")}</div></div>
+                        <div class="cwf-danger-row" title="CHALLENGE — how HARD it is: skill-check DCs + encounter XP budget. Decoupled from frequency."><span class="cwf-danger-l"><i class="fa-solid fa-gauge-high"></i> Challenge</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${cwfChallenge() === n ? "on" : ""}" data-action="set-challenge" data-n="${n}" title="Challenge ${n}">${n}</button>`).join("")}</div></div>
+                        <div class="cwf-danger-row" title="WANTED (your Heat) — notoriety. Personal hunters find you; roads & rivers expose, deadly biomes hide; doubled at night; −1 per long rest."><span class="cwf-danger-l"><i class="fa-solid fa-user-secret"></i> Wanted</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${cwfWanted() === n ? "on" : ""}" data-action="set-wanted" data-n="${n}" title="Wanted ${n}">${n}</button>`).join("")}</div></div>
+                    </div>` : ""}
+                    ${isGM && cls && globalThis.CavrilEncounterStage ? `<button class="cwf-btn cwf-encounter" data-action="encounter-test" title="Force a combat encounter NOW — a Challenge-scaled SRD fight for the SELECTED token's hex, auto-staged on a matched CZEPEKU battlemap. (Travel turns already roll one automatically via Danger.)"><i class="fa-solid fa-dice-d20"></i> Force encounter</button>` : ""}
                     ${(() => { const lk = isGM ? Tables.locationKeyFor(site?.name) : null; if (!lk) return ""; const ln = Tables.locationKeys().find(l => l.key === lk)?.name || site?.name; return `<button class="cwf-btn" data-action="explore-location" data-key="${esc(lk)}" title="This hex is a named set-piece — roll on its bespoke exploration table"><i class="fa-solid fa-dungeon"></i> Explore ${esc(ln)}</button>`; })()}
                 </div>
 
