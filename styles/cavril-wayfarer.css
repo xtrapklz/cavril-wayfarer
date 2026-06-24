@@ -278,6 +278,9 @@
 .cwf-cardbtn.cwf-primary:hover { background: color-mix(in srgb, var(--cwf-hard) 42%, var(--cwf-bg2)); }
 .cwf-cardbtn i { color: var(--cwf-accent); }
 .cwf-cardbtn.cwf-primary i { color: #fff; }
+.cwf-cardbtn[disabled] { opacity: .6; cursor: default; }
+.cwf-cardbtn.cwf-ready-pulse { animation: cwf-ready-pulse 1.3s ease-in-out infinite; }
+@keyframes cwf-ready-pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--cwf-hard) 55%, transparent); } 55% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--cwf-hard) 0%, transparent); } }
 .cwf-card-btn { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid rgba(189,169,232,.5); background: rgba(189,169,232,.16); color: #f4f4f4; font-weight: 700; letter-spacing: .04em; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .cwf-card-btn:hover { background: rgba(189,169,232,.3); }
 /* per-role result block */

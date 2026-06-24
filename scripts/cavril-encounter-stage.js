@@ -2473,6 +2473,15 @@
     // 1) Try to stage a CZEPEKU battlemap. If CZEPEKU isn't connected (or nothing matches),
     //    DON'T abort — fall back to the current scene so the SRD foes still get built.
     const autoEnter = opts.autoEnter ?? CFG.autoEnter ?? false;   // OFF = stage in background, enter manually
+    // Roll the FOES up front — they depend only on the hex, not the staged map — so the GM gets a "what's coming" prompt to
+    // narrate from WHILE the battlemap loads, long before the enter button lights up. Tokens drop later, once the scene exists.
+    let actors = [], foeTokens = [];
+    const gmIds = game.users.filter(u => u.isGM).map(u => u.id);
+    let _stagingMsg = null;
+    if ((opts.dropMonsters ?? CFG.dropMonsters) && type === "combat") { try { actors = await rollMonsters(cls); } catch (e) { warn("roll foes failed", e); } }
+    const hook = encounterHook(cls, actors);
+    const foeList = actors.map(a => esc(a.name)).join(", ") || "—";
+    if (!autoEnter && actors.length) { try { _stagingMsg = await ChatMessage.create({ content: cwfEnterCard(null, "", "", foeList, hook, !!opts.surprised, true), whisper: gmIds }); ui.notifications?.info(`Encounter incoming — ${actors.length} foe${actors.length === 1 ? "" : "s"}. Read the whispered prompt while the map loads.`); } catch (e) {} }
     let scene = null, pick = null, onFallback = false;
     if (opts.map ?? true) {
       try {
@@ -2508,17 +2517,13 @@
       if (partyTokens.length) log(`placed ${partyTokens.length} party tokens at centre.`);
     }
 
-    // 3) Roll + drop the SRD foes in strategic clusters AROUND the party (independent of CZEPEKU).
-    let actors = [], foeTokens = [];
-    if ((opts.dropMonsters ?? CFG.dropMonsters) && type === "combat") {
-      actors = await rollMonsters(cls);
-      if (actors.length) {
-        foeTokens = await dropFoesAround(scene, actors, center);
-        log(`dropped ${foeTokens.length}/${actors.length} foes around the party${onFallback ? " (current scene)" : ""}.`);
-        // Combat music switches NOW — at stage time, while the encounter loads — using the SAME dominant-foe-type logic as
-        // Begin Combat (user request), instead of waiting for Enter. _combatMusicScene stops Enter/combatStart restarting it.
-        try { if (CFG.playCombatMusic) { playCombatMusic(actors); _combatMusicScene = scene.id; } } catch (e) { warn("stage combat music failed", e); }
-      }
+    // 3) Drop the (already-rolled) SRD foes in strategic clusters AROUND the party (independent of CZEPEKU).
+    if (actors.length && (opts.dropMonsters ?? CFG.dropMonsters) && type === "combat") {
+      foeTokens = await dropFoesAround(scene, actors, center);
+      log(`dropped ${foeTokens.length}/${actors.length} foes around the party${onFallback ? " (current scene)" : ""}.`);
+      // Combat music switches NOW — at stage time, while the encounter loads — using the SAME dominant-foe-type logic as
+      // Begin Combat (user request), instead of waiting for Enter. _combatMusicScene stops Enter/combatStart restarting it.
+      try { if (CFG.playCombatMusic) { playCombatMusic(actors); _combatMusicScene = scene.id; } } catch (e) { warn("stage combat music failed", e); }
     }
 
     // 4) Add EVERYONE to the encounter, roll NPC initiative, and call for initiative.
@@ -2547,19 +2552,18 @@
     // 6) ENTER. Auto-enter → reveal now (tension + SFX + cinematic). Otherwise the scene is
     //    built in the background and a chat card lets you move there when you're ready.
     const ready = `${pick ? `"${pick.item.name}" · ` : ""}${partyTokens.length} party + ${actors.length} foe${actors.length === 1 ? "" : "s"}`;
-    const hook = encounterHook(cls, actors);
-    const gmIds = game.users.filter(u => u.isGM).map(u => u.id);
     if (autoEnter || onFallback) {
       if (hook) ChatMessage.create({ content: `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-dragon"></i> <span>Encounter</span></div><div class="cwf-card-bd">${cwfReadAloud(hook)}</div></div>`, whisper: gmIds }).catch(() => {});
       revealEncounter(cls?.label || ebiome, !!opts.surprised);
       { const _c = (game.combats?.contents || []).find(x => x.scene?.id === scene.id); if (_c && !_c.started) CavrilAdvance.push({ id: "es-begin", label: "Begin combat", icon: "fa-swords", priority: 20, tone: "danger", run: () => (game.combats?.contents || []).find(x => x.scene?.id === scene.id)?.startCombat?.() }); }
       ui.notifications?.info(`Encounter ready: ${ready} — roll for initiative, then begin combat.`);
     } else {
-      const foeList = actors.map(a => esc(a.name)).join(", ") || "—";
       const surprised = !!opts.surprised, enterLabel = surprised ? "Ambush!" : "Roll for initiative", enterIcon = surprised ? "fa-dragon" : "fa-dice-d20";
-      ChatMessage.create({ content: cwfEnterCard(scene.id, pick?.item.name || "Encounter", ready, foeList, hook, surprised), whisper: gmIds }).catch(() => {});
+      // Scene is READY: turn the "incoming" prompt into the live, pulsing enter card (in place), and light the Advance button.
+      const readyCard = cwfEnterCard(scene.id, pick?.item.name || "Encounter", ready, foeList, hook, surprised, false);
+      try { if (_stagingMsg) await _stagingMsg.update({ content: readyCard }); else await ChatMessage.create({ content: readyCard, whisper: gmIds }); } catch (e) { warn("ready card failed", e); }
       CavrilAdvance.push({ id: "es-enter", label: enterLabel, icon: enterIcon, priority: 20, tone: "danger", run: () => enterEncounter(scene.id) });
-      ui.notifications?.info(`Encounter ready in the background — narrate the moment, then hit "${enterLabel}".`);
+      ui.notifications?.info(`Encounter ready — narrate the moment, then hit "${enterLabel}".`);
     }
     try { await logEncounter({ scene, actors, cls, when, weather, pick, fallback: onFallback }); } catch (e) {}
     return { scene, actors, foeTokens, partyTokens, combat, journal, pick, cls, when, season, weather, fallback: onFallback };
@@ -2608,11 +2612,15 @@
     } catch (e) { return ""; }
   }
   const cwfReadAloud = (hook) => hook ? `<div class="cwf-readaloud"><span class="cwf-readaloud-tag">Read aloud</span>${esc(hook)}</div>` : "";
-  const cwfEnterCard = (sceneId, mapName, ready, foes, hook, surprised = false) => `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-dragon"></i> <span>Encounter ready</span></div>
-    <div class="cwf-card-bd">${cwfReadAloud(hook)}<div class="cwf-card-row"><span class="cwf-card-l">Map</span><span class="cwf-card-v">${esc(mapName)}</span></div>
-    <div class="cwf-card-row"><span class="cwf-card-l">Ready</span><span class="cwf-card-v">${esc(ready)}</span></div>
-    <div class="cwf-card-row"><span class="cwf-card-l">Foes</span><span class="cwf-card-v">${foes}</span></div></div>
-    <div class="cwf-card-foot"><div class="cwf-cardbtns"><button class="cwf-cardbtn cwf-primary" data-cwf="enter-encounter" data-scene="${sceneId}"><i class="fa-solid ${surprised ? "fa-dragon" : "fa-dice-d20"}"></i> ${surprised ? "Ambush!" : "Roll for initiative"}</button></div></div></div>`;
+  // staging=true → the "what's coming" prompt the GM reads WHILE the battlemap loads (foes + read-aloud known, map not yet,
+  // button disabled). staging=false → the same card UPDATED in place once the scene is ready: map filled in, button live + pulsing.
+  const cwfEnterCard = (sceneId, mapName, ready, foes, hook, surprised = false, staging = false) => `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid ${staging ? "fa-hourglass-half" : "fa-dragon"}"></i> <span>${staging ? "Encounter incoming" : "Encounter ready"}</span></div>
+    <div class="cwf-card-bd">${cwfReadAloud(hook)}<div class="cwf-card-row"><span class="cwf-card-l">Foes</span><span class="cwf-card-v">${foes}</span></div>
+    ${mapName ? `<div class="cwf-card-row"><span class="cwf-card-l">Map</span><span class="cwf-card-v">${esc(mapName)}</span></div>` : ""}
+    <div class="cwf-card-row"><span class="cwf-card-l">${staging ? "Status" : "Ready"}</span><span class="cwf-card-v">${staging ? `<i class="fa-solid fa-spinner fa-spin"></i> staging the battlefield…` : esc(ready)}</span></div></div>
+    <div class="cwf-card-foot"><div class="cwf-cardbtns">${staging
+      ? `<button class="cwf-cardbtn" disabled><i class="fa-solid fa-hourglass-half"></i> Staging…</button>`
+      : `<button class="cwf-cardbtn cwf-primary cwf-ready-pulse" data-cwf="enter-encounter" data-scene="${sceneId}"><i class="fa-solid ${surprised ? "fa-dragon" : "fa-dice-d20"}"></i> ${surprised ? "Ambush!" : "Roll for initiative"}</button>`}</div></div></div>`;
   // Move to a staged scene on demand (the chat-card button), then fire the reveal.
   async function enterEncounter(sceneId) {
     if (!game.user.isGM) return;

@@ -442,11 +442,10 @@ const Store = (() => {
         g.register(MOD, "forcedMarch", { name: "Forced march exhaustion", hint: "Pushing the pace risks a level of exhaustion (CON save). A long rest at dawn eases it.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "forcedMarchPace", { name: "Forced march triggers on", hint: "Which travel pace counts as forcing the march.", scope: "world", config: true, type: String, choices: { fast: "Fast pace only", normalFast: "Normal & Fast", all: "Any pace" }, default: "fast" });
         g.register(MOD, "forcedMarchDC", { name: "Forced march save DC", hint: "CON save DC each member rolls after a forced-march day (fail = +1 exhaustion).", scope: "world", config: true, type: Number, default: 10 });
-        // Starvation & thirst → exhaustion (5e survival rules), resolved at camp. Wayfarer
-        // only APPLIES exhaustion here; the native dnd5e long rest does the recovery.
-        g.register(MOD, "starveExhaustion", { name: "Starvation & thirst exhaustion", hint: "Going without food or water at camp exhausts the members who went short (5e survival), and blocks their long-rest exhaustion recovery.", scope: "world", config: true, type: Boolean, default: true });
-        g.register(MOD, "foodGraceDays", { name: "Days without food before hunger", hint: "Base days a member can go unfed before exhaustion (5e: this + their CON modifier, minimum 1). Water has no grace.", scope: "world", config: true, type: Number, default: 3 });
-        g.register(MOD, "thirstDC", { name: "Thirst save DC", hint: "CON save DC a member rolls on a night with no water (fail = +1 exhaustion).", scope: "world", config: true, type: Number, default: 15 });
+        // Starvation & thirst → exhaustion, resolved at camp. DETERMINISTIC (no saves): hunger past a flat reserve of
+        // days, thirst the moment you go dry. Wayfarer only APPLIES exhaustion; the native dnd5e long rest recovers it.
+        g.register(MOD, "starveExhaustion", { name: "Starvation & thirst exhaustion", hint: "Going without food or water at camp exhausts the members who went short, and blocks their long-rest exhaustion recovery. No dice — it just applies.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "foodGraceDays", { name: "Food reserve (days before hunger)", hint: "How many consecutive days a member can go unfed before the next dry day adds +1 exhaustion — a flat reserve, no CON math. Water has NO reserve: any night without water is +1 exhaustion immediately. Default 1.", scope: "world", config: true, type: Number, default: 1 });
         // Watch ↔ rest: a long watch shift BLOCKS that member's long-rest exhaustion
         // recovery (the native rest still restores HP / slots / hit dice).
         g.register(MOD, "watchRest", { name: "Watches cost exhaustion", hint: "Standing watch applies an exhaustion toll = the shift length ÷ the hours below (the dawn long rest gives 1 level back). They still recover HP / slots / hit dice. Off = the watch costs nothing.", scope: "world", config: true, type: Boolean, default: true });
@@ -1842,7 +1841,6 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
     if (!mem.length) return;
     const byId = new Map((consumeResult?.perMember || []).map(p => [p.id, p]));
     const graceBase = Math.max(0, Number(game.settings.get(MOD, "foodGraceDays")) || 0);
-    const thirstDC = Math.max(1, Number(game.settings.get(MOD, "thirstDC")) || 15);
     const watchSet = new Set(watchers || []);
     const n = watchSet.size;
     const watchLevels = cwfWatchLevels(n);
@@ -1852,24 +1850,17 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
     for (const a of mem) {
         const pm = byId.get(a.id);
         const fed = foraged || !!pm?.food, watered = foraged || !!pm?.water;
-        const conMod = a.system?.abilities?.con?.mod ?? 0;
-        const grace = Math.max(1, graceBase + conMod);
+        const grace = Math.max(0, graceBase);   // flat reserve days — no CON-mod, no saves: deterministic + simpler
         let lvl = a.system?.attributes?.exhaustion ?? 0;
         const before = lvl;
         let note = "";
-        // APPLY: hunger (past grace) + thirst (failed save).
+        // APPLY (DETERMINISTIC — no rolls): hunger past a flat reserve of `grace` days, and thirst the moment you go dry.
         if (starve) {
             let days = Number(a.getFlag?.(MOD, "daysNoFood")) || 0;
             if (fed) days = 0;
             else { days += 1; if (days > grace) { lvl = Math.min(6, lvl + 1); note += `🍖 hunger +1 (${days}d) `; } else note += `🍖 hungry ${days}/${grace}d `; }
             try { await a.setFlag?.(MOD, "daysNoFood", days); } catch { /* noop */ }
-            if (!watered) {
-                const con = a.system?.abilities?.con || {};
-                const bonus = Number.isFinite(con.save) ? con.save : (con.mod ?? 0);
-                const f = `1d20 ${bonus >= 0 ? "+" : "-"} ${Math.abs(bonus)}`;
-                let total = 0; try { total = (await new Roll(f).evaluate()).total; } catch { total = Math.ceil(Math.random() * 20) + bonus; }
-                if (total < thirstDC) { lvl = Math.min(6, lvl + 1); note += `💧 thirst +1 (CON ${total} vs ${thirstDC}) `; } else note += `💧 parched, saved ${total} `;
-            }
+            if (!watered) { lvl = Math.min(6, lvl + 1); note += `💧 no water +1 `; }   // thirst is immediate — your body can't bank water like food
         }
         // APPLY: the watch toll — the dawn rest's −1 nets it to gain / no-recovery / recover.
         const isWatcher = watchSet.has(a.id);
@@ -5198,7 +5189,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
         const SECTIONS = [
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
-            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "wakeHour", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "foodGraceDays", "thirstDC", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
+            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "wakeHour", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "foodGraceDays", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
             ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
         ];
