@@ -3825,6 +3825,7 @@ const ROLE_SKILLS = {
 const Turn = (() => {
     let active = false, step = "active", route = [], governing = null, pace = "normal", boat = false, turnTok = null;
     let held = false;   // set when the GM manually edits a roll value → suspends auto-resolve so they can adjust freely
+    let _suppressed = [];   // actorIds currently suppressed in ddb-roll-cards — their travel-role CHECK cinematics fold into the group cinematic
     const newSlot = () => ({ actorId: null, actorName: null, skillId: null, total: null, nat: null, outcome: null, result: null });
     const roles = { navigate: newSlot(), scout: newSlot(), forage: newSlot() };
 
@@ -3850,6 +3851,7 @@ const Turn = (() => {
         CourseOverlay.draw(null, route);    // re-light the locked route during the check
         Tables.ensureAll();                 // make sure editable tables exist
         WayfarerPanel.render();
+        syncRollSuppress(true);             // fold each player's travel-role roll into the group cinematic (suppress the individual ones)
     }
 
     function partyMembers() { return Party.members(); }
@@ -3861,6 +3863,16 @@ const Turn = (() => {
         for (const k of Object.keys(roles)) out[k] = { actorId: roles[k].actorId, skillId: roles[k].skillId };
         game.settings.set(MOD, "lastRoles", out).catch(e => warn("save roles failed", e));
     }
+    // Mirror the claimed role actors into ddb-roll-cards' suppress list so each player's travel-role CHECK doesn't pop
+    // its OWN cinematic — they collect into ONE group cinematic on resolve. Releases the previous set first (re-claims).
+    function syncRollSuppress(on) {
+        try {
+            const W = window.DDBRollCards;
+            if (_suppressed.length) W?.suppressRoll?.(_suppressed, false);
+            _suppressed = on ? claimedRoles().map(([, v]) => v.actorId).filter(Boolean) : [];
+            if (_suppressed.length) W?.suppressRoll?.(_suppressed, true);
+        } catch (e) { warn("roll-suppress sync failed", e); }
+    }
 
     function claim(roleKey, actorId) {
         // A character holds only one role — release them elsewhere first.
@@ -3869,6 +3881,7 @@ const Turn = (() => {
         Object.assign(roles[roleKey], { actorId: a?.id || null, actorName: a?.name || null, total: null, nat: null, outcome: null });
         saveRoles();
         WayfarerPanel.render();
+        syncRollSuppress(true);             // re-sync the suppress set after a (re)claim
     }
     function setSkill(roleKey, skillId) { roles[roleKey].skillId = skillId; saveRoles(); WayfarerPanel.render(); }
     function rollState(roleKey) {
@@ -3947,6 +3960,12 @@ const Turn = (() => {
 
     async function resolve() {
         const dc = governing?.dc ?? 10;
+        // The party's travel-role rolls land as ONE group cinematic (the individual ones were suppressed at begin/claim).
+        try {
+            const parts = claimedRoles().map(([k, v]) => { const a = game.actors.get(v.actorId); return { name: v.actorName || a?.name || ROLE_LABEL[k], img: a?.img || a?.prototypeToken?.texture?.src || "", skill: ROLE_LABEL[k], total: v.total }; });
+            if (parts.length) window.DDBRollCards?.playGroupCinematic?.({ title: "Travel Turn", sub: governing?.label || `${route.length} hex${route.length === 1 ? "" : "es"}`, participants: parts });
+        } catch (e) { warn("travel group cinematic failed", e); }
+        syncRollSuppress(false);            // rolls are in → release the suppress
         let navEffect = "arrive";
         for (const [k, v] of claimedRoles()) {
             const tier = outcomeFor(v) || "fail";
