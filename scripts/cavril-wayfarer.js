@@ -5182,6 +5182,44 @@ Hooks.on("updateSetting", (setting) => {
     // tableIds churns when starter tables are created mid-turn — not display-relevant.
     if (setting?.key?.startsWith?.(`${MOD}.`) && setting.key !== `${MOD}.tableIds`) { WayfarerPanel.renderExternal(); BiomeBadge.update(); }
 });
+
+// Tidy the Settings panel (DOM-only, registrations untouched): group Wayfarer's settings under labelled headers, and
+// HIDE the scattered per-event sound pickers — they now live in one place (Maestro → Sound Assignments), including the
+// Encounter-Stage + Cities ones rendered in the same panel. Easier to manage; the unified menu is the single source.
+Hooks.on("renderSettingsConfig", (app, html) => {
+    try {
+        const root = html?.[0] ?? html; if (!root?.querySelector) return;
+        const rowFor = (key) => root.querySelector(`[name="${MOD}.${key}"]`)?.closest(".form-group");
+        const rowNS = (ns) => root.querySelector(`[name="${ns}"]`)?.closest(".form-group");
+        // Single-sound assignments now consolidated into Maestro's Sound Assignments menu — remove the duplicates here.
+        const HIDE = ["sfxDangerUp", "sfxDangerDown", "sfxCineEncounter", "sfxCineInitiative", "sfxCineDusk", "sfxCineNight", "sfxCineDawn", "sfxCineWeather", "sfxCineTravel", "sfxFoot", "sfxCart", "sfxBoat"];
+        for (const k of HIDE) rowFor(k)?.remove();
+        for (const ns of ["cavril-encounter-stage.esEncounterSfx", "cavril-cityhud.cityAmbience"]) rowNS(ns)?.remove();
+        const SECTIONS = [
+            ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
+            ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
+            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "wakeHour", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "foodGraceDays", "thirstDC", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
+            ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
+            ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
+        ];
+        const anchor = rowFor("dangerDefault"); if (!anchor?.parentNode) return;   // not the Wayfarer section → bail
+        const parent = anchor.parentNode;
+        const marker = document.createComment("cwf-settings"); parent.insertBefore(marker, anchor);
+        const frag = document.createDocumentFragment();
+        for (const [label, keys] of SECTIONS) {
+            const rows = keys.map(rowFor).filter(Boolean); if (!rows.length) continue;
+            const h = document.createElement("h3"); h.textContent = label;
+            h.style.cssText = "margin:14px 0 6px;padding-bottom:3px;border-bottom:1px solid var(--color-border-light-primary,#0003);font-weight:700";
+            frag.appendChild(h);
+            for (const row of rows) frag.appendChild(row);   // appendChild MOVES the existing row into the ordered fragment
+        }
+        const note = document.createElement("p");
+        note.style.cssText = "font-size:11px;opacity:.72;margin:8px 0 0";
+        note.innerHTML = `🔊 Per-event sounds are assigned in <b>Maestro → Sound Assignments</b>.`;
+        frag.appendChild(note);
+        parent.insertBefore(frag, marker); parent.removeChild(marker);
+    } catch (e) { warn("settings grouping skipped", e); }
+});
 // Party supplies are summed from sheets — refresh the panel when an item changes.
 for (const h of ["createItem", "updateItem", "deleteItem"]) Hooks.on(h, () => WayfarerPanel.renderExternal());
 
