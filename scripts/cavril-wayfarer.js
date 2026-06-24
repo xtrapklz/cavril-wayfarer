@@ -1449,7 +1449,7 @@ function cwfTrekCardHTML() {
     const march = t.marchHTML ? `<div class="cwf-night-sec">Forced march${t.marchSub ? ` · ${cwfEsc(t.marchSub)}` : ""}</div>${t.marchHTML}` : "";
     const clock = `<span class="cwf-card-clock">Hex ${t.idx}/${t.route.length} · ${cwfClockLabel()}</span>`;
     let foot;
-    if (t.done) foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-flag-checkered"></i> ${t.halted ? "Halted" : "Arrived"} · ${cwfClockLabel()}</span>${t.halted ? cwfStageBtn() : ""}<button class="cwf-cardbtn cwf-primary" data-cwf="camp"><i class="fa-solid fa-campground"></i> Make camp</button></div>`;
+    if (t.done) foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-flag-checkered"></i> ${t.halted ? "Halted" : "Arrived"} · ${cwfClockLabel()}</span>${t.halted ? cwfStageBtn(!t.scoutGood) : ""}<button class="cwf-cardbtn cwf-primary" data-cwf="camp"><i class="fa-solid fa-campground"></i> Make camp</button></div>`;
     else if (t.running) foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-person-walking-arrow-right"></i> Travelling… · ${cwfClockLabel()}</span><button class="cwf-cardbtn cwf-primary" data-cwf="pause"><i class="fa-solid fa-pause"></i> Pause</button></div>`;
     else foot = `<div class="cwf-cardbtns">${clock}<button class="cwf-cardbtn cwf-primary" data-cwf="auto" title="Travel until something happens (biome / weather / time change or an encounter)"><i class="fa-solid fa-play"></i> Travel</button><button class="cwf-cardbtn" data-cwf="step" title="Advance one hex"><i class="fa-solid fa-shoe-prints"></i> Step</button><button class="cwf-cardbtn" data-cwf="stop" title="Stop here for the day"><i class="fa-solid fa-flag-checkered"></i> Stop</button></div>`;
     return cwfCardShell(t.icon, t.title, (t.header || "") + log + march, { sub: t.sub, footerHTML: foot });
@@ -3778,7 +3778,7 @@ const cwfRow = (label, value) => `<div class="cwf-card-row"><span class="cwf-car
 // "Build encounter" button — only when the Encounter Stage module is installed. Rolls
 // SRD foes + combat music for the current hex, on a matched CZEPEKU map if connected
 // (else the current scene). data-cwf="stage".
-const cwfStageBtn = () => globalThis.CavrilEncounterStage ? `<button class="cwf-cardbtn" data-cwf="stage" title="Build this encounter — SRD foes + combat music, on a matched CZEPEKU battlemap if connected"><i class="fa-solid fa-dragon"></i> Build encounter</button>` : "";
+const cwfStageBtn = (surprised = false) => globalThis.CavrilEncounterStage ? `<button class="cwf-cardbtn" data-cwf="stage" data-surprised="${surprised ? 1 : 0}" title="Build this encounter — SRD foes + combat music, on a matched CZEPEKU battlemap if connected"><i class="fa-solid fa-dragon"></i> Build encounter</button>` : "";
 // Best-guess travel SFX from YOUR Cavril: Maestro soundboard — walks your sound library, matches footstep/cart/boat cues
 // by filename, and SETS your Wayfarer travel-sound settings to them (your current values, not the code defaults). A
 // standalone helper you run by hand: CavrilWayfarer.suggestSounds(). GM-only; Maestro must have a soundboard folder set.
@@ -3799,16 +3799,17 @@ async function cwfSuggestSounds() {
         { key: "sfxFoot", label: "Footsteps (walking)", kw: ["footstep", "foot", "step", "walk", "march", "boot", "stroll", "hike", "trek", "tramp", "trudge", "wood"] },
         { key: "sfxCart", label: "Cart / road (riding)", kw: ["cart", "wagon", "wheel", "carriage", "horse", "hoof", "trot", "gallop", "ride", "caravan"] },
         { key: "sfxBoat", label: "Boat / water (rowing)", kw: ["boat", "row", "oar", "paddle", "sail", "ship", "splash", "water", "river", "stream", "lake", "creak"] },
+        { key: "esEncounterSfx", label: "Encounter alert", ref: true, kw: ["alert", "danger", "ambush", "sting", "horn", "drum", "alarm", "battle", "tension", "menace", "threat", "growl", "encounter", "boom", "braam", "monster"] },
     ];
     const score = (hay, kw) => kw.reduce((s, k) => s + (hay.includes(k) ? 1 : 0), 0);
-    const set = [], miss = [];
+    const set = [], miss = []; let travelOn = false;
     for (const c of CATS) {
         let best = null, bs = 0;
         for (const f of files) { const s = score(f.hay, c.kw); if (s > bs) { bs = s; best = f; } }
-        if (best) { try { await game.settings.set(MOD, c.key, best.src); set.push(`${c.label} → ${best.src.split("/").pop()}`); } catch (e) {} }
+        if (best) { const val = c.ref ? "sfx:" + best.src : best.src; try { await game.settings.set(MOD, c.key, val); set.push(`${c.label} → ${best.src.split("/").pop()}`); if (!c.ref) travelOn = true; } catch (e) {} }
         else miss.push(c.label);
     }
-    if (set.length) { try { await game.settings.set(MOD, "travelSfx", true); } catch (e) {} }
+    if (travelOn) { try { await game.settings.set(MOD, "travelSfx", true); } catch (e) {} }
     const body = (set.length ? set.map(s => `<div>✓ ${cwfEsc(s)}</div>`).join("") : "<div>no matches found</div>")
         + (miss.length ? `<div class="cwf-muted2" style="margin-top:5px">No match for: ${cwfEsc(miss.join(", "))} — set those by hand (or rename a soundboard file to include the keyword).</div>` : "");
     try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-music", "Travel sounds set from Maestro", body, { sub: `${files.length} cues scanned` }) }); } catch (e) {}
@@ -4180,7 +4181,7 @@ const Camp = (() => {
             // for the GM to run it. A button wakes the party to dawn afterwards.
             Music.combat(true);
             Cinematic.broadcast({ icon: "fa-dragon", title: "Ambushed!", subtitle: `${cls?.label || "the wild"} · hour ${firstHour}`, tone: "encounter" });
-            const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span>${cwfStageBtn()}<button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn"><i class="fa-solid fa-sun"></i> Resolved → wake at dawn</button></div>`;
+            const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span>${cwfStageBtn(!firstWatcher)}<button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn"><i class="fa-solid fa-sun"></i> Resolved → wake at dawn</button></div>`;
             const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "", footerHTML: foot }) }).catch(() => null);
             nightDawnPending = { nextDay, msgId: msg?.id };
             cwfCampFinalize("Night watch — resolve the encounter, then wake at dawn.");   // collapse the camp card so its Resolve can't re-fire
@@ -4855,7 +4856,7 @@ function wireCardButtons(root) {
                 }
                 if (act === "dawn") { advanceToDawn(); return; }
                 if (!game.user.isGM) return;
-                if (act === "stage") { await globalThis.CavrilEncounterStage?.stageEncounter?.(); }   // build CZEPEKU map + foes + music
+                if (act === "stage") { await globalThis.CavrilEncounterStage?.stageEncounter?.({ surprised: el.dataset.surprised === "1" }); }   // build CZEPEKU map + foes + music; pass the surprise so a Scout-failed / unwatched encounter fires the Ambush cinematic
                 else if (act === "enter-encounter") { await globalThis.CavrilEncounterStage?.enterEncounter?.(el.dataset.scene); }   // move to the staged scene
                 else if (act === "return-overworld") { await returnToOrigin(el.dataset.scene); }   // back to the overworld after the fight
                 else if (act === "step") await cwfDoHexStep();

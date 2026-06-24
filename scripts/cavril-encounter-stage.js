@@ -643,7 +643,10 @@
     const urls = cat?.urls || {}; const byId = {}; for (const it of (cat?.items || [])) byId[it.id] = it;
     const tmpl = urls.mapPreview || urls.mapThumbnail || urls.preview || "";
     log(`map grid: preview template = ${tmpl || "(none — run mapPreviewProbe())"}`);
-    const thumbFor = (m) => { try { const it = byId[m.id]; if (!it || !tmpl) return ""; const nat = naturalBase(it) || it.variants?.[0]; if (!nat) return ""; return tmpl.replace(/<[^>]*>/, encodeURIComponent(nat.id)); } catch (e) { return ""; } };
+    // CZEPEKU preview URL: template "…/map/preview/<MAP_ID>.webp" where <MAP_ID> = slug(mapName + " " + variantName) + "-" + variant.id
+    // (32-char hex). Prefer a "Day" variant for a clean, lit preview; fall back to the first variant.
+    const cwfSlug = (s) => String(s || "").toLowerCase().replace(/['‘’]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    const thumbFor = (m) => { try { const it = byId[m.id]; if (!it || !tmpl) return ""; const vs = it.variants || []; const v = vs.find(x => /\bday\b/i.test(x.name)) || vs[0]; if (!v) return ""; return tmpl.replace("<MAP_ID>", `${cwfSlug(`${it.name} ${v.name}`)}-${v.id}`); } catch (e) { return ""; } };
     const base = {}; for (const m of (game.settings.get(MOD, "esBiomeIndex")?.maps || [])) base[m.id] = m;
     const BIOMES = Object.keys(BIOME_TAGS);
     const byBiome = {}; for (const m of rows) (byBiome[m.biome] ??= []).push(m);
