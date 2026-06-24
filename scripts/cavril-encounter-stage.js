@@ -2181,6 +2181,9 @@
       if (actors.length) {
         foeTokens = await dropFoesAround(scene, actors, center);
         log(`dropped ${foeTokens.length}/${actors.length} foes around the party${onFallback ? " (current scene)" : ""}.`);
+        // Combat music switches NOW — at stage time, while the encounter loads — using the SAME dominant-foe-type logic as
+        // Begin Combat (user request), instead of waiting for Enter. _combatMusicScene stops Enter/combatStart restarting it.
+        try { if (CFG.playCombatMusic) { playCombatMusic(actors); _combatMusicScene = scene.id; } } catch (e) { warn("stage combat music failed", e); }
       }
     }
 
@@ -2205,7 +2208,7 @@
       const label = [when, season, weather].filter(Boolean).join(" · ");
       journal = await documentEncounter(originScene, scene, { cls, foes: actors, pick, notePos, label });
     }
-    try { if (!onFallback) await scene.setFlag("cavril-wayfarer", "encounterBiome", cls?.label || ebiome); } catch { /* noop */ }
+    try { if (!onFallback) { await scene.setFlag("cavril-wayfarer", "encounterBiome", cls?.label || ebiome); await scene.setFlag("cavril-wayfarer", "encounterSurprised", !!opts.surprised); } } catch { /* noop */ }
 
     // 6) ENTER. Auto-enter → reveal now (tension + SFX + cinematic). Otherwise the scene is
     //    built in the background and a chat card lets you move there when you're ready.
@@ -2214,7 +2217,7 @@
     const gmIds = game.users.filter(u => u.isGM).map(u => u.id);
     if (autoEnter || onFallback) {
       if (hook) ChatMessage.create({ content: `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-dragon"></i> <span>Encounter</span></div><div class="cwf-card-bd">${cwfReadAloud(hook)}</div></div>`, whisper: gmIds }).catch(() => {});
-      revealEncounter(cls?.label || ebiome);
+      revealEncounter(cls?.label || ebiome, !!opts.surprised);
       { const _c = (game.combats?.contents || []).find(x => x.scene?.id === scene.id); if (_c && !_c.started) CavrilAdvance.push({ id: "es-begin", label: "Begin combat", icon: "fa-swords", priority: 20, tone: "danger", run: () => (game.combats?.contents || []).find(x => x.scene?.id === scene.id)?.startCombat?.() }); }
       ui.notifications?.info(`Encounter ready: ${ready} — roll for initiative, then begin combat.`);
     } else {
@@ -2229,14 +2232,20 @@
 
   // The dramatic reveal as you move into the fight: tension music + alert SFX + the Ambush
   // cinematic, then a beat later the "Roll for Initiative!" cinematic (its own tone/SFX).
-  function revealEncounter(biomeLabel) {
+  function revealEncounter(biomeLabel, surprised = false) {
     if (!(CFG.tensionOnStage ?? true)) return;
     const Cine = globalThis.CavrilWayfarer?.Cinematic;
     try { globalThis.Maestro?.tension?.(); } catch (e) { warn("tension shift failed", e); }
     const sfx = cwfRef(game.settings.get(MOD, "esEncounterSfx"));
     if (sfx) { try { globalThis.Maestro?.triggerRef?.(sfx); } catch (e) { warn("encounter sfx failed", e); } }
-    try { Cine?.broadcast?.({ icon: "fa-dragon", title: "Ambush!", subtitle: biomeLabel || "", tone: "encounter" }); } catch (e) { warn("encounter cinematic failed", e); }
-    try { setTimeout(() => { try { Cine?.broadcast?.({ icon: "fa-dice-d20", title: "Roll for Initiative!", subtitle: "", tone: "initiative" }); } catch { /* noop */ } }, 2600); } catch { /* noop */ }
+    // Only call it an AMBUSH when the party was actually surprised (Scout failed / no watch). Otherwise go straight to
+    // "Roll for Initiative!" — not every encounter is an ambush. v0.55.67.
+    if (surprised) {
+      try { Cine?.broadcast?.({ icon: "fa-dragon", title: "Ambush!", subtitle: biomeLabel || "", tone: "encounter" }); } catch (e) { warn("ambush cinematic failed", e); }
+      try { setTimeout(() => { try { Cine?.broadcast?.({ icon: "fa-dice-d20", title: "Roll for Initiative!", subtitle: "", tone: "initiative" }); } catch { /* noop */ } }, 2600); } catch { /* noop */ }
+    } else {
+      try { Cine?.broadcast?.({ icon: "fa-dice-d20", title: "Roll for Initiative!", subtitle: biomeLabel || "", tone: "initiative" }); } catch (e) { warn("initiative cinematic failed", e); }
+    }
   }
   // A short read-aloud "boxed text" hook for an encounter, generated from the biome + the rolled foes. Generic and
   // socketable — sets the scene without assuming campaign specifics; the GM reads it to the table.
@@ -2282,7 +2291,7 @@
     // Battle music starts HERE, on the transition INTO the map — set the vibe while everyone rolls initiative; we then
     // stay in it through Begin Combat (onCombatStart sees _combatMusicScene set and won't restart).
     try {
-      if (CFG.playCombatMusic) {
+      if (CFG.playCombatMusic && _combatMusicScene !== scene.id) {   // stage-time already started it for this scene → don't restart
         let foes = (cb?.combatants?.contents || cb?.combatants || []).map(c => c.actor).filter(a => a && !a.hasPlayerOwner);
         if (!foes.length) foes = (scene.tokens?.contents || scene.tokens || []).map(t => t.actor).filter(a => a && !a.hasPlayerOwner);
         if (foes.length) { playCombatMusic(foes); _combatMusicScene = scene.id; }
@@ -2290,7 +2299,7 @@
     } catch (e) { warn("enter combat music failed", e); }
     CavrilAdvance.clear("es-enter");   // we're in → drop the Enter button, offer Begin combat next
     if (cb && !cb.started) CavrilAdvance.push({ id: "es-begin", label: "Begin combat", icon: "fa-swords", priority: 20, tone: "danger", run: () => (game.combats?.contents || []).find(x => x.scene?.id === scene.id)?.startCombat?.() });
-    revealEncounter(scene.getFlag?.("cavril-wayfarer", "encounterBiome") || "");
+    revealEncounter(scene.getFlag?.("cavril-wayfarer", "encounterBiome") || "", !!scene.getFlag?.("cavril-wayfarer", "encounterSurprised"));
   }
 
   // ===== SETTINGS ==========================================================
