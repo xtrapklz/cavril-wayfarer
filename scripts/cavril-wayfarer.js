@@ -431,7 +431,8 @@ const Store = (() => {
         // a danger-scaled chance of a real event (combat/puzzle/site) that halts the day.
         g.register(MOD, "travelEvents", { name: "Per-hex travel events", hint: "As the party crosses each hex, roll for an event — mostly mundane flavor, with a danger-scaled chance of a real encounter that halts the day. Whispered to the GM to narrate.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "playerTravelCard", { name: "Player arrival card", hint: "On a peaceful arrival, post a clean PUBLIC card for the players — where the road brought them and the day's mood, with no mechanics, events, or spoilers. The full hex-by-hex trek card stays GM-only. (Nothing posts when an encounter halts the day — the cinematic + map handle that.)", scope: "world", config: true, type: Boolean, default: true });
-        g.register(MOD, "eventScale", { name: "Travel event die (x/N per hex)", hint: "Denominator for the per-hex event check. x = scene Danger (0-5) + biome danger (0-2). Lower N = more events. Default 20.", scope: "world", config: true, type: Number, default: 20 });
+        g.register(MOD, "eventScale", { name: "Travel event die (x/N per hex)", hint: "Denominator for the per-hex event check. x = scene Danger (0-5) + biome danger (0-2). Lower N = more events. Default 20. (CLASSIC engine only — ignored when the new engine below is on.)", scope: "world", config: true, type: Number, default: 20 });
+        g.register(MOD, "newEngine", { name: "⚙ New encounter engine (two dials + pressures)", hint: "Switch the per-hex travel loop to the new model: a THREAT dial (how often combat fires) and a CHALLENGE dial (XP budget), instead of one Danger value — with pace shifting combat/setbacks/narrative, an anti-sluggish texture floor, and a gentler 2024-style difficulty curve (capped, no group multiplier). Both dials default from your existing Danger, so nothing breaks. OFF = the classic single-danger loop. The Wanted/heat layer arrives in the next update.", scope: "world", config: true, type: Boolean, default: false });
         g.register(MOD, "encounterHours", { name: "Hours an encounter costs", hint: "Default time a halting encounter adds to the clock (you can adjust in the moment). Default 1.", scope: "world", config: true, type: Number, default: 1 });
         // Off by default → travel checks roll a single straight die. On → Slow gives
         // advantage, Fast disadvantage, and weather can hamper a role.
@@ -1334,6 +1335,24 @@ const effectiveWeather = () => (MiniCal.key() ?? Store.sceneState().weather) || 
 // Scene night/encounter danger score (shared by day travel + night camp).
 const cwfDangerScore = () => Store.sceneState().danger ?? (Number(game.settings.get(MOD, "dangerDefault")) || 0);
 
+// ── New encounter engine (R1): two dials + the four pressures. Gated by the "newEngine" setting so it A/Bs against
+// the classic single-danger loop. Both dials default from the legacy `danger` so existing scenes carry over unchanged.
+const cwfNewEngine = () => { try { return !!game.settings.get(MOD, "newEngine"); } catch { return false; } };
+// Threat (0-5) — combat FREQUENCY only. Explicit dial wins; else legacy danger + biome (matches the old combat input).
+function cwfThreat(cls) {
+    const s = Store.sceneState() || {};
+    if (Number.isFinite(s.threat)) return Math.max(0, Math.min(5, s.threat));
+    const base = Number.isFinite(s.danger) ? s.danger : (Number(game.settings.get(MOD, "dangerDefault")) || 0);
+    return Math.max(0, Math.min(5, base + Danger.biomeMod(cls)));
+}
+// Challenge (0-5) — XP BUDGET only. Explicit dial wins; else legacy danger (difficulty never folded biome in).
+function cwfChallenge() {
+    const s = Store.sceneState() || {};
+    const v = Number.isFinite(s.challenge) ? s.challenge : (Number.isFinite(s.danger) ? s.danger : (Number(game.settings.get(MOD, "dangerDefault")) || 0));
+    return Math.max(0, Math.min(5, v));
+}
+const cwfPaceMod = (pace) => ((Domain.PACE?.[pace]?.spaces ?? 2) - 2);   // slow −1 · normal 0 · fast +1
+
 // Average party level — context for the encounter hook a future generator uses.
 function cwfAvgPartyLevel() {
     try { const ms = Party.members(); if (!ms.length) return 1; return Math.max(1, Math.round(ms.reduce((a, m) => a + (m.system?.details?.level ?? 1), 0) / ms.length)); }
@@ -1379,8 +1398,9 @@ function cwfWeightedPick(weights) {
 // chance of a real event — narrative (continue) or combat/puzzle/site (HALT).
 // RETURNS the content for the travel card (the stepper renders it) — it no longer
 // posts its own card. { halt, hours?, line, icon?, label?, tag?, cinematic? }.
-async function cwfHexEvent(cls, { scoutGood = false } = {}) {
+async function cwfHexEvent(cls, { scoutGood = false, pace = "normal" } = {}) {
     if (!game.user.isGM || !game.settings.get(MOD, "travelEvents")) return { halt: false, line: "the way is clear." };
+    if (cwfNewEngine()) { try { return await cwfHexEventV2(cls, { scoutGood, pace }); } catch (e) { warn("new-engine hex event failed; using flavour", e); try { return { halt: false, line: await Tables.drawFlavor(cls) }; } catch { return { halt: false, line: "the way is clear." }; } } }
     const scale = Math.max(2, Number(game.settings.get(MOD, "eventScale")) || 20);
     const biome = cls?.label || "Wilderness";
     let x = cwfDangerScore() + Danger.biomeMod(cls);
@@ -1402,6 +1422,42 @@ async function cwfHexEvent(cls, { scoutGood = false } = {}) {
     const text = kind === "combat" ? await cwfEncounterText(cls, { when: "day", surprised: !scoutGood }) : await Tables.drawEvent(kind, cls);
     const tag = (kind === "combat" && !scoutGood) ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
     return { halt: true, hours, kind, icon: meta.icon, label: meta.label, tag, line: text, cinematic: { icon: meta.icon, title: meta.label, subtitle: biome, tone: "encounter" } };
+}
+
+// The new four-pressure resolver (R1 — Heat/wanted lands in R2). One d100 per hex, partitioned across Threat / Haste /
+// Discovery; the remainder is texture. Spikes are capped at 60% so ≥40% of hexes always stay free-flowing texture
+// (anti-sluggish: even a deathzone keeps moving). Pace bends all three — Fast raises combat + setbacks and cuts
+// narrative; Slow does the reverse. Returns the same { halt, hours?, line, … } shape the stepper renders.
+async function cwfHexEventV2(cls, { scoutGood = false, pace = "normal" } = {}) {
+    const biome = cls?.label || "Wilderness";
+    const pm = cwfPaceMod(pace), scout = scoutGood ? 1 : 0, road = cls?.infrastructure ? 1 : 0;
+    const T = cwfThreat(cls);
+    let pCombat  = 4 * Math.max(0, T + pm - scout);
+    let pSetback = pace === "fast" ? 10 : pace === "slow" ? 0 : 3;
+    let pDisc    = Math.max(0, 12 - 6 * pm + 4 * road);
+    const sum = pCombat + pSetback + pDisc, CAP = 60;
+    if (sum > CAP) { const k = CAP / sum; pCombat *= k; pSetback *= k; pDisc *= k; }   // anti-sluggish cap → texture ≥ 40%
+    const hoursOf = () => Math.max(0, Number(game.settings.get(MOD, "encounterHours")) || 1);
+    const roll = Math.random() * 100; let acc = 0;
+    // THREAT → a fight. Halts; surprised if the scout missed.
+    if (roll < (acc += pCombat)) {
+        const text = await cwfEncounterText(cls, { when: "day", surprised: !scoutGood });
+        const tag = !scoutGood ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
+        return { halt: true, hours: hoursOf(), kind: "combat", icon: "fa-dragon", label: "Encounter!", tag, line: text, cinematic: { icon: "fa-dragon", title: "Encounter!", subtitle: biome, tone: "encounter" } };
+    }
+    // HASTE → a rushing setback (skill-check obstacle). Halts. Mostly a Fast-pace cost; never happens at Slow.
+    if (roll < (acc += pSetback)) {
+        return { halt: true, hours: hoursOf(), kind: "puzzle", icon: "fa-puzzle-piece", label: "A Setback", line: await Tables.drawEvent("puzzle", cls), cinematic: { icon: "fa-puzzle-piece", title: "A Setback", subtitle: biome, tone: "encounter" } };
+    }
+    // DISCOVERY → narrative / merchant (continue) or a site (halts to explore). Merchants weighted up on roads.
+    if (roll < (acc += pDisc)) {
+        const kind = cwfWeightedPick({ narrative: 5, trade: road ? 6 : 2, site: 2 });
+        if (kind === "trade") MerchantEconomy.onTrade(cls);
+        if (kind === "site") return { halt: true, hours: hoursOf(), kind: "site", icon: "fa-dungeon", label: "A Discovery", line: await Tables.drawEvent("site", cls), cinematic: { icon: "fa-dungeon", title: "A Discovery", subtitle: biome, tone: "encounter" } };
+        return { halt: false, line: await Tables.drawEvent(kind, cls) };
+    }
+    // TEXTURE → an arc beat (~32%) or a biome flavour line.
+    return { halt: false, line: (await Tables.nextThreadBeat(cls)) || await Tables.drawFlavor(cls) };
 }
 
 // ---- STEPPED TRAVEL — one chat card the GM advances hex-by-hex, at their own pace.
@@ -1523,7 +1579,7 @@ async function cwfAdvanceHex(auto) {
     const weatherChanged = !!(wxAfter && wxBefore && wxAfter !== wxBefore);
     const todChanged = !!(todBefore && tod.key !== todBefore);
     t.lastBiome = biome;
-    const ev = await cwfHexEvent(cls, { scoutGood: t.scoutGood });
+    const ev = await cwfHexEvent(cls, { scoutGood: t.scoutGood, pace: t.pace });
     const encounter = !!ev?.halt;
     const isSignal = biomeChanged || weatherChanged || todChanged || encounter;
     // AUTO + nothing notable → keep gliding, growing the current leg.
@@ -4065,6 +4121,7 @@ const Camp = (() => {
 
     const nightHours = () => Math.max(1, Number(game.settings.get(MOD, "nightHours")) || 8);
     const dangerScore = () => Store.sceneState().danger ?? (Number(game.settings.get(MOD, "dangerDefault")) || 0);
+    const challengeScore = () => cwfChallenge();   // public seam for EncounterStage's difficulty (the Challenge dial)
 
     function begin(note = "", consumeResult = null, foraged = false) {
         if (!game.user.isGM) return;
@@ -4214,7 +4271,7 @@ const Camp = (() => {
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
 
     return {
-        begin, setDanger, toggleWatcher, moveWatcher, setAllWatch, resolveNight, wakeAtDawn, cancel, watcherForHour, shiftHours, dangerScore, nightHours,
+        begin, setDanger, toggleWatcher, moveWatcher, setAllWatch, resolveNight, wakeAtDawn, cancel, watcherForHour, shiftHours, dangerScore, challengeScore, nightHours,
         get active() { return active; }, get watchers() { return watchers; }, get supplyNote() { return supplyNote; },
         get nightEncounterPending() { return !!nightDawnPending; }
     };
