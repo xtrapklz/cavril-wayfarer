@@ -1514,6 +1514,7 @@ function cwfTrekCardHTML() {
     return cwfCardShell(t.icon, t.title, (t.header || "") + log + march, { sub: t.sub, footerHTML: foot });
 }
 async function cwfTrekRefresh() {
+    cwfSyncAdvance();   // keep the universal centre button in step with the trek (Next hex / done)
     const t = cwfTrek; if (!t?.msgId) return;
     const msg = game.messages.get(t.msgId);
     if (msg) { try { await msg.update({ content: cwfTrekCardHTML() }); } catch (e) { warn("trek card update failed", e); } }
@@ -1661,6 +1662,22 @@ async function cwfFinishTravel() {
     WayfarerPanel.renderExternal(); BiomeBadge.update();
     cwfRefreshVision();   // travel ended (maybe at dusk/night) → recompute vision now so the map never stays black
     try { cwfMaybeOfferSettlement(); } catch (e) { warn("settlement arrival check failed", e); }
+}
+
+// Feed the universal CavrilAdvance button (the movable centre button Core/EncounterStage also use) with the current
+// TRAVEL step — so the GM can step through ROUTE EXPLORATION ("Next hex") and conduct a TRAVEL TURN ("Resolve turn")
+// from the same button as combat. Self-managing: pushes the live step, clears it when nothing's pending. GM-only.
+function cwfSyncAdvance() {
+    const ADV = globalThis.CavrilAdvance; if (!ADV?.push || !game.user?.isGM) return;
+    try {
+        const t = cwfTrek;
+        if (t && !t.done && !t.running && !t.halted && t.idx < t.route.length) {
+            ADV.push({ id: "cwf-next-hex", label: "Next hex", icon: "fa-shoe-prints", priority: 12, run: () => cwfDoHexStep() });
+        } else { ADV.clear?.("cwf-next-hex"); }
+        const ready = (() => { try { return Turn.active && Turn.step === "active" && Turn.allRolled(); } catch (e) { return false; } })();
+        if (ready) ADV.push({ id: "cwf-resolve", label: "Resolve turn", icon: "fa-flag-checkered", priority: 12, run: () => { try { Turn.resolve(); } catch (e) {} } });
+        else ADV.clear?.("cwf-resolve");
+    } catch (e) { /* noop */ }
 }
 
 // On arrival, if the destination sits on an Augur site whose linked scene is a Cavril CityHUD city,
@@ -1854,17 +1871,23 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
         let lvl = a.system?.attributes?.exhaustion ?? 0;
         const before = lvl;
         let note = "";
-        // APPLY (DETERMINISTIC — no rolls): hunger past a flat reserve of `grace` days, and thirst the moment you go dry.
+        // EXPOSURE (DETERMINISTIC — no rolls). Going without provisions is ONE level of exhaustion, food OR water (deprivation
+        // is deprivation — it doesn't double). Hunger has a flat `grace`-day reserve; thirst bites the moment you go dry.
+        let survExh = 0;
         if (starve) {
             let days = Number(a.getFlag?.(MOD, "daysNoFood")) || 0;
             if (fed) days = 0;
-            else { days += 1; if (days > grace) { lvl = Math.min(6, lvl + 1); note += `🍖 hunger +1 (${days}d) `; } else note += `🍖 hungry ${days}/${grace}d `; }
+            else { days += 1; if (days > grace) { survExh = 1; note += `🍖 hunger (${days}d) `; } else note += `🍖 hungry ${days}/${grace}d `; }
             try { await a.setFlag?.(MOD, "daysNoFood", days); } catch { /* noop */ }
-            if (!watered) { lvl = Math.min(6, lvl + 1); note += `💧 no water +1 `; }   // thirst is immediate — your body can't bank water like food
+            if (!watered) { survExh = 1; note += `💧 no water `; }   // thirst is immediate — your body can't bank water like food
         }
-        // APPLY: the watch toll — the dawn rest's −1 nets it to gain / no-recovery / recover.
         const isWatcher = watchSet.has(a.id);
-        if (isWatcher && watchLevels > 0) { lvl = Math.min(6, lvl + watchLevels); note += `🛡 watch +${watchLevels} (~${shiftH}h shift) `; }
+        const watchExh = (isWatcher && watchLevels > 0) ? watchLevels : 0;
+        if (watchExh) note += `🛡 watch (~${shiftH}h) `;
+        // CAP the night's total exhaustion at +2, so one rough night can't spike a character toward death. The dawn rest
+        // gives 1 back (unless they went without — see below), so a struggling party degrades ~1/night, recoverable.
+        const gain = Math.min(2, survExh + watchExh);
+        if (gain) { lvl = Math.min(6, before + gain); note += `· +${gain} exhaustion `; }
         if (lvl !== before) { try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { warn("apply exhaustion failed", e); } }
         // BLOCK the dawn rest's exhaustion recovery for anyone who went without food/water.
         const blocked = !fed || !watered;
@@ -4158,7 +4181,7 @@ const Turn = (() => {
             if (parts.length) window.DDBRollCards?.playGroupCinematic?.({ title: "Travel Turn", sub: governing?.label || `${route.length} hex${route.length === 1 ? "" : "es"}`, participants: parts, progress: !!progress });
         } catch (e) { warn("travel group cinematic failed", e); }
     }
-    const pulseTravelGroup = () => { try { if (step === "active" && claimedRoles().some(([, v]) => v.total != null)) emitTravelGroup(true); } catch (e) { /* noop */ } };
+    const pulseTravelGroup = () => { try { if (step === "active" && claimedRoles().some(([, v]) => v.total != null)) emitTravelGroup(true); } catch (e) { /* noop */ } try { cwfSyncAdvance(); } catch (e) { /* noop */ } };
     // Once every claimed role has a result (rolled in Foundry or arrived from D&D Beyond),
     // resolve the turn on its own — the players' rolls are the trigger, no GM click.
     function maybeAutoResolve() {
@@ -4230,6 +4253,7 @@ const Turn = (() => {
         active = false; step = "active"; route = []; governing = null; turnTok = null; held = false;
         for (const k of Object.keys(roles)) roles[k] = newSlot();
         CourseOverlay.clear();
+        try { cwfSyncAdvance(); } catch (e) { /* clear the travel-turn Advance step */ }
         WayfarerPanel.render(); BiomeBadge.update();
     }
 
@@ -4436,6 +4460,7 @@ const Camp = (() => {
 const WayfarerPanel = (() => {
     let root = null;
     let collapsedRef = false;
+    let _dialsOpen = false;   // the region dials tuck behind the "Region" chip; this remembers the expand state per session
 
     function isOpen() { return !!root && document.body.contains(root); }
 
@@ -4512,6 +4537,17 @@ const WayfarerPanel = (() => {
             switch (action) {
                 case "set-party": await Canvasry.setPartyToken(); break;
                 case "encounter-test": await globalThis.CavrilEncounterStage?.stageEncounter?.({ token: Canvasry.activeToken() }); break;
+                case "toggle-dials": _dialsOpen = !_dialsOpen; render(); return;
+                case "open-party": {
+                    try {
+                        const pid = canvas?.scene?.getFlag?.(MOD, "partyToken");
+                        const tok = (pid && canvas.tokens?.get(pid)) || Canvasry.activeToken();
+                        const actor = tok?.actor;
+                        if (actor) actor.sheet?.render(true);
+                        else ui.notifications?.warn(`${TITLE}: no party marker — select the party token, then the ⌖ button by “Current hex”.`);
+                    } catch (e) { warn("open party failed", e); }
+                    break;
+                }
                 case "explore-location": await Tables.exploreLocation(btn.dataset.key); break;
                 case "toggle-music": await toggleMusic(); break;
                 case "reset-journey": case "end-journey": await endJourney(); break;
@@ -4852,13 +4888,17 @@ const WayfarerPanel = (() => {
                 <div class="cwf-section">
                     <div class="cwf-label">${isGM ? `<button class="cwf-tiny" data-action="set-party" title="Set the selected token as the party marker" style="margin-right:5px"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}Current hex</div>
                     <div class="cwf-here">${here}</div>
-                    ${isGM ? `<div class="cwf-dials"><div class="cwf-dials-hd"><i class="fa-solid fa-sliders"></i> Region dials</div>
+                    ${isGM ? `<div class="cwf-chips">
+                        <button class="cwf-chip chip-region ${_dialsOpen ? "on" : ""}" data-action="toggle-dials" title="Region dials — Danger · Challenge · Wanted. Click to tune."><i class="fa-solid fa-sliders"></i> Region <span class="cwf-chip-v"><span style="color:#d8665a">${dangerNow}</span> <span style="color:#4f9fe6">${cwfChallenge()}</span> <span style="color:#f2c64b">${cwfWanted()}</span></span></button>
+                        <button class="cwf-chip chip-party" data-action="open-party" title="Open the party marker's character sheet"><i class="fa-solid fa-users"></i> Party</button>
+                        ${cls && globalThis.CavrilEncounterStage ? `<button class="cwf-chip chip-encounter" data-action="encounter-test" title="Force a combat encounter now — a Challenge-scaled fight rolled from this biome's roster, auto-staged on a matched battlemap. (Travel turns already roll one via Danger.)"><i class="fa-solid fa-dragon"></i> Encounter</button>` : ""}
+                        ${(() => { const lk = Tables.locationKeyFor(site?.name); if (!lk) return ""; const ln = Tables.locationKeys().find(l => l.key === lk)?.name || site?.name; return `<button class="cwf-chip chip-explore" data-action="explore-location" data-key="${esc(lk)}" title="${esc(ln)} — roll on its bespoke exploration table"><i class="fa-solid fa-dungeon"></i> Explore</button>`; })()}
+                    </div>
+                    ${_dialsOpen ? `<div class="cwf-dials">
                         <div class="cwf-danger-row" title="DANGER — how OFTEN combat fires (doubled by day; biome adds; scout & pace adjust). The frequency dial."><span class="cwf-danger-l"><i class="fa-solid fa-skull"></i> Danger</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${dangerNow === n ? "on" : ""}" data-action="camp-danger" data-n="${n}" title="Danger ${n}">${n}</button>`).join("")}</div></div>
                         <div class="cwf-danger-row" title="CHALLENGE — how HARD it is: skill-check DCs + encounter XP budget. Decoupled from frequency."><span class="cwf-danger-l"><i class="fa-solid fa-gauge-high"></i> Challenge</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${cwfChallenge() === n ? "on" : ""}" data-action="set-challenge" data-n="${n}" title="Challenge ${n}">${n}</button>`).join("")}</div></div>
                         <div class="cwf-danger-row" title="WANTED (your Heat) — notoriety. Personal hunters find you; roads & rivers expose, deadly biomes hide; doubled at night; −1 per long rest."><span class="cwf-danger-l"><i class="fa-solid fa-star"></i> Wanted</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${cwfWanted() === n ? "on" : ""}" data-action="set-wanted" data-n="${n}" title="Wanted ${n}">${n}</button>`).join("")}</div></div>
-                    </div>` : ""}
-                    ${isGM && cls && globalThis.CavrilEncounterStage ? `<button class="cwf-btn cwf-encounter" data-action="encounter-test" title="Force a combat encounter NOW — a Challenge-scaled SRD fight for the SELECTED token's hex, auto-staged on a matched CZEPEKU battlemap. (Travel turns already roll one automatically via Danger.)"><i class="fa-solid fa-dice-d20"></i> Force encounter</button>` : ""}
-                    ${(() => { const lk = isGM ? Tables.locationKeyFor(site?.name) : null; if (!lk) return ""; const ln = Tables.locationKeys().find(l => l.key === lk)?.name || site?.name; return `<button class="cwf-btn" data-action="explore-location" data-key="${esc(lk)}" title="This hex is a named set-piece — roll on its bespoke exploration table"><i class="fa-solid fa-dungeon"></i> Explore ${esc(ln)}</button>`; })()}
+                    </div>` : ""}` : ""}
                 </div>
 
                 ${Camp.active ? campCard(dis, cls) : Turn.active ? turnCard(dis) : travelSection}
