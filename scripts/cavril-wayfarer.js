@@ -423,6 +423,7 @@ const Store = (() => {
         g.register(MOD, "lastWatch", { scope: "world", config: false, type: Array, default: [] });
         g.register(MOD, "lastOverworld", { scope: "world", config: false, type: String, default: "" });   // the overworld we left for an encounter — the robust Return target
         g.register(MOD, "journeyThreads", { scope: "world", config: false, type: String, default: "{}" });   // JSON {threadId: nextBeatIndex} — journey-storyline progress; CavrilWayfarer.resetJourney() restarts it
+        g.register(MOD, "esTrophies", { scope: "world", config: false, type: Array, default: [] });   // combat-trophy keys the party holds (phase c) — gate thread beats via thread.trophies:{index:key}; CavrilWayfarer.grantTrophy(key)
         g.register(MOD, "merchantCards", { name: "Spawn merchant shop cards", hint: "When a roadside 'trade' travel beat fires, also whisper the GM a generated merchant — a rotating shop with curated stock (priced, scaled to party level) and sometimes a quest hook. Off = just the flavour line. Roll one by hand any time with CavrilWayfarer.merchant().", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "merchantPortraits", { name: "Merchant portraits (CZEPEKU)", hint: "Give each generated merchant a fitting character portrait pulled from your CZEPEKU token library (matched by trade — a robed alchemist, a hooded fence, a grizzled smith). Needs the CZEPEKU module connected. Off = no portrait.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "merchantTables", { scope: "world", config: false, type: Object, default: {} });   // {merchantTypeKey: RollTable uuid} — per-type SRD stock tables (CavrilWayfarer.buildMerchantTables())
@@ -1478,14 +1479,17 @@ async function cwfHeatBeat(cls, biome, { surprised = false } = {}) {
 }
 // Discovery (roll 20) — a clue, a way down, a glint of treasure. Non-halting; the GM acts on it when they choose. NOT capped.
 async function cwfDiscoveryBeat(cls) {
-    return { halt: false, kind: "discovery", line: `<i class="fa-solid fa-gem"></i> ${await Tables.drawEvent("site", cls)}` };
+    const biome = cls?.biome || "unknown";
+    return { halt: false, kind: "discovery", line: `<i class="fa-solid fa-gem"></i> ${await Tables.drawBiome(biome, "site", () => Tables.drawEvent("site", cls))}` };
 }
-// The biome TABLE (the non-combat/non-heat/non-discovery rolls): mostly flavour, sometimes an arc beat, sometimes a merchant.
+// The biome TABLE (the non-combat/non-heat/non-discovery rolls): mostly flavour, sometimes an arc beat, sometimes a
+// merchant. Flavour/merchant draw from the per-biome EDITABLE RollTables (so the GM's edits show up in play).
 async function cwfTableBeat(cls, { road = false } = {}) {
+    const biome = cls?.biome || "unknown";
     const kind = cwfWeightedPick({ flavor: 12, arc: 3, trade: road ? 2 : 1 });
-    if (kind === "trade") { MerchantEconomy.onTrade(cls); return { halt: false, line: await Tables.drawEvent("trade", cls) }; }
+    if (kind === "trade") { MerchantEconomy.onTrade(cls); return { halt: false, line: await Tables.drawBiome(biome, "trade", () => Tables.drawEvent("trade", cls)) }; }
     if (kind === "arc") { const beat = await Tables.nextThreadBeat(cls); if (beat) return { halt: false, line: beat }; }
-    return { halt: false, line: await Tables.drawFlavor(cls) };
+    return { halt: false, line: await Tables.drawBiome(biome, "flavor", () => Tables.drawFlavor(cls)) };
 }
 
 // ---- STEPPED TRAVEL — one chat card the GM advances hex-by-hex, at their own pace.
@@ -3188,7 +3192,10 @@ const Tables = (() => {
             "The ferryman again — or his twin — at a rapid you cannot run. 'The river remembers the bell, and the bell remembers a debt. Pay it at the source, or the source pays itself, out of you.' He points upstream, toward the forest.",
             "The river's source: a spring welling cold and clear from beneath the great forest. Something is owed here. What you give the spring, the river will remember kindly. What you take from it, the river will come, in time, to collect."
         ] },
-        { id: "hunt", title: "The Hunt", gate: null, beats: [
+        // EXAMPLE trophy gate (phase c): the final confrontation (beat index 4) won't surface until the party has claimed
+        // the fey-silver arrow from the huntsman's camp — call CavrilWayfarer.grantTrophy("fey-silver-arrow") when they do.
+        // Schema: `trophies: { <beatIndex>: "<key>" }` gates a beat; `requires: ["<threadId>"]` gates a whole thread on others being DONE.
+        { id: "hunt", title: "The Hunt", gate: null, trophies: { 4: "fey-silver-arrow" }, beats: [
             "A carcass the size of a cart, dragged half from the water and half-eaten: antlers like white branches, hide that still faintly glows. Nothing native did this. Nothing native could.",
             "A huntsman with a fey-silver arrow and a fever-wound that will not close. 'It came down the river out of the Dreaming. I put three shafts in it; it put this in me. It's going home — and so am I, one road or the other.'",
             "Tracks of the wounded thing glow faintly upriver toward the forest — and crossing them, the huntsman's, still following. (You could harvest the sign: a shed antler-tine that hums in the hand, a smear of luminous ichor that will not dry.)",
@@ -3371,6 +3378,52 @@ const Tables = (() => {
     const drawFlavor = (cls) => pickFor(cls, "flavor", FLAVOR_ENTRIES);
     const drawEvent = (kind, cls) => pickFor(cls, kind, EVENT_SEEDS[kind] || EVENT_SEEDS.narrative);
 
+    // PER-BIOME editable RollTables — REAL world documents (folder "Cavril: Wayfarer", named "Cavril {Biome} — {Kind}"),
+    // seeded from the in-code BIOME_THEMES + generic seeds, id-cached in tableIds.biome[biome][kind]. The d20 engine draws
+    // from THESE, so the GM's edits stick. Created lazily on first draw, or all at once via buildEncounterTables().
+    const _capW = (s) => String(s || "").charAt(0).toUpperCase() + String(s || "").slice(1);
+    async function ensureBiomeTable(biome, kind) {
+        biome = String(biome || "unknown").toLowerCase();
+        const map = ids(); const cached = map.biome?.[biome]?.[kind];
+        if (cached) { const t = game.tables.get(cached); if (t) return t; }
+        if (!game.user.isGM) return null;
+        let folder = game.folders?.find(f => f.type === "RollTable" && f.name === FOLDER);
+        try { if (!folder) folder = await Folder.create({ name: FOLDER, type: "RollTable" }); } catch (e) { /* optional */ }
+        const seed = kind === "flavor" ? FLAVOR_ENTRIES : (EVENT_SEEDS[kind] || EVENT_SEEDS.narrative || []);
+        const entries = Array.from(new Set([...(BIOME_THEMES[biome]?.[kind] || []), ...seed].filter(Boolean))).slice(0, 60);
+        if (!entries.length) return null;
+        try {
+            const results = entries.map((t, i) => ({ type: CONST.TABLE_RESULT_TYPES?.TEXT ?? 0, text: t, weight: 1, range: [i + 1, i + 1] }));
+            const tbl = await RollTable.create({ name: `Cavril ${_capW(biome)} — ${_capW(kind)}`, formula: `1d${entries.length}`, folder: folder?.id, results, replacement: true, displayRoll: true });
+            const m2 = ids(); m2.biome ??= {}; m2.biome[biome] ??= {}; m2.biome[biome][kind] = tbl.id; await game.settings.set(MOD, "tableIds", m2);
+            return tbl;
+        } catch (e) { warn(`could not create ${biome}/${kind} table`, e); return null; }
+    }
+    async function drawBiome(biome, kind, fb) {
+        try { const t = await ensureBiomeTable(biome, kind); if (!t) return await fb(); const res = await t.draw({ displayChat: false }); const r = res?.results?.[0]; return (r?.description ?? r?.name ?? r?.text) || (await fb()); }
+        catch (e) { return await fb(); }
+    }
+    // Build EVERY biome's flavour/site/trade table up front so they exist to edit. CavrilWayfarer.buildEncounterTables().
+    async function buildEncounterTables() {
+        if (!game.user.isGM) return 0; let n = 0;
+        for (const biome of Object.keys(BIOME_THEMES)) for (const kind of ["flavor", "site", "trade"]) { try { if (await ensureBiomeTable(biome, kind)) n++; } catch (e) {} }
+        ui.notifications?.info(`${TITLE}: ${n} per-biome encounter tables in the "${FOLDER}" RollTables folder — edit them freely; the engine draws from them.`);
+        return n;
+    }
+
+    // COMBAT-TROPHY fetch-quest gates (engine v2, phase c). The party's held trophies live in the esTrophies world
+    // setting (array of keys). grantTrophy adds one (GM-granted, or a future hunt drop); a thread `requires` other threads
+    // to be DONE before it unlocks, and a beat in `trophies:{index:key}` won't fire until the party holds that trophy.
+    const trophies = () => { try { return game.settings.get(MOD, "esTrophies") || []; } catch (e) { return []; } };
+    const hasTrophy = (k) => trophies().map(x => String(x).toLowerCase()).includes(String(k || "").toLowerCase());
+    async function grantTrophy(key) {
+        if (!game.user.isGM || !key) return; const k = String(key).trim();
+        const t = trophies(); if (t.map(x => String(x).toLowerCase()).includes(k.toLowerCase())) return;
+        t.push(k); await game.settings.set(MOD, "esTrophies", t);
+        ui.notifications?.info(`${TITLE}: trophy claimed — "${k}". Quest beats gated on it can now advance.`);
+    }
+    async function dropTrophy(key) { if (!game.user.isGM || !key) return; await game.settings.set(MOD, "esTrophies", trophies().filter(x => String(x).toLowerCase() !== String(key).toLowerCase())); }
+
     // JOURNEY THREADS — advance one interconnected storyline beat (~32% of mundane-flavor beats), in sequence, building
     // toward the Dreaming Forest. State (next-beat index per thread) lives in the journeyThreads world setting. Gated
     // threads only fire on matching terrain. Weighted to favour continuing a story already in motion. GM-only.
@@ -3389,11 +3442,20 @@ const Tables = (() => {
     }
     const gateMatches = (gate, cls) => !gate || (Array.isArray(gate) ? gate : [gate]).some(g => hexTags(cls).includes(g));
     const MAX_CONCURRENT = 3;   // keep at most ~3 storylines in motion at once → coherence, not a thin spray across dozens
+    const threadDone = (st, t) => (st[t.id] || 0) >= t.beats.length;
+    // A thread is eligible only when: not finished · its hex gate matches · (UNLOCK GRAPH) every thread in its `requires`
+    // is DONE · (TROPHY GATE) the beat about to fire isn't waiting on a combat trophy the party doesn't hold yet.
+    function threadEligible(t, st, cls) {
+        if (threadDone(st, t) || !gateMatches(t.gate, cls)) return false;
+        if (Array.isArray(t.requires) && !t.requires.every(r => { const rt = JOURNEY_THREADS.find(x => x.id === r); return rt && threadDone(st, rt); })) return false;
+        const needs = t.trophies?.[st[t.id] || 0];
+        return !(needs && !hasTrophy(needs));
+    }
     async function nextThreadBeat(cls) {
         try {
             if (!game.user.isGM || Math.random() >= 0.32) return null;
             const st = threadState();
-            const eligible = JOURNEY_THREADS.filter(t => (st[t.id] || 0) < t.beats.length && gateMatches(t.gate, cls));
+            const eligible = JOURNEY_THREADS.filter(t => threadEligible(t, st, cls));
             if (!eligible.length) return null;
             const started = eligible.filter(t => (st[t.id] || 0) > 0), fresh = eligible.filter(t => !(st[t.id] || 0));
             // advance a story already in motion unless there's both room under the cap and a die-roll to open a new arc
@@ -3405,7 +3467,16 @@ const Tables = (() => {
         } catch (e) { warn("journey thread beat failed", e); return null; }
     }
     async function resetJourney() { if (!game.user.isGM) return; await game.settings.set(MOD, "journeyThreads", "{}"); ui.notifications?.info(`${TITLE}: journey threads reset — every storyline begins anew.`); }
-    function journeyStatus() { const st = threadState(); const rows = JOURNEY_THREADS.map(t => ({ title: t.title, gate: Array.isArray(t.gate) ? t.gate.join("/") : (t.gate || "any"), beat: (st[t.id] || 0), of: t.beats.length, done: (st[t.id] || 0) >= t.beats.length })); console.table(rows); return rows; }
+    function journeyStatus() {
+        const st = threadState();
+        const rows = JOURNEY_THREADS.map(t => {
+            const i = st[t.id] || 0, done = i >= t.beats.length;
+            const locked = Array.isArray(t.requires) && !t.requires.every(r => { const rt = JOURNEY_THREADS.find(x => x.id === r); return rt && (st[rt.id] || 0) >= rt.beats.length; });
+            const needs = t.trophies?.[i];
+            return { title: t.title, gate: Array.isArray(t.gate) ? t.gate.join("/") : (t.gate || "any"), beat: i, of: t.beats.length, done, requires: (t.requires || []).join("/") || "—", locked: locked || false, trophyGate: needs ? (hasTrophy(needs) ? `${needs} ✓` : `${needs} ✗`) : "—" };
+        });
+        console.log(`%c[${TITLE}] Journey threads · trophies held: ${trophies().join(", ") || "none"}`, "color:#caa6ff"); console.table(rows); return rows;
+    }
     // Rebuild the travel flavor/event/trade RollTables from the CURRENT seeds — applies the enriched content to an
     // existing world (the tables are created once and cached by id, so new seeds don't appear until rebuilt). Overwrites GM edits to those tables.
     async function reseed() {
@@ -3418,7 +3489,7 @@ const Tables = (() => {
         ui.notifications?.info(`${TITLE}: travel flavor / event / trade tables rebuilt from the latest seeds.`);
     }
 
-    return { ensureAll, draw, ensureEncounter, drawEncounter, drawFlavor, drawEvent, reseed, nextThreadBeat, resetJourney, journeyStatus, DEFS, FOLDER };
+    return { ensureAll, draw, ensureEncounter, drawEncounter, drawFlavor, drawEvent, drawBiome, ensureBiomeTable, buildEncounterTables, reseed, nextThreadBeat, resetJourney, journeyStatus, grantTrophy, dropTrophy, trophies, hasTrophy, DEFS, FOLDER };
 })();
 
 /* =========================================================================
@@ -4928,6 +4999,10 @@ Hooks.once("ready", () => {
         suggestSounds: () => cwfSuggestSounds(),                                                     // best-guess travel SFX from your Maestro soundboard → sets sfxFoot/sfxCart/sfxBoat
         automation: (mode) => cwfApplyAutomation(mode),
         journeyStatus: () => Tables.journeyStatus(),
+        grantTrophy: (k) => Tables.grantTrophy(k),          // the party claims a combat trophy → unlocks gated quest beats
+        dropTrophy: (k) => Tables.dropTrophy(k),
+        trophies: () => Tables.trophies(),
+        buildEncounterTables: () => Tables.buildEncounterTables(),   // create the per-biome EDITABLE flavour/site/trade RollTables
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, _installed: true
     };
     // Phase-transition cinematics broadcast from the GM → every client plays them.
