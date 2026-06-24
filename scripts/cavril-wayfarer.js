@@ -1352,6 +1352,9 @@ function cwfChallenge() {
     return Math.max(0, Math.min(5, v));
 }
 const cwfPaceMod = (pace) => ((Domain.PACE?.[pace]?.spaces ?? 2) - 2);   // slow −1 · normal 0 · fast +1
+// Auto-stage encounters in the background the moment they fire (so the map preloads while you narrate), then one
+// "Roll for initiative / Ambush" button drops you in. OFF = the manual "Build encounter" button + lead-in cinematic.
+const cwfAutoStage = () => { try { return !!game.settings.get(MOD, "esAutoStage"); } catch { return false; } };
 
 // Average party level — context for the encounter hook a future generator uses.
 function cwfAvgPartyLevel() {
@@ -1505,7 +1508,7 @@ function cwfTrekCardHTML() {
     const march = t.marchHTML ? `<div class="cwf-night-sec">Forced march${t.marchSub ? ` · ${cwfEsc(t.marchSub)}` : ""}</div>${t.marchHTML}` : "";
     const clock = `<span class="cwf-card-clock">Hex ${t.idx}/${t.route.length} · ${cwfClockLabel()}</span>`;
     let foot;
-    if (t.done) foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-flag-checkered"></i> ${t.halted ? "Halted" : "Arrived"} · ${cwfClockLabel()}</span>${t.halted ? cwfStageBtn(!t.scoutGood) : ""}<button class="cwf-cardbtn cwf-primary" data-cwf="camp"><i class="fa-solid fa-campground"></i> Make camp</button></div>`;
+    if (t.done) foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-flag-checkered"></i> ${t.halted ? "Halted" : "Arrived"} · ${cwfClockLabel()}</span>${(t.halted && !cwfAutoStage()) ? cwfStageBtn(!t.scoutGood) : ""}<button class="cwf-cardbtn cwf-primary" data-cwf="camp"><i class="fa-solid fa-campground"></i> Make camp</button></div>`;
     else if (t.running) foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-person-walking-arrow-right"></i> Travelling… · ${cwfClockLabel()}</span><button class="cwf-cardbtn cwf-primary" data-cwf="pause"><i class="fa-solid fa-pause"></i> Pause</button></div>`;
     else foot = `<div class="cwf-cardbtns">${clock}<button class="cwf-cardbtn cwf-primary" data-cwf="auto" title="Travel until something happens (biome / weather / time change or an encounter)"><i class="fa-solid fa-play"></i> Travel</button><button class="cwf-cardbtn" data-cwf="step" title="Advance one hex"><i class="fa-solid fa-shoe-prints"></i> Step</button><button class="cwf-cardbtn" data-cwf="stop" title="Stop here for the day"><i class="fa-solid fa-flag-checkered"></i> Stop</button></div>`;
     return cwfCardShell(t.icon, t.title, (t.header || "") + log + march, { sub: t.sub, footerHTML: foot });
@@ -1603,7 +1606,11 @@ async function cwfAdvanceHex(auto) {
         t.lines.push(cwfHexLineHTML(off, t.idx, biome, weatherLabel, `<i class="fa-solid ${ev.icon}"></i> <b>${ev.label}</b>${ev.tag || ""} · +${ev.hours}h<br>${ev.line}`, true));
         t.halted = true;
         Music.combat(true);   // hostile beat → tension music (where the encounter generator will hook in)
-        if (ev.cinematic) Cinematic.broadcast(ev.cinematic);
+        // Auto-stage the battlemap in the BACKGROUND the instant combat fires, so it preloads while you narrate — then a
+        // single "Roll for initiative / Ambush" button drops you in (the reveal cinematic plays on entry, not now).
+        const _autoStage = ev.kind === "combat" && cwfAutoStage() && !!globalThis.CavrilEncounterStage;
+        if (_autoStage) { try { globalThis.CavrilEncounterStage.stageEncounter({ surprised: !t.scoutGood, token: canvas.tokens?.get(t.tokId) }); } catch (e) { warn("auto-stage failed", e); } }
+        if (ev.cinematic && !_autoStage) Cinematic.broadcast(ev.cinematic);   // suppress the lead-in when auto-staging
     } else {
         const _ln = ev?.line || "the way is clear."; const _thread = /^✦/.test(_ln);   // journey-thread beats read as prose → their own purple style, drop the "—"
         t.lines.push(cwfHexLineHTML(off, t.idx, biome, weatherLabel, _thread ? cwfEsc(_ln) : `— ${_ln}`, false, _thread ? "cwf-ln-thread" : ""));
@@ -4237,8 +4244,11 @@ const Camp = (() => {
             // fired — this is where the auto-encounter generator will build it), and wait
             // for the GM to run it. A button wakes the party to dawn afterwards.
             Music.combat(true);
-            Cinematic.broadcast({ icon: "fa-dragon", title: "Ambushed!", subtitle: `${cls?.label || "the wild"} · hour ${firstHour}`, tone: "encounter" });
-            const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span>${cwfStageBtn(!firstWatcher)}<button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn"><i class="fa-solid fa-sun"></i> Resolved → wake at dawn</button></div>`;
+            // Same as day travel: auto-stage in the background + suppress the lead-in so you narrate while it loads.
+            const _nAuto = cwfAutoStage() && !!globalThis.CavrilEncounterStage;
+            if (_nAuto) { try { globalThis.CavrilEncounterStage.stageEncounter({ surprised: !firstWatcher }); } catch (e) { warn("night auto-stage failed", e); } }
+            else Cinematic.broadcast({ icon: "fa-dragon", title: "Ambushed!", subtitle: `${cls?.label || "the wild"} · hour ${firstHour}`, tone: "encounter" });
+            const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span>${_nAuto ? "" : cwfStageBtn(!firstWatcher)}<button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn"><i class="fa-solid fa-sun"></i> Resolved → wake at dawn</button></div>`;
             const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "", footerHTML: foot }) }).catch(() => null);
             nightDawnPending = { nextDay, msgId: msg?.id };
             cwfCampFinalize("Night watch — resolve the encounter, then wake at dawn.");   // collapse the camp card so its Resolve can't re-fire

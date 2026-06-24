@@ -2565,9 +2565,10 @@
       ui.notifications?.info(`Encounter ready: ${ready} — roll for initiative, then begin combat.`);
     } else {
       const foeList = actors.map(a => esc(a.name)).join(", ") || "—";
-      ChatMessage.create({ content: cwfEnterCard(scene.id, pick?.item.name || "Encounter", ready, foeList, hook), whisper: gmIds }).catch(() => {});
-      CavrilAdvance.push({ id: "es-enter", label: "Enter encounter", icon: "fa-door-open", priority: 20, run: () => enterEncounter(scene.id) });
-      ui.notifications?.info(`Encounter staged in the background — click "Enter encounter" when you're ready.`);
+      const surprised = !!opts.surprised, enterLabel = surprised ? "Ambush!" : "Roll for initiative", enterIcon = surprised ? "fa-dragon" : "fa-dice-d20";
+      ChatMessage.create({ content: cwfEnterCard(scene.id, pick?.item.name || "Encounter", ready, foeList, hook, surprised), whisper: gmIds }).catch(() => {});
+      CavrilAdvance.push({ id: "es-enter", label: enterLabel, icon: enterIcon, priority: 20, tone: "danger", run: () => enterEncounter(scene.id) });
+      ui.notifications?.info(`Encounter ready in the background — narrate the moment, then hit "${enterLabel}".`);
     }
     try { await logEncounter({ scene, actors, cls, when, weather, pick, fallback: onFallback }); } catch (e) {}
     return { scene, actors, foeTokens, partyTokens, combat, journal, pick, cls, when, season, weather, fallback: onFallback };
@@ -2616,11 +2617,11 @@
     } catch (e) { return ""; }
   }
   const cwfReadAloud = (hook) => hook ? `<div class="cwf-readaloud"><span class="cwf-readaloud-tag">Read aloud</span>${esc(hook)}</div>` : "";
-  const cwfEnterCard = (sceneId, mapName, ready, foes, hook) => `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-dragon"></i> <span>Encounter staged</span></div>
+  const cwfEnterCard = (sceneId, mapName, ready, foes, hook, surprised = false) => `<div class="cwf-card"><div class="cwf-card-hd"><i class="fa-solid fa-dragon"></i> <span>Encounter ready</span></div>
     <div class="cwf-card-bd">${cwfReadAloud(hook)}<div class="cwf-card-row"><span class="cwf-card-l">Map</span><span class="cwf-card-v">${esc(mapName)}</span></div>
     <div class="cwf-card-row"><span class="cwf-card-l">Ready</span><span class="cwf-card-v">${esc(ready)}</span></div>
     <div class="cwf-card-row"><span class="cwf-card-l">Foes</span><span class="cwf-card-v">${foes}</span></div></div>
-    <div class="cwf-card-foot"><div class="cwf-cardbtns"><button class="cwf-cardbtn cwf-primary" data-cwf="enter-encounter" data-scene="${sceneId}"><i class="fa-solid fa-door-open"></i> Enter encounter</button></div></div></div>`;
+    <div class="cwf-card-foot"><div class="cwf-cardbtns"><button class="cwf-cardbtn cwf-primary" data-cwf="enter-encounter" data-scene="${sceneId}"><i class="fa-solid ${surprised ? "fa-dragon" : "fa-dice-d20"}"></i> ${surprised ? "Ambush!" : "Roll for initiative"}</button></div></div></div>`;
   // Move to a staged scene on demand (the chat-card button), then fire the reveal.
   async function enterEncounter(sceneId) {
     if (!game.user.isGM) return;
@@ -2674,6 +2675,7 @@
     reg("esDefaultNewSceneGrid", { name: "  · Apply that grid to ALL new scenes", hint: "Default any newly-created scene (not just staged ones) to the grid above, changing Foundry's square default. Only touches scenes that start Square; gridless/hex scenes are left alone.", scope: "world", config: true, type: Boolean, default: true });
     reg("esHideFoes",         { name: "  · Spawn foes hidden", hint: "Drop foe tokens HIDDEN so players don't see the ambush before you spring it — reveal them with the Token HUD eye (or select them and toggle visibility).", scope: "world", config: true, type: Boolean, default: true });
     reg("esAutoEnter",        { name: "  · Enter scene automatically", hint: "OFF (recommended): stage the encounter in the background and show an 'Enter encounter' button so you move there when ready. ON: jump to the battlemap immediately.", scope: "world", config: true, type: Boolean, default: false });
+    reg("esAutoStage",        { name: "  · Auto-stage the moment an encounter fires", hint: "ON (default): the instant a travel/night encounter occurs, build the battlemap in the BACKGROUND automatically — no 'Build encounter' click — and SKIP the lead-in cinematic, so you can narrate the transition while the scene quietly loads. When it's ready, a single button ('Roll for initiative' or 'Ambush!') drops you in, playing the reveal as you arrive. OFF = the manual Build-encounter button + the lead-in cinematic.", scope: "world", config: true, type: Boolean, default: true });
     reg("esUseBiomeIndex",    { name: "  · Use curated biome map pools", hint: "When a biome index has been built (run CavrilEncounterStage.buildBiomeIndex() once after connecting CZEPEKU), pull combat maps from the curated per-biome generic pools. Falls back to live scoring if none is built.", scope: "world", config: true, type: Boolean, default: true });
     reg("esBiomeIndex",       { scope: "world", config: false, type: Object, default: {} });   // the built per-biome classification {builtAt,count,maps:[{id,name,biome,generic,natVar}]}
     reg("esEncounterLog",     { scope: "world", config: false, type: Array, default: [] });    // ledger of staged encounters [{wt,ts,biome,when,weather,foes,map,sceneId}]
