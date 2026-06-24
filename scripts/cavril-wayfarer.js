@@ -4726,7 +4726,7 @@ function wayfarerTool() {
 function mapGridTool() {
     return {
         name: "wayfarer-mapgrid",
-        title: `${TITLE} — map curation grid`,
+        title: `${TITLE} — map & scene curation`,
         icon: "fa-solid fa-images",
         button: true,
         order: 100,
@@ -4974,7 +4974,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
         // CZEPEKU token picker — GM-only quick face search (also CavrilWayfarer.tokenPicker()).
         if (game.user?.isGM) addTool(tokenGrp, { name: "cwf-token-picker", title: `${TITLE} — token picker (CZEPEKU)`, icon: "fa-solid fa-masks-theater", button: true, order: 98, onClick: () => globalThis.CavrilEncounterStage?.openTokenPicker?.("") });
         // Map curation grid — GM-only Lightroom panel to tag/approve maps per biome (also CavrilEncounterStage.openMapGrid()).
-        if (game.user?.isGM && globalThis.CavrilEncounterStage?.openMapGrid) addTool(tokenGrp, { name: "cwf-map-grid", title: `${TITLE} — map curation grid`, icon: "fa-solid fa-images", button: true, order: 97, onClick: () => globalThis.CavrilEncounterStage?.openMapGrid?.() });
+        if (game.user?.isGM && globalThis.CavrilEncounterStage?.openMapGrid) addTool(tokenGrp, { name: "cwf-map-grid", title: `${TITLE} — map & scene curation`, icon: "fa-solid fa-images", button: true, order: 97, onClick: () => globalThis.CavrilEncounterStage?.openMapGrid?.() });
         // Return-to-overworld: on a staged scene, put it in EVERY tool group so it never
         // vanishes when you switch to walls / lighting / drawings / the Augur set, etc.
         if (canvas?.scene?.getFlag?.(MOD, "originScene")) {

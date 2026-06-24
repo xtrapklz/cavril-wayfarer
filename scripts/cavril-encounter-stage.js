@@ -512,22 +512,26 @@
   }
   // The stored index merged with the GM's review-panel overrides ({id → {biome?,generic?,exclude?}}). Null
   // until buildBiomeIndex() has run. Overrides win, so re-curating never gets clobbered by a rebuild.
-  function biomeIndexRows() {
+  function biomeIndexRows(kind = "maps") {
     let idx; try { idx = game.settings.get(MOD, "esBiomeIndex"); } catch { idx = null; }
-    if (!idx?.maps?.length) return null;
+    const arr = idx?.[kind];                 // "maps" (default — combat staging) or "scenes" (interiors, story anchors)
+    if (!arr?.length) return null;
     let ov = {}; try { ov = game.settings.get(MOD, "esBiomeOverrides") || {}; } catch { /* noop */ }
-    return idx.maps.map(m => (ov[m.id] ? { ...m, ...ov[m.id] } : m));
+    return arr.map(m => (ov[m.id] ? { ...m, ...ov[m.id] } : m));
   }
   // Scan the live catalog once → classify every fantasy battlemap → store the per-biome index. Run after
   // connecting CZEPEKU: CavrilEncounterStage.buildBiomeIndex(). Encounters then pull from the curated pools.
   async function buildBiomeIndex() {
     const cat = await getCatalog(true);
-    const maps = cat.items.filter(it => it.dataKey === "maps" && it.genre === "fantasy").map(classifyMap);
-    const index = { builtAt: Date.now(), count: maps.length, maps };
+    const maps = cat.items.filter(it => it.dataKey === "maps" && it.genre === "fantasy").map(it => ({ ...classifyMap(it), kind: "map" }));
+    // Interior SCENES (taverns, forges, throne rooms…) are indexed alongside maps so the grid can tag/approve them per
+    // biome AND pin them to story beats. They are NOT mixed into the combat-staging pool (that stays maps-only).
+    const scenes = cat.items.filter(it => it.dataKey === "scenes" && it.genre === "fantasy").map(it => ({ ...classifyMap(it), kind: "scene" }));
+    const index = { builtAt: Date.now(), count: maps.length, sceneCount: scenes.length, maps, scenes };
     try { await game.settings.set(MOD, "esBiomeIndex", index); } catch (e) { warn("biome index save failed", e); }
     const t = {}; for (const m of maps) { (t[m.biome] ??= { generic: 0, specific: 0 })[m.generic ? "generic" : "specific"]++; }
-    log(`biome index built: ${maps.length} maps`); console.table(t);
-    ui.notifications?.info(`Cavril: biome index built — ${maps.length} maps. Encounters now pull from the curated per-biome pools.`);
+    log(`biome index built: ${maps.length} maps, ${scenes.length} scenes`); console.table(t);
+    ui.notifications?.info(`Cavril: biome index built — ${maps.length} maps + ${scenes.length} scenes. Combat pulls from the curated per-biome map pools; tag maps/scenes to stories in the grid.`);
     return index;
   }
   // Auto-build the index ONCE per session when it's empty and CZEPEKU is connected, so the curated per-biome pools come
@@ -633,12 +637,13 @@
   async function openMapGrid() {
     if (!game.user.isGM) return;
     const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
-    let rows = biomeIndexRows();
-    if (!rows) {
-      const go = await foundry.applications.api.DialogV2.confirm({ window: { title: "Cavril — Map Grid" }, content: "<p>No biome index built yet. Build it from your CZEPEKU catalog now?</p>" }).catch(() => false);
-      if (!go) return; await buildBiomeIndex(); rows = biomeIndexRows();
-      if (!rows) { ui.notifications?.warn("Cavril: couldn't build the index — is CZEPEKU connected?"); return; }
+    let mapRows = biomeIndexRows("maps");
+    if (!mapRows) {
+      const go = await foundry.applications.api.DialogV2.confirm({ window: { title: "Cavril — Map & Scene Curation" }, content: "<p>No index built yet. Scan your CZEPEKU catalog now? (Indexes both battlemaps and interior scenes.)</p>" }).catch(() => false);
+      if (!go) return; await buildBiomeIndex(); mapRows = biomeIndexRows("maps");
+      if (!mapRows) { ui.notifications?.warn("Cavril: couldn't build the index — is CZEPEKU connected?"); return; }
     }
+    const sceneRows = biomeIndexRows("scenes");   // null on an index built before scenes existed → "Rebuild index" populates it
     let cat = null; try { cat = await getCatalog(); } catch (e) {}
     const urls = cat?.urls || {}; const byId = {}; for (const it of (cat?.items || [])) byId[it.id] = it;
     const tmpl = urls.mapPreview || urls.mapThumbnail || urls.preview || "";
@@ -651,28 +656,49 @@
     const _cfOrigin = (() => { try { return new URL(tmpl).origin; } catch (e) { return "https://content.encounterkit.com"; } })();
     const cfLoader = (src, width = 400) => `${_cfOrigin}/cdn-cgi/image/width=${width},quality=75,format=auto/${src}`;
     const thumbFor = (m) => { try { const it = byId[m.id]; if (!it || !tmpl) return ""; const vs = it.variants || []; const v = vs.find(x => /\bday\b/i.test(x.name)) || vs[0]; if (!v?.id) return ""; return cfLoader(tmpl.replace("<MAP_ID>", v.id)); } catch (e) { return ""; } };
-    const base = {}; for (const m of (game.settings.get(MOD, "esBiomeIndex")?.maps || [])) base[m.id] = m;
+    const idxRaw = (() => { try { return game.settings.get(MOD, "esBiomeIndex") || {}; } catch { return {}; } })();
+    const base = {}; for (const m of [...(idxRaw.maps || []), ...(idxRaw.scenes || [])]) base[m.id] = m;
     const BIOMES = Object.keys(BIOME_TAGS);
-    const byBiome = {}; for (const m of rows) (byBiome[m.biome] ??= []).push(m);
+    const tags = foundry.utils.deepClone((() => { try { return game.settings.get(MOD, "esStoryTags") || {}; } catch { return {}; } })());
     let _withUrl = 0;
-    const card = (m) => { const url = thumbFor(m), on = m.generic && !m.exclude; if (url) _withUrl++; return `<div class="cmg-card${on ? " on" : ""}${m.exclude ? " ex" : ""}" data-id="${esc(m.id)}" title="${esc(m.name)} — click: toggle generic · right-click: exclude"><div class="cmg-thumb">${url ? `<img class="cmg-img" src="${esc(url)}" loading="lazy" alt="">` : ""}</div><div class="cmg-nm">${esc(m.name)}</div><div class="cmg-badge"><i class="fa-solid fa-check"></i></div><div class="cmg-x"><i class="fa-solid fa-ban"></i></div></div>`; };
-    const sections = BIOMES.filter(b => byBiome[b]?.length).map(b => {
-      const ms = byBiome[b].slice().sort((a, c) => (Number(c.generic) - Number(a.generic)) || String(a.name).localeCompare(String(c.name)));
-      const g = ms.filter(m => m.generic && !m.exclude).length;
-      return `<details open><summary><b>${esc(b)}</b> <span class="cmg-c">${g}/${ms.length} generic</span></summary><div class="cmg-grid">${ms.map(card).join("")}</div></details>`;
-    }).join("");
-    // NOTE: DialogV2 strips <style> tags out of the `content` string, so we inject the stylesheet as a real DOM node
-    // AFTER render (see below). Keeping the CSS here as a const keeps it close to the markup it styles.
-    const cmgCss = `.cmg{max-height:74vh;overflow:auto;padding-right:4px}.cmg details{border:1px solid #ffffff1f;border-radius:8px;margin:8px 0;padding:6px 10px;background:#ffffff08}.cmg summary{cursor:pointer;padding:5px 2px;font-size:15px;font-weight:600;letter-spacing:.02em;text-transform:capitalize}.cmg-c{color:#9aa6b2;margin-left:8px;font-size:12px;font-weight:400}.cmg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;padding:10px 2px}.cmg-card{position:relative;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid transparent;background:#0006;opacity:.45;transition:opacity .12s,border-color .12s,transform .08s,box-shadow .12s}.cmg-card:hover{transform:translateY(-2px);box-shadow:0 4px 14px #000a}.cmg-card.on{opacity:1;border-color:#8fd98f}.cmg-card.ex{opacity:.32;border-color:#d65a5a}.cmg-thumb{height:124px;background:repeating-linear-gradient(45deg,#2c2c34,#2c2c34 9px,#24242b 9px,#24242b 18px)}.cmg-img{width:100%;height:100%;object-fit:cover;display:block}.cmg-nm{font-size:11.5px;padding:5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#000b;font-weight:500}.cmg-badge,.cmg-x{position:absolute;top:7px;width:24px;height:24px;border-radius:50%;display:none;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px #000b}.cmg-badge{right:7px;background:#8fd98f;color:#0a0a0a}.cmg-x{left:7px;background:#d65a5a;color:#fff}.cmg-card.on .cmg-badge{display:flex}.cmg-card.ex .cmg-x{display:flex}.cmg-hint{font-size:11px;color:#9aa6b2;padding:2px 2px 8px}`;
-    const content = `<div class="cmg"><div class="cmg-hint">Click a tile to toggle it in/out of that biome's generic random pool · right-click to exclude entirely · Save to apply.</div>${sections || "<p style='padding:12px;color:#9aa6b2'>No maps classified — build the index first (Rebuild index).</p>"}</div>`;
+    const card = (m) => {
+      const url = thumbFor(m), on = m.generic && !m.exclude, tg = tags[m.id] || "";
+      if (url) _withUrl++;
+      return `<div class="cmg-card${on ? " on" : ""}${m.exclude ? " ex" : ""}${tg ? " tagged" : ""}" data-id="${esc(m.id)}" title="${esc(m.name)} — click: toggle generic · right-click: exclude · tag (🏷) for a story beat">`
+        + `<div class="cmg-thumb">${url ? `<img class="cmg-img" src="${esc(url)}" loading="lazy" alt="">` : ""}</div>`
+        + `<div class="cmg-ribbon">${esc(tg)}</div>`
+        + `<div class="cmg-nm">${esc(m.name)}</div>`
+        + `<div class="cmg-badge"><i class="fa-solid fa-check"></i></div><div class="cmg-x"><i class="fa-solid fa-ban"></i></div>`
+        + `<button class="cmg-tag" data-id="${esc(m.id)}" title="Tag this for a story beat"><i class="fa-solid fa-tag"></i></button>`
+        + `</div>`;
+    };
+    const sectionsFor = (rows) => {
+      const byBiome = {}; for (const m of rows) (byBiome[m.biome] ??= []).push(m);
+      return BIOMES.filter(b => byBiome[b]?.length).map(b => {
+        const ms = byBiome[b].slice().sort((a, c) => (Number(c.generic) - Number(a.generic)) || String(a.name).localeCompare(String(c.name)));
+        const g = ms.filter(m => m.generic && !m.exclude).length;
+        return `<details open><summary><b>${esc(b)}</b> <span class="cmg-c">${g}/${ms.length} generic</span></summary><div class="cmg-grid">${ms.map(card).join("")}</div></details>`;
+      }).join("");
+    };
+    const mapSections = sectionsFor(mapRows) || "<p style='padding:12px;color:#9aa6b2'>No maps classified — Rebuild index.</p>";
+    const sceneSections = sceneRows ? (sectionsFor(sceneRows) || "<p style='padding:12px;color:#9aa6b2'>No scenes classified.</p>")
+      : "<p style='padding:12px;color:#9aa6b2'>No interior scenes indexed yet — click <b>Rebuild index</b> to scan them, then reopen.</p>";
+    // NOTE: DialogV2 strips <style> tags out of the `content` string, so we inject the stylesheet as a real DOM node AFTER render.
+    const cmgCss = `.cmg{max-height:74vh;overflow:auto;padding-right:4px}.cmg details{border:1px solid #ffffff1f;border-radius:8px;margin:8px 0;padding:6px 10px;background:#ffffff08}.cmg summary{cursor:pointer;padding:5px 2px;font-size:15px;font-weight:600;letter-spacing:.02em;text-transform:capitalize}.cmg-c{color:#9aa6b2;margin-left:8px;font-size:12px;font-weight:400}.cmg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;padding:10px 2px}.cmg-card{position:relative;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid transparent;background:#0006;opacity:.45;transition:opacity .12s,border-color .12s,transform .08s,box-shadow .12s}.cmg-card:hover{transform:translateY(-2px);box-shadow:0 4px 14px #000a}.cmg-card.on{opacity:1;border-color:#8fd98f}.cmg-card.ex{opacity:.32;border-color:#d65a5a}.cmg-thumb{height:124px;background:repeating-linear-gradient(45deg,#2c2c34,#2c2c34 9px,#24242b 9px,#24242b 18px)}.cmg-img{width:100%;height:100%;object-fit:cover;display:block}.cmg-nm{font-size:11.5px;padding:5px 28px 5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#000b;font-weight:500}.cmg-badge,.cmg-x{position:absolute;top:7px;width:24px;height:24px;border-radius:50%;display:none;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px #000b}.cmg-badge{right:7px;background:#8fd98f;color:#0a0a0a}.cmg-x{left:7px;background:#d65a5a;color:#fff}.cmg-card.on .cmg-badge{display:flex}.cmg-card.ex .cmg-x{display:flex}.cmg-hint{font-size:11px;color:#9aa6b2;padding:2px 2px 8px;line-height:1.5}.cmg-top{position:sticky;top:0;z-index:4;background:#1c1c24;padding:2px 0 6px}.cmg-tabs{display:flex;gap:6px;margin-bottom:4px}.cmg-tab{padding:4px 16px;border-radius:14px;border:1px solid #ffffff24;background:#ffffff10;color:#cdd;cursor:pointer;font-size:13px;font-weight:600}.cmg-tab.on{background:#8fd98f;color:#0a0a0a;border-color:#8fd98f}.cmg-hidden{display:none}.cmg-tag{position:absolute;bottom:4px;right:5px;width:22px;height:22px;border-radius:6px;border:none;background:#000a;color:#e9c46a;display:flex;align-items:center;justify-content:center;font-size:10px;cursor:pointer;z-index:3;opacity:.85}.cmg-tag:hover{background:#e9c46a;color:#0a0a0a;opacity:1}.cmg-card.tagged .cmg-tag{background:#e9c46a;color:#0a0a0a;opacity:1}.cmg-ribbon{position:absolute;left:0;right:0;bottom:26px;background:#e9c46aee;color:#1a1208;font-size:10px;font-weight:700;padding:2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none}.cmg-card.tagged .cmg-ribbon{display:block}`;
+    const content = `<div class="cmg">`
+      + `<div class="cmg-top"><div class="cmg-tabs"><button class="cmg-tab on" data-kind="maps">Maps · ${mapRows.length}</button><button class="cmg-tab" data-kind="scenes">Scenes${sceneRows ? ` · ${sceneRows.length}` : ""}</button></div>`
+      + `<div class="cmg-hint">Click a tile = toggle into that biome's generic random pool · right-click = exclude · <i class="fa-solid fa-tag"></i> = tag for a story beat (stage later with <code>stageStoryMap</code>) · Save to apply.</div></div>`
+      + `<div class="cmg-kind" data-kind="maps">${mapSections}</div>`
+      + `<div class="cmg-kind cmg-hidden" data-kind="scenes">${sceneSections}</div>`
+      + `</div>`;
     const ov = foundry.utils.deepClone(game.settings.get(MOD, "esBiomeOverrides") || {});
     const setOv = (id, patch) => { const b0 = base[id] || {}; const cur = { biome: b0.biome, generic: b0.generic, exclude: false, ...(ov[id] || {}), ...patch }; const o = {}; if (cur.biome !== b0.biome) o.biome = cur.biome; if (cur.generic !== b0.generic) o.generic = cur.generic; if (cur.exclude) o.exclude = true; if (Object.keys(o).length) ov[id] = o; else delete ov[id]; return cur; };
     const dlg = new foundry.applications.api.DialogV2({
-      window: { title: "Cavril — Map Grid · click = toggle generic · right-click = exclude", resizable: true },
-      position: { width: 920, height: 720 }, content,
+      window: { title: "Cavril — Map & Scene Curation · biomes + story tags", resizable: true },
+      position: { width: 940, height: 760 }, content,
       buttons: [
-        { action: "save", label: "Save", icon: "fa-solid fa-floppy-disk", default: true, callback: () => { game.settings.set(MOD, "esBiomeOverrides", ov); ui.notifications?.info("Cavril: saved — encounters use your map choices immediately."); } },
-        { action: "rebuild", label: "Rebuild index", icon: "fa-solid fa-arrows-rotate", callback: async () => { await buildBiomeIndex(); ui.notifications?.info("Cavril: rebuilt — reopen the grid."); } },
+        { action: "save", label: "Save", icon: "fa-solid fa-floppy-disk", default: true, callback: () => { try { game.settings.set(MOD, "esBiomeOverrides", ov); game.settings.set(MOD, "esStoryTags", tags); } catch (e) {} ui.notifications?.info("Cavril: saved — encounters use your map choices + story tags immediately."); } },
+        { action: "rebuild", label: "Rebuild index", icon: "fa-solid fa-arrows-rotate", callback: async () => { await buildBiomeIndex(); ui.notifications?.info("Cavril: rebuilt (maps + scenes) — reopen the grid."); } },
         { action: "close", label: "Close", icon: "fa-solid fa-xmark" },
       ],
     });
@@ -682,6 +708,22 @@
     // Any thumbnail that 404s collapses to the placeholder stripe rather than showing a broken-image glyph.
     let _broke = 0; for (const img of dlg.element.querySelectorAll("img.cmg-img")) { const hide = () => { _broke++; try { img.remove(); } catch (e) {} }; img.addEventListener("error", hide); if (img.complete && img.naturalWidth === 0) hide(); }
     log(`map grid: ${_withUrl} tiles have preview URLs${_broke ? `, ${_broke} failed to load` : ""}`);
+    // Maps / Scenes tab toggle.
+    for (const tab of dlg.element.querySelectorAll(".cmg-tab")) {
+      tab.addEventListener("click", () => { const kind = tab.dataset.kind; dlg.element.querySelectorAll(".cmg-tab").forEach(t => t.classList.toggle("on", t === tab)); dlg.element.querySelectorAll(".cmg-kind").forEach(k => k.classList.toggle("cmg-hidden", k.dataset.kind !== kind)); });
+    }
+    // Story-tag buttons — open a small free-text prompt (don't let the click toggle generic underneath).
+    for (const tb of dlg.element.querySelectorAll(".cmg-tag")) {
+      tb.addEventListener("click", async (ev) => {
+        ev.stopPropagation(); ev.preventDefault();
+        const id = tb.dataset.id, cardEl = tb.closest(".cmg-card"); if (!cardEl) return;
+        const val = await promptStoryTag(tags[id] || "");
+        if (val === null) return;
+        if (val) tags[id] = val; else delete tags[id];
+        const ribbon = cardEl.querySelector(".cmg-ribbon"); if (ribbon) ribbon.textContent = val || "";
+        cardEl.classList.toggle("tagged", !!val);
+      });
+    }
     for (const cardEl of dlg.element.querySelectorAll(".cmg-card")) {
       const id = cardEl.dataset.id;
       cardEl.addEventListener("click", () => { const cur = setOv(id, { generic: !cardEl.classList.contains("on"), exclude: false }); cardEl.classList.toggle("on", !!cur.generic && !cur.exclude); cardEl.classList.remove("ex"); });
@@ -703,6 +745,50 @@
     console.log(out);
     ui.notifications?.info("Cavril: story-seed maps in console (F12) — the landmark maps that can anchor a scene.");
     return out;
+  }
+  // Suggested story-tag values offered in the curation grid (free text — the tag is whatever the GM types). Seeded
+  // from the PRIMUS arcs + named set-pieces so tagging is guided, not blank. [[cavril-travel-encounters]]
+  const STORY_SUGGEST = ["Arc A — Drowned Bell", "Arc A — Falling City", "Arc A — the Threshold", "Arc B", "Arc C — the Deadfall", "Arc D", "Arc E", "Arc F — One Who Follows", "Stained-Glass Swarm", "temple frieze", "henge", "drowned town", "cooling forge", "Thirst-King's court"];
+  // The GM's story tags: { mapOrSceneId → "Arc A — Drowned Bell" }. storyTags() lists them (name + kind resolved).
+  function storyTags() {
+    let tags = {}; try { tags = game.settings.get(MOD, "esStoryTags") || {}; } catch { /* noop */ }
+    let idx = {}; try { idx = game.settings.get(MOD, "esBiomeIndex") || {}; } catch { /* noop */ }
+    const byId = {}; for (const m of [...(idx.maps || []), ...(idx.scenes || [])]) byId[m.id] = m;
+    const out = Object.entries(tags).map(([id, tag]) => ({ tag, name: byId[id]?.name || id, kind: byId[id]?.kind || "?", id }))
+      .sort((a, b) => String(a.tag).localeCompare(String(b.tag)));
+    console.log("%c[EncounterStage] story-tagged maps/scenes — pin a beat, stage with stageStoryMap(tag)", CSS); console.table(out);
+    return out;
+  }
+  // Stage the map/scene the GM tagged for a story beat (exact tag match first, then a contains-match). Returns the Scene
+  // or null. CavrilEncounterStage.stageStoryMap("Drowned Bell"). The opposite of a random pick — a deliberate set-piece.
+  async function stageStoryMap(tag, { activate = CFG.activateScene } = {}) {
+    if (!tag) return null;
+    let tags = {}; try { tags = game.settings.get(MOD, "esStoryTags") || {}; } catch { /* noop */ }
+    const t = String(tag).toLowerCase().trim();
+    const id = Object.keys(tags).find(k => String(tags[k]).toLowerCase().trim() === t)
+      || Object.keys(tags).find(k => String(tags[k]).toLowerCase().includes(t));
+    if (!id) { ui.notifications?.warn(`Cavril: no map/scene tagged "${tag}" — tag one in the curation grid first.`); return null; }
+    let cat = null; try { cat = await getCatalog(); } catch (e) {}
+    const it = (cat?.items || []).find(x => x.id === id);
+    if (!it) { warn(`stageStoryMap: catalog item ${id} not found (rebuild the index?)`); return null; }
+    const v = (it.variants || []).find(x => /\bday\b/i.test(x.name)) || (it.variants || [])[0];
+    const key = v?.key || (v?.id ? `Map:${v.id}` : null);
+    if (!key) { warn(`stageStoryMap: ${it.name} has no stageable variant`); return null; }
+    log(`staging story map "${tags[id]}" → ${it.name}`);
+    return await stageMapByKey(key, { activate, title: tags[id] || it.name });
+  }
+  // Small free-text prompt to set/clear a map/scene's STORY tag (datalist-guided). Returns the new value, "" to clear, or null if cancelled.
+  async function promptStoryTag(cur) {
+    const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
+    const dl = `<datalist id="cmg-suggest">${STORY_SUGGEST.map(s => `<option value="${esc(s)}"></option>`).join("")}</datalist>`;
+    const body = `${dl}<p style="margin:0 0 6px;font-size:12px;color:#9aa6b2">Pin this map/scene to a story beat (free text — an arc + set-piece works well). Stage it later with <code>stageStoryMap("…")</code>. Clear the field to untag.</p><input name="tag" list="cmg-suggest" value="${esc(cur || "")}" style="width:100%;box-sizing:border-box" autofocus>`;
+    try {
+      const out = await foundry.applications.api.DialogV2.prompt({
+        window: { title: "Story tag" }, content: body,
+        ok: { label: "Set tag", icon: "fa-solid fa-tag", callback: (ev, btn) => { try { return String(btn.form?.elements?.tag?.value ?? "").trim(); } catch (e) { return ""; } } },
+      });
+      return (out == null) ? "" : out;
+    } catch (e) { return null; }   // cancelled / closed
   }
   // Verify the day/night + season variant selection: which MAP + variant would stage for a biome at a given
   // time/season/weather, without creating anything. CavrilEncounterStage.previewMap("forest", { when:"night", season:"autumn" }).
@@ -2481,6 +2567,7 @@
     reg("esBiomeIndex",       { scope: "world", config: false, type: Object, default: {} });   // the built per-biome classification {builtAt,count,maps:[{id,name,biome,generic,natVar}]}
     reg("esEncounterLog",     { scope: "world", config: false, type: Array, default: [] });    // ledger of staged encounters [{wt,ts,biome,when,weather,foes,map,sceneId}]
     reg("esBiomeOverrides",   { scope: "world", config: false, type: Object, default: {} });   // GM review-panel overrides {id→{biome?,generic?,exclude?}}
+    reg("esStoryTags",        { scope: "world", config: false, type: Object, default: {} });   // GM story tags {mapOrSceneId→"Arc A — Drowned Bell"} — pin a specific map/scene to a beat; stage via stageStoryMap(tag)
     reg("tgtHelper",          { name: "Targeting helper bar — suggest targets in combat", hint: "Show the chip BAR of tokens the active/selected token can SEE, ranked: advantage (flanking or an advantage-granting condition) on an enemy → nearest enemy → nearest neutral → nearest ally. Click a chip to target / untarget. GM-only. NOTE: this is only the visual bar — turning it OFF does NOT disable auto-targeting below (they're independent), so you can have hands-off auto-targeting with no bar on screen.", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtAutoTarget",      { name: "Auto-target the best enemy", hint: "Automatically target the best enemy at the start of EVERY token's turn AND every time a token moves — releasing the previous target each time, so the pick always tracks the current best. Works WHETHER OR NOT the target bar above is shown (independent of it). Only ever auto-targets an enemy (relative to whoever is acting); neutrals, allies and self stay manual. You can still change/add targets by hand with Foundry's normal targeting afterwards. OFF = no automatic targeting.", scope: "world", config: true, type: Boolean, default: true });
     reg("tgtAutoDelay",       { name: "  · Auto-target delay (seconds)", hint: "How long after a token moves or starts its turn before the best enemy is auto-targeted. The target chips still update instantly — only the auto-pick waits. Default 1.", scope: "world", config: true, type: Number, default: 1, range: { min: 0, max: 5, step: 0.5 } });
@@ -2596,7 +2683,7 @@
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
-    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, openMapGrid, mapPreviewProbe, storyMaps, previewMap, czepekuProbe,
+    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, openMapGrid, mapPreviewProbe, storyMaps, storyTags, stageStoryMap, previewMap, czepekuProbe,
     tokenCatalog, tokenProbe, tokenPacks, tokenSubjects, tokenSample, tokenFor, tokenUrl,   // CZEPEKU NPC art: tokenSubjects() lists the character vocab, tokenFor(keywords) matches a face
     tokenArtFor, saveExternalImage, stageInterior, sceneImage,   // durable art (download → local path) + keyword-matched enterable interior scenes for storefronts
     tokenRank, tokenPick, openTokenPicker, closeTokenPicker,     // CZEPEKU token picker: scored search (tokenRank), best/wildcard single pick (tokenPick), GM dialog (openTokenPicker)
