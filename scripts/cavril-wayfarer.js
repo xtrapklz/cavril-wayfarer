@@ -1156,14 +1156,9 @@ const cwfEsc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
 // clock crosses dusk/night; during a multi-hex travel turn those clock jumps can outrun the darkness animation, leaving
 // the canvas dark with STALE vision (the scene goes black except the token + weather) until something else refreshes it.
 // We force the recompute after the clock settles — fixes "scene stays black until I camp / move the clock".
-let _cwfVisionTimer = null;
 function cwfRefreshVision() {
     try { canvas?.perception?.update?.({ initializeVision: true, initializeLighting: true, refreshLighting: true, refreshVision: true }); }
     catch (e) { warn("vision refresh failed", e); }
-}
-function cwfRefreshVisionSoon() {   // coalesce a burst of clock changes (per-hex travel) into a single refresh
-    try { if (_cwfVisionTimer) clearTimeout(_cwfVisionTimer); } catch (e) {}
-    _cwfVisionTimer = setTimeout(() => { _cwfVisionTimer = null; cwfRefreshVision(); }, 450);
 }
 // After a darkness change (camp's night/dawn jump, OR a travel transition where Mini Calendar re-applies time+weather as the
 // token settles) the day/night module ANIMATES darkness over ~1-2s. A single refresh can fire mid-animation and leave the
@@ -4508,6 +4503,8 @@ const WayfarerPanel = (() => {
                 case "turn-resolve": await Turn.resolve(); break;
                 case "turn-end": Turn.end(); break;
                 case "camp-danger": Camp.setDanger(Number(btn.dataset.n)); break;
+                case "set-challenge": await Store.setSceneState({ challenge: Number(btn.dataset.n) }); WayfarerPanel.render(); break;
+                case "set-wanted": await cwfSetWanted(Number(btn.dataset.n)); break;
                 case "camp-watch": Camp.toggleWatcher(btn.dataset.id); break;
                 case "camp-watch-up": Camp.moveWatcher(btn.dataset.id, "up"); break;
                 case "camp-watch-down": Camp.moveWatcher(btn.dataset.id, "down"); break;
@@ -4820,7 +4817,9 @@ const WayfarerPanel = (() => {
                 <div class="cwf-section">
                     <div class="cwf-label">${isGM ? `<button class="cwf-tiny" data-action="set-party" title="Set the selected token as the party marker" style="margin-right:5px"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}Current hex</div>
                     <div class="cwf-here">${here}</div>
-                    ${isGM ? `<div class="cwf-danger-row"><span class="cwf-danger-l" title="Region danger — drives day & night encounters"><i class="fa-solid fa-skull"></i> Danger</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${dangerNow === n ? "on" : ""}" data-action="camp-danger" data-n="${n}" title="Set region danger ${n}">${n}</button>`).join("")}</div></div>` : ""}
+                    ${isGM ? `<div class="cwf-danger-row"><span class="cwf-danger-l" title="Region DANGER — how often combat fires (doubled by day; biome adds on top; scout/pace adjust)"><i class="fa-solid fa-skull"></i> Danger</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${dangerNow === n ? "on" : ""}" data-action="camp-danger" data-n="${n}" title="Set region danger ${n}">${n}</button>`).join("")}</div></div>` : ""}
+                    ${isGM && cwfNewEngine() ? `<div class="cwf-danger-row"><span class="cwf-danger-l" title="CHALLENGE — skill-check DCs + encounter XP budget (decoupled from frequency)"><i class="fa-solid fa-gauge-high"></i> Challenge</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${cwfChallenge() === n ? "on" : ""}" data-action="set-challenge" data-n="${n}" title="Set Challenge ${n}">${n}</button>`).join("")}</div></div>
+                    <div class="cwf-danger-row"><span class="cwf-danger-l" title="WANTED / Heat — personal hunters find you; roads+rivers expose, deadly biomes hide, doubled at night, −1 per long rest"><i class="fa-solid fa-user-secret"></i> Wanted</span><div class="cwf-seg-row cwf-seg-mini">${[0, 1, 2, 3, 4, 5].map(n => `<button class="cwf-seg ${cwfWanted() === n ? "on" : ""}" data-action="set-wanted" data-n="${n}" title="Set Wanted ${n}">${n}</button>`).join("")}</div></div>` : ""}
                     ${isGM && cls && globalThis.CavrilEncounterStage ? `<button class="cwf-btn cwf-encounter" data-action="encounter-test" title="Test the encounter generator — roll a CR-scaled SRD encounter for the SELECTED token's hex (on a matched CZEPEKU battlemap if connected)"><i class="fa-solid fa-dice-d20"></i> Start random encounter</button>` : ""}
                 </div>
 
