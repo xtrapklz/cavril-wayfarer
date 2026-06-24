@@ -432,7 +432,8 @@ const Store = (() => {
         g.register(MOD, "travelEvents", { name: "Per-hex travel events", hint: "As the party crosses each hex, roll for an event — mostly mundane flavor, with a danger-scaled chance of a real encounter that halts the day. Whispered to the GM to narrate.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "playerTravelCard", { name: "Player arrival card", hint: "On a peaceful arrival, post a clean PUBLIC card for the players — where the road brought them and the day's mood, with no mechanics, events, or spoilers. The full hex-by-hex trek card stays GM-only. (Nothing posts when an encounter halts the day — the cinematic + map handle that.)", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "eventScale", { name: "Travel event die (x/N per hex)", hint: "Denominator for the per-hex event check. x = scene Danger (0-5) + biome danger (0-2). Lower N = more events. Default 20. (CLASSIC engine only — ignored when the new engine below is on.)", scope: "world", config: true, type: Number, default: 20 });
-        g.register(MOD, "newEngine", { name: "⚙ New encounter engine (two dials + pressures)", hint: "Switch the per-hex travel loop to the new model: a THREAT dial (how often combat fires) and a CHALLENGE dial (XP budget), instead of one Danger value — with pace shifting combat/setbacks/narrative, an anti-sluggish texture floor, and a gentler 2024-style difficulty curve (capped, no group multiplier). Both dials default from your existing Danger, so nothing breaks. OFF = the classic single-danger loop. The Wanted/heat layer arrives in the next update.", scope: "world", config: true, type: Boolean, default: false });
+        g.register(MOD, "newEngine", { name: "⚙ New encounter engine (d20 + Danger/Heat)", hint: "Switch the per-hex travel loop to the d20 model: ONE d20 per hex — 1..Danger = combat, the next slots = a personal (Heat/Wanted) reckoning, 20 = discovery, the rest = biome flavour / arc beats / merchants. DANGER = combat frequency (doubled by day, scout/pace adjust it); CHALLENGE = XP budget; HEAT = your Wanted score (roads/rivers expose, deadly biomes hide, −1 per long rest). At most ONE combat encounter per day. Both dials default from your existing Danger, so nothing breaks. OFF = the classic single-danger loop.", scope: "world", config: true, type: Boolean, default: false });
+        g.register(MOD, "esWanted", { scope: "world", config: false, type: Number, default: 0 });   // engine v2 Heat/Wanted score (0-5) — GM raises it manually, −1 per long rest. CavrilWayfarer.wanted(±n) / .setWanted(n)
         g.register(MOD, "encounterHours", { name: "Hours an encounter costs", hint: "Default time a halting encounter adds to the clock (you can adjust in the moment). Default 1.", scope: "world", config: true, type: Number, default: 1 });
         // Off by default → travel checks roll a single straight die. On → Slow gives
         // advantage, Fast disadvantage, and weather can hamper a role.
@@ -1355,6 +1356,18 @@ const cwfPaceMod = (pace) => ((Domain.PACE?.[pace]?.spaces ?? 2) - 2);   // slow
 // Auto-stage encounters in the background the moment they fire (so the map preloads while you narrate), then one
 // "Roll for initiative / Ambush" button drops you in. OFF = the manual "Build encounter" button + lead-in cinematic.
 const cwfAutoStage = () => { try { return !!game.settings.get(MOD, "esAutoStage"); } catch { return false; } };
+// Wanted / Heat (engine v2). `esWanted` = the GM-set notoriety score (0-5): the GM raises it manually for notorious
+// acts; it decays −1 per long rest. cwfHeat folds in the hex — roads EXPOSE (+2), rivers expose (+1), dangerous biomes
+// HIDE you (−biomeMod) — so the optimal fugitive move (flee the road into the deadly wilds) falls out of the math.
+const cwfWanted = () => { try { return Math.max(0, Math.min(5, Number(game.settings.get(MOD, "esWanted")) || 0)); } catch { return 0; } };
+async function cwfSetWanted(n) { try { const v = Math.max(0, Math.min(5, Math.round(Number(n) || 0))); await game.settings.set(MOD, "esWanted", v); if (game.user?.isGM) ui.notifications?.info(`${TITLE}: Wanted level → ${v}.`); try { WayfarerPanel?.render?.(); } catch (e) {} return v; } catch (e) { warn("setWanted failed", e); } }
+const cwfWantedAdjust = (d) => cwfSetWanted(cwfWanted() + (Number(d) || 0));
+function cwfHeat(cls) {
+    const wanted = cwfWanted(); if (wanted <= 0) return 0;
+    const road = cls?.infrastructure ? 2 : 0, river = cls?.river ? 1 : 0, hide = Danger.biomeMod(cls);
+    return Math.max(0, Math.min(5, wanted - hide + road + river));
+}
+function cwfRandomMember() { try { const ms = Party.members(); return ms.length ? ms[Math.floor(Math.random() * ms.length)] : null; } catch { return null; } }
 
 // Average party level — context for the encounter hook a future generator uses.
 function cwfAvgPartyLevel() {
@@ -1401,9 +1414,9 @@ function cwfWeightedPick(weights) {
 // chance of a real event — narrative (continue) or combat/puzzle/site (HALT).
 // RETURNS the content for the travel card (the stepper renders it) — it no longer
 // posts its own card. { halt, hours?, line, icon?, label?, tag?, cinematic? }.
-async function cwfHexEvent(cls, { scoutGood = false, pace = "normal" } = {}) {
+async function cwfHexEvent(cls, { scoutGood = false, pace = "normal", encUsed = false } = {}) {
     if (!game.user.isGM || !game.settings.get(MOD, "travelEvents")) return { halt: false, line: "the way is clear." };
-    if (cwfNewEngine()) { try { return await cwfHexEventV2(cls, { scoutGood, pace }); } catch (e) { warn("new-engine hex event failed; using flavour", e); try { return { halt: false, line: await Tables.drawFlavor(cls) }; } catch { return { halt: false, line: "the way is clear." }; } } }
+    if (cwfNewEngine()) { try { return await cwfHexEventV2(cls, { scoutGood, pace, encUsed }); } catch (e) { warn("new-engine hex event failed; using flavour", e); try { return { halt: false, line: await Tables.drawFlavor(cls) }; } catch { return { halt: false, line: "the way is clear." }; } } }
     const scale = Math.max(2, Number(game.settings.get(MOD, "eventScale")) || 20);
     const biome = cls?.label || "Wilderness";
     let x = cwfDangerScore() + Danger.biomeMod(cls);
@@ -1427,40 +1440,52 @@ async function cwfHexEvent(cls, { scoutGood = false, pace = "normal" } = {}) {
     return { halt: true, hours, kind, icon: meta.icon, label: meta.label, tag, line: text, cinematic: { icon: meta.icon, title: meta.label, subtitle: biome, tone: "encounter" } };
 }
 
-// The new four-pressure resolver (R1 — Heat/wanted lands in R2). One d100 per hex, partitioned across Threat / Haste /
-// Discovery; the remainder is texture. Spikes are capped at 60% so ≥40% of hexes always stay free-flowing texture
-// (anti-sluggish: even a deathzone keeps moving). Pace bends all three — Fast raises combat + setbacks and cuts
-// narrative; Slow does the reverse. Returns the same { halt, hours?, line, … } shape the stepper renders.
-async function cwfHexEventV2(cls, { scoutGood = false, pace = "normal" } = {}) {
+// THE d20 RESOLVER (engine v2). ONE d20 per hex, banded: `1..combatSlots` = combat · next `heatSlots` = a PERSONAL
+// (Heat) reckoning tied to a party member · `20` = discovery · the rest = the biome's table (flavour / arc beat /
+// merchant). DAY DOUBLES Danger (the biome hunts you); a successful scout shaves Danger (never Heat); pace ±1 Danger.
+// ONE combat/heat encounter PER DAY — once `encUsed`, the danger + heat bands go quiet (flavour/discovery only).
+async function cwfHexEventV2(cls, { scoutGood = false, pace = "normal", encUsed = false } = {}) {
     const biome = cls?.label || "Wilderness";
-    const pm = cwfPaceMod(pace), scout = scoutGood ? 1 : 0, road = cls?.infrastructure ? 1 : 0;
-    const T = cwfThreat(cls);
-    let pCombat  = 4 * Math.max(0, T + pm - scout);
-    let pSetback = pace === "fast" ? 10 : pace === "slow" ? 0 : 3;
-    let pDisc    = Math.max(0, 12 - 6 * pm + 4 * road);
-    const sum = pCombat + pSetback + pDisc, CAP = 60;
-    if (sum > CAP) { const k = CAP / sum; pCombat *= k; pSetback *= k; pDisc *= k; }   // anti-sluggish cap → texture ≥ 40%
-    const hoursOf = () => Math.max(0, Number(game.settings.get(MOD, "encounterHours")) || 1);
-    const roll = Math.random() * 100; let acc = 0;
-    // THREAT → a fight. Halts; surprised if the scout missed.
-    if (roll < (acc += pCombat)) {
-        const text = await cwfEncounterText(cls, { when: "day", surprised: !scoutGood });
-        const tag = !scoutGood ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
-        return { halt: true, hours: hoursOf(), kind: "combat", icon: "fa-dragon", label: "Encounter!", tag, line: text, cinematic: { icon: "fa-dragon", title: "Encounter!", subtitle: biome, tone: "encounter" } };
-    }
-    // HASTE → a rushing setback (skill-check obstacle). Halts. Mostly a Fast-pace cost; never happens at Slow.
-    if (roll < (acc += pSetback)) {
-        return { halt: true, hours: hoursOf(), kind: "puzzle", icon: "fa-puzzle-piece", label: "A Setback", line: await Tables.drawEvent("puzzle", cls), cinematic: { icon: "fa-puzzle-piece", title: "A Setback", subtitle: biome, tone: "encounter" } };
-    }
-    // DISCOVERY → narrative / merchant (continue) or a site (halts to explore). Merchants weighted up on roads.
-    if (roll < (acc += pDisc)) {
-        const kind = cwfWeightedPick({ narrative: 5, trade: road ? 6 : 2, site: 2 });
-        if (kind === "trade") MerchantEconomy.onTrade(cls);
-        if (kind === "site") return { halt: true, hours: hoursOf(), kind: "site", icon: "fa-dungeon", label: "A Discovery", line: await Tables.drawEvent("site", cls), cinematic: { icon: "fa-dungeon", title: "A Discovery", subtitle: biome, tone: "encounter" } };
-        return { halt: false, line: await Tables.drawEvent(kind, cls) };
-    }
-    // TEXTURE → an arc beat (~32%) or a biome flavour line.
-    return { halt: false, line: (await Tables.nextThreadBeat(cls)) || await Tables.drawFlavor(cls) };
+    const dangerEff = Math.max(0, cwfThreat(cls) + cwfPaceMod(pace) - (scoutGood ? 1 : 0));
+    const combatSlots = encUsed ? 0 : Math.max(0, Math.min(12, 2 * dangerEff));   // DAY = 2×Danger
+    const heatSlots   = encUsed ? 0 : Math.max(0, Math.min(5, cwfHeat(cls)));       // DAY = 1×Heat
+    const roll = Math.ceil(Math.random() * 20);
+    if (roll <= combatSlots) return await cwfCombatBeat(cls, biome, { surprised: !scoutGood });
+    if (roll <= combatSlots + heatSlots) return await cwfHeatBeat(cls, biome, { surprised: !scoutGood });
+    if (roll === 20) return await cwfDiscoveryBeat(cls);
+    return await cwfTableBeat(cls, { road: !!cls?.infrastructure });
+}
+const cwfEncHours = () => Math.max(0, Number(game.settings.get(MOD, "encounterHours")) || 1);
+// A biome COMBAT encounter (halts + auto-stages). Surprised if the scout/watch missed.
+async function cwfCombatBeat(cls, biome, { surprised = false } = {}) {
+    const text = await cwfEncounterText(cls, { when: "day", surprised });
+    const tag = surprised ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
+    return { halt: true, hours: cwfEncHours(), kind: "combat", icon: "fa-dragon", label: "Encounter!", tag, line: text, cinematic: { icon: "fa-dragon", title: "Encounter!", subtitle: biome, tone: "encounter" } };
+}
+// A PERSONAL / Heat reckoning — a hostile encounter tied to a party member's past. We flag WHO; the GM narrates the rest
+// (you killed their mother → it's them; stole the jewels → a guard/bounty hunter). Reuses the combat machinery (it IS a fight).
+async function cwfHeatBeat(cls, biome, { surprised = false } = {}) {
+    const member = cwfRandomMember(), who = member?.name || "the party";
+    const hooks = [
+        `A figure steps from cover — and ${who} knows them. Someone from their past has finally caught up.`,
+        `This one didn't come for the road. They came for ${who} — a debt, a grudge, a name remembered.`,
+        `${who} goes still. Whoever this is, they came hunting, and they found exactly who they wanted.`,
+    ];
+    const text = await cwfEncounterText(cls, { when: "day", surprised });
+    const tag = surprised ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
+    const lead = `<span class="cwf-tier-badge" title="A Heat / renown encounter — tied to this character">Personal · ${cwfEsc(who)}</span> ${hooks[Math.floor(Math.random() * hooks.length)]}`;
+    return { halt: true, hours: cwfEncHours(), kind: "combat", heat: true, heatMember: who, icon: "fa-user-secret", label: "A Reckoning", tag, line: `${lead}<br>${text}`, cinematic: { icon: "fa-user-secret", title: "A Reckoning", subtitle: who, tone: "encounter" } };
+}
+// Discovery (roll 20) — a clue, a way down, a glint of treasure. Non-halting; the GM acts on it when they choose. NOT capped.
+async function cwfDiscoveryBeat(cls) {
+    return { halt: false, kind: "discovery", line: `<i class="fa-solid fa-gem"></i> ${await Tables.drawEvent("site", cls)}` };
+}
+// The biome TABLE (the non-combat/non-heat/non-discovery rolls): mostly flavour, sometimes an arc beat, sometimes a merchant.
+async function cwfTableBeat(cls, { road = false } = {}) {
+    const kind = cwfWeightedPick({ flavor: 12, arc: 3, trade: road ? 2 : 1 });
+    if (kind === "trade") { MerchantEconomy.onTrade(cls); return { halt: false, line: await Tables.drawEvent("trade", cls) }; }
+    if (kind === "arc") { const beat = await Tables.nextThreadBeat(cls); if (beat) return { halt: false, line: beat }; }
+    return { halt: false, line: await Tables.drawFlavor(cls) };
 }
 
 // ---- STEPPED TRAVEL — one chat card the GM advances hex-by-hex, at their own pace.
@@ -1534,7 +1559,7 @@ async function cwfStartTravel(tok, route, { pace = "normal", boat = false, scout
     try { CourseOverlay.stop(); cwfCourseBroadcast(null); } catch { /* noop */ }
     Music.combat(false);   // clear any lingering encounter tension as a fresh trek starts
     try { globalThis.CavrilAdvance?.clear?.("cwf-enter-settlement"); } catch (e) {}   // drop any stale "Enter <town>" prompt from the last arrival
-    cwfTrek = { tokId: tok.id, route: (route || []).slice(), idx: 0, pace, boat, scoutGood, acc: 0, prev: Hex.offsetOf(tok.center), lines: [], header, title, icon, sub, halted: false, done: false, lostHours, marchHTML: "", marchSub: "", tod: cwfTimeOfDay().key, lastBiome: (Hex.classifyAt(Hex.offsetOf(tok.center))?.label || null), leg: null, running: false };
+    cwfTrek = { tokId: tok.id, route: (route || []).slice(), idx: 0, pace, boat, scoutGood, acc: 0, prev: Hex.offsetOf(tok.center), lines: [], header, title, icon, sub, halted: false, done: false, lostHours, marchHTML: "", marchSub: "", tod: cwfTimeOfDay().key, lastBiome: (Hex.classifyAt(Hex.offsetOf(tok.center))?.label || null), leg: null, running: false, encUsed: false };
     const msg = await ChatMessage.create({ content: cwfTrekCardHTML(), whisper: cwfGmIds() }).catch(() => null);
     cwfTrek.msgId = msg?.id;
     if (!cwfTrek.route.length) {   // a "got lost" day — no hexes, just spend the time
@@ -1582,7 +1607,7 @@ async function cwfAdvanceHex(auto) {
     const weatherChanged = !!(wxAfter && wxBefore && wxAfter !== wxBefore);
     const todChanged = !!(todBefore && tod.key !== todBefore);
     t.lastBiome = biome;
-    const ev = await cwfHexEvent(cls, { scoutGood: t.scoutGood, pace: t.pace });
+    const ev = await cwfHexEvent(cls, { scoutGood: t.scoutGood, pace: t.pace, encUsed: !!t.encUsed });
     const encounter = !!ev?.halt;
     const isSignal = biomeChanged || weatherChanged || todChanged || encounter;
     // AUTO + nothing notable → keep gliding, growing the current leg.
@@ -1606,6 +1631,7 @@ async function cwfAdvanceHex(auto) {
         t.lines.push(cwfHexLineHTML(off, t.idx, biome, weatherLabel, `<i class="fa-solid ${ev.icon}"></i> <b>${ev.label}</b>${ev.tag || ""} · +${ev.hours}h<br>${ev.line}`, true));
         t.halted = true;
         Music.combat(true);   // hostile beat → tension music (where the encounter generator will hook in)
+        if (ev.kind === "combat") t.encUsed = true;   // ONE combat/heat encounter per day — the danger+heat bands go quiet after
         // Auto-stage the battlemap in the BACKGROUND the instant combat fires, so it preloads while you narrate — then a
         // single "Roll for initiative / Ambush" button drops you in (the reveal cinematic plays on entry, not now).
         const _autoStage = ev.kind === "combat" && cwfAutoStage() && !!globalThis.CavrilEncounterStage;
@@ -1944,6 +1970,8 @@ async function cwfPartyRest(type, { newDay = false, silent = false } = {}) {
         rows.push({ name: a.name, before, after: cwfRestSnapshot(a) });
     }
     cwfRestSummary(type, rows);
+    // Heat/Wanted bleeds off −1 per long rest — surviving to a rest cools your notoriety (engine v2 only).
+    if (type === "long" && cwfNewEngine() && cwfWanted() > 0) { try { await cwfSetWanted(cwfWanted() - 1); } catch (e) { warn("heat decay failed", e); } }
 }
 
 // GM confirm dialog (DialogV2 with a Dialog fallback).
@@ -4206,30 +4234,46 @@ const Camp = (() => {
         Cinematic.broadcast({ icon: "fa-moon", title: "The Night Watch", subtitle: cls?.label || "", tone: "night" });
         const danger = dangerScore(), biomeM = Danger.biomeMod(cls), hostileM = Danger.hostileMod(tok);
         const N = nightHours(), scale = Danger.scale(), oneOnly = !!game.settings.get(MOD, "oneEncounterPerNight");
-        const lines = []; let encounters = 0, firstHour = 0, firstWatcher = null;
-        for (let h = 0; h < N; h++) {
-            const wid = watcherForHour(h);
-            const watcher = wid ? game.actors.get(wid) : null;
-            const wmod = watcher ? Danger.highestMod(watcher) : 0;
-            const x = Danger.hourlyX(danger, biomeM, hostileM, wmod);
-            let roll = 0; try { roll = (await new Roll(`1d${scale}`).evaluate()).total; } catch { roll = Math.ceil(Math.random() * scale); }
-            const hit = roll <= x && x > 0;
-            lines.push(`<div class="cwf-night-h ${hit ? "hit" : ""}">Hr ${h + 1} · ${watcher ? esc(watcher.name) : "<em>unwatched</em>"} · ${x}/${scale} · 🎲${roll}${hit ? " · ⚔" : ""}</div>`);
-            if (hit) { encounters++; if (!firstHour) { firstHour = h + 1; firstWatcher = watcher; } if (oneOnly) break; }
+        const lines = []; let encounters = 0, firstHour = 0, firstWatcher = null, nightHeat = false;
+        if (cwfNewEngine()) {
+            // d20 per 2-HOUR block. NIGHT DOUBLES Heat (your past hunts you at camp); Danger ×1, and the watcher shaves it
+            // (capped −2). A watcher can't watch away Heat, but having ANY watcher prevents surprise. ONE encounter per night.
+            const blocks = Math.max(1, Math.ceil(N / 2));
+            for (let b = 0; b < blocks && !encounters; b++) {
+                const hr = b * 2, wid = watcherForHour(hr), watcher = wid ? game.actors.get(wid) : null;
+                const wmod = watcher ? Math.min(2, Danger.highestMod(watcher)) : 0;
+                const combatSlots = Math.max(0, Math.min(10, cwfThreat(cls) - wmod));   // NIGHT = 1×Danger
+                const heatSlots = Math.max(0, Math.min(10, 2 * cwfHeat(cls)));            // NIGHT = 2×Heat
+                const roll = Math.ceil(Math.random() * 20);
+                const isCombat = roll <= combatSlots, isHeat = !isCombat && roll <= combatSlots + heatSlots, hit = isCombat || isHeat;
+                lines.push(`<div class="cwf-night-h ${hit ? "hit" : ""}">2h ${b + 1} · ${watcher ? esc(watcher.name) : "<em>unwatched</em>"} · D${combatSlots} H${heatSlots}/20 · 🎲${roll}${isCombat ? " · ⚔" : isHeat ? " · 👤" : ""}</div>`);
+                if (hit) { encounters = 1; firstHour = hr + 1; firstWatcher = watcher; nightHeat = isHeat; }
+            }
+        } else {
+            for (let h = 0; h < N; h++) {
+                const wid = watcherForHour(h);
+                const watcher = wid ? game.actors.get(wid) : null;
+                const wmod = watcher ? Danger.highestMod(watcher) : 0;
+                const x = Danger.hourlyX(danger, biomeM, hostileM, wmod);
+                let roll = 0; try { roll = (await new Roll(`1d${scale}`).evaluate()).total; } catch { roll = Math.ceil(Math.random() * scale); }
+                const hit = roll <= x && x > 0;
+                lines.push(`<div class="cwf-night-h ${hit ? "hit" : ""}">Hr ${h + 1} · ${watcher ? esc(watcher.name) : "<em>unwatched</em>"} · ${x}/${scale} · 🎲${roll}${hit ? " · ⚔" : ""}</div>`);
+                if (hit) { encounters++; if (!firstHour) { firstHour = h + 1; firstWatcher = watcher; } if (oneOnly) break; }
+            }
         }
         const sched = watchers.length
             ? watchers.map(id => { const a = game.actors.get(id); return `${esc(a?.name || "?")} (−${Danger.highestMod(a)})`; }).join(" → ")
             : "no watch — unguarded all night";
         let body = "";
         if (supplyNote) body += cwfRow("Supplies", supplyNote);
-        body += cwfRow("Danger", `${danger} + biome ${biomeM} + hostiles ${hostileM}`);
+        body += cwfRow("Danger", cwfNewEngine() ? `Danger ${cwfThreat(cls)} · Heat ${cwfHeat(cls)} (×2 at night) · one roll / 2h` : `${danger} + biome ${biomeM} + hostiles ${hostileM}`);
         body += cwfRow("Watch", sched + (watchers.length ? ` · ~${shiftHours()}h each` : ""));
         body += `<div class="cwf-night">${lines.join("")}</div>`;
         const resultText = !encounters ? "A quiet night."
             : oneOnly ? `⚔ <b>Encounter at hour ${firstHour}</b> — ${firstWatcher ? `${esc(firstWatcher.name)}'s watch` : "no one on watch"}.`
             : `⚔ <b>${encounters} encounter${encounters === 1 ? "" : "s"}</b> in the night.`;
         body += cwfRow("Result", resultText);
-        if (encounters > 0) { try { body += cwfRow("Encounter", await cwfEncounterText(cls, { when: "night", surprised: !firstWatcher })); } catch (e) { warn("night encounter text failed", e); } }
+        if (encounters > 0) { try { const etxt = await cwfEncounterText(cls, { when: "night", surprised: !firstWatcher }); const mem = nightHeat ? (cwfRandomMember()?.name || null) : null; body += cwfRow("Encounter", mem ? `<span class="cwf-tier-badge" title="A Heat / renown encounter">Personal · ${esc(mem)}</span> Someone from ${esc(mem)}'s past has found the fire. ${etxt}` : etxt); } catch (e) { warn("night encounter text failed", e); } }
         // Resolve hunger / thirst / watch toll now the watch is known, and FOLD it into
         // this same Night Watch card rather than posting a second one.
         const survival = await cwfCampSurvival(mealResult, { foraged: mealForaged, watchers });
@@ -4872,6 +4916,8 @@ Hooks.once("ready", () => {
         createTables: () => Tables.ensureAll(),
         reseedTables: () => Tables.reseed(),
         resetJourney: () => Tables.resetJourney(),
+        wanted: (d) => (d == null ? cwfWanted() : cwfWantedAdjust(d)),   // .wanted() reads · .wanted(1)/.wanted(-1) adjusts the Heat/Wanted score
+        setWanted: (n) => cwfSetWanted(n),                                // .setWanted(3) sets it directly (0-5)
         merchant: (opts) => MerchantEconomy.roll(opts),
         merchantShop: (opts) => CodexShop.merchantShop(opts),   // generate a merchant → a real Campaign Codex storefront stocked with SRD items
         buildMerchantTables: (force) => CodexShop.buildMerchantTables(force),   // create per-type SRD RollTables (for the Merchant Counter restock widget)
