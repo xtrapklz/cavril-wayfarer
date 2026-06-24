@@ -49,6 +49,7 @@
     monsterPack: "dnd5e.monsters", // Actor compendium to draw foes from
     dropParty: true,               // place the party PC tokens in the centre
     partySpreadFt: 10,             // party scatters within this many feet of each other
+    randomMuster: true,            // party gathers at a RANDOM spot in the map's central band (not always dead-centre) so the same map plays fresh; foes drop around it (on-scene-clamped)
     dropMonsters: true,            // place biome-appropriate monster tokens
     foeMinFt: 15,                  // foes spawn at LEAST this far from the party
     foeMaxFt: 40,                  // foes spawn at MOST this far from the party
@@ -1624,6 +1625,17 @@
 
   // Party PCs (from Wayfarer's group), scattered in the centre. Cluster scales with party size
   // so everyone fits — a too-tight radius was dropping members on top of each other.
+  // Where the party gathers on a freshly-staged map. Random within the central band (so the same map feels different each
+  // encounter) unless randomMuster is off → dead centre. Foes are on-scene-clamped around this point either way.
+  function musterPoint(scene) {
+    const cx = Math.round((scene.width || 0) * 0.5), cy = Math.round((scene.height || 0) * 0.5);
+    if (!(CFG.randomMuster ?? true)) return { x: cx, y: cy };
+    const dim = scene.dimensions || {};
+    const sx = dim.sceneX ?? 0, sy = dim.sceneY ?? 0;
+    const sw = (dim.sceneWidth ?? Number(scene.width)) || 0, sh = (dim.sceneHeight ?? Number(scene.height)) || 0;
+    if (!(sw > 0 && sh > 0)) return { x: cx, y: cy };
+    return { x: Math.round(sx + sw * (0.28 + Math.random() * 0.44)), y: Math.round(sy + sh * (0.28 + Math.random() * 0.44)) };   // central ~44% band
+  }
   async function dropParty(scene, center) {
     let members = [];
     try { members = globalThis.CavrilWayfarer?.Party?.members?.() || []; } catch { /* noop */ }
@@ -2224,7 +2236,7 @@
     // The party muster point: scene centre on a freshly-staged map, else the token.
     const center = onFallback
       ? { x: token.center?.x ?? token.x, y: token.center?.y ?? token.y }
-      : { x: Math.round((scene.width || 0) * 0.5), y: Math.round((scene.height || 0) * 0.5) };
+      : musterPoint(scene);   // random spot in the central band (keeps each encounter on the same map fresh) unless randomMuster is off
 
     // 2) Place the PARTY in the centre, scattered within ~10 ft. Only on a fresh staged
     //    scene — on the current-scene fallback the party tokens are presumably already there.
@@ -2367,7 +2379,8 @@
     const reg = (key, data) => { try { game.settings.register(MOD, key, data); } catch (e) { warn("setting", key, "failed", e); } };
     reg("esEnabled",          { name: "Encounter Stage — enable", hint: "Build encounters for hostile beats: SRD foes (always) + a CZEPEKU battlemap (if the CZEPEKU Universe module is connected). Without CZEPEKU, foes drop on the current map.", scope: "world", config: true, type: Boolean, default: true });
     reg("esAutoStageOnCombat",{ name: "  · Stage on combat start", hint: "When a combat is created, build + activate the map the last encounter staged.", scope: "world", config: true, type: Boolean, default: true });
-    reg("esDropParty",        { name: "  · Place the party", hint: "Drop the party's PC tokens in the centre of the staged map, scattered within ~10 ft.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esDropParty",        { name: "  · Place the party", hint: "Drop the party's PC tokens on the staged map, scattered within ~10 ft of their muster point.", scope: "world", config: true, type: Boolean, default: true });
+    reg("esRandomMuster",     { name: "  · Random party position", hint: "Gather the party at a RANDOM spot in the map's central band each time (so the same battlemap plays differently) instead of dead-centre. Foes still drop around them, clamped on-map.", scope: "world", config: true, type: Boolean, default: true });
     reg("esDropMonsters",     { name: "  · Drop foes", hint: "Place a CR-scaled, biome-appropriate group of monsters in strategic clusters around the party.", scope: "world", config: true, type: Boolean, default: true });
     reg("esFaceFlip",         { name: "  · Foes face the party", hint: "Rotate spawned foes to look at the party. ON (default) suits dnd5e / top-down tokens drawn facing DOWN; turn OFF if your monster art faces UP and foes end up looking the wrong way.", scope: "world", config: true, type: Boolean, default: true });
     reg("esEncounterTables",  { name: "  · Biome encounter rosters", hint: "Build foes from curated per-biome rosters + encounter compositions (pack / leader / ambush / solo), not just any creature in the CR band. Off = the older type-based fill.", scope: "world", config: true, type: Boolean, default: true });
@@ -2408,6 +2421,7 @@
     try {
       CFG.autoStageOnCombat  = game.settings.get(MOD, "esAutoStageOnCombat");
       CFG.dropParty          = game.settings.get(MOD, "esDropParty");
+      CFG.randomMuster       = game.settings.get(MOD, "esRandomMuster");
       CFG.dropMonsters       = game.settings.get(MOD, "esDropMonsters");
       CFG.faceFlip           = game.settings.get(MOD, "esFaceFlip");
       CFG.addToCombat        = game.settings.get(MOD, "esAddToCombat");
