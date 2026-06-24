@@ -4461,6 +4461,7 @@ const WayfarerPanel = (() => {
     let root = null;
     let collapsedRef = false;
     let _dialsOpen = false;   // the region dials tuck behind the "Region" chip; this remembers the expand state per session
+    let _partyOpen = false;   // the per-character resource grid tucks behind the supplies strip; expand state per session
 
     function isOpen() { return !!root && document.body.contains(root); }
 
@@ -4538,6 +4539,7 @@ const WayfarerPanel = (() => {
                 case "set-party": await Canvasry.setPartyToken(); break;
                 case "encounter-test": await globalThis.CavrilEncounterStage?.stageEncounter?.({ token: Canvasry.activeToken() }); break;
                 case "toggle-dials": _dialsOpen = !_dialsOpen; render(); return;
+                case "toggle-party": _partyOpen = !_partyOpen; render(); return;
                 case "open-party": {
                     try {
                         const pid = canvas?.scene?.getFlag?.(MOD, "partyToken");
@@ -4909,14 +4911,23 @@ const WayfarerPanel = (() => {
                 </div>
 
                 <div class="cwf-section">
-                    <div class="cwf-label">Party <span class="cwf-muted2">${size} member${size === 1 ? "" : "s"} · per character</span></div>
-                    <div class="cwf-pm cwf-pm-h"><span class="cwf-pm-n"></span><span class="cwf-pm-v" title="Exhaustion"><i class="fa-solid fa-face-dizzy"></i></span><span class="cwf-pm-v" title="Rations"><i class="fa-solid fa-drumstick-bite"></i></span><span class="cwf-pm-v" title="Waterskins"><i class="fa-solid fa-bottle-water"></i></span></div>
+                    ${(() => {
+                        const worst = bd.members.reduce((w, m) => (m.exh > w.exh ? { exh: m.exh, name: m.name } : w), { exh: 0, name: "" });
+                        const rLow = sup.rations < size, wLow = sup.water < size;
+                        return `<div class="cwf-supstrip">
+                            <span class="cwf-sup ${rLow ? "low" : ""}" title="Rations — stash + on members. The party eats ${size}/day."><i class="fa-solid fa-drumstick-bite"></i> ${sup.rations}</span>
+                            <span class="cwf-sup ${wLow ? "low" : ""}" title="Waterskins — stash + on members. The party drinks ${size}/day."><i class="fa-solid fa-bottle-water"></i> ${sup.water}</span>
+                            <span class="cwf-sup ${worst.exh > 0 ? "warn" : "ok"}" title="Worst exhaustion in the party"><i class="fa-solid fa-face-dizzy"></i> ${worst.exh > 0 ? `Lvl ${worst.exh}${worst.name ? ` · ${esc(worst.name)}` : ""}` : "rested"}</span>
+                            <button class="cwf-sup-toggle ${_partyOpen ? "on" : ""}" data-action="toggle-party" title="Per-character rations / water / exhaustion"><i class="fa-solid fa-users"></i> ${size} <i class="fa-solid fa-chevron-${_partyOpen ? "up" : "down"}"></i></button>
+                        </div>`;
+                    })()}
+                    ${_partyOpen ? `<div class="cwf-pm cwf-pm-h"><span class="cwf-pm-n"></span><span class="cwf-pm-v" title="Exhaustion"><i class="fa-solid fa-face-dizzy"></i></span><span class="cwf-pm-v" title="Rations"><i class="fa-solid fa-drumstick-bite"></i></span><span class="cwf-pm-v" title="Waterskins"><i class="fa-solid fa-bottle-water"></i></span></div>
                     ${bd.members.map(m => {
                         const cell = (field, val, cls2) => isGM
                             ? `<button class="cwf-pm-v ${cls2}" data-action="edit-member" data-id="${m.id}" data-field="${field}" title="Click to set ${esc(m.name)}'s ${field === "exh" ? "exhaustion" : field === "water" ? "waterskins" : "rations"}">${val}</button>`
                             : `<span class="cwf-pm-v ${cls2}">${val}</span>`;
                         return `<div class="cwf-pm"><span class="cwf-pm-n">${esc(m.name)}</span>${cell("exh", m.exh, m.exh > 0 ? "warn" : "")}${cell("rations", m.rations, m.rations <= 0 ? "low" : "")}${cell("water", m.water, m.water <= 0 ? "low" : "")}</div>`;
-                    }).join("") || `<div class="cwf-muted2">No party members found.</div>`}
+                    }).join("") || `<div class="cwf-muted2">No party members found.</div>`}` : ""}
                 </div>
 
                 <div class="cwf-section">

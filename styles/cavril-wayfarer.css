@@ -394,6 +394,18 @@
 .cwf-chip.chip-encounter:hover { border-color: #d8665a; }
 .cwf-chip.chip-explore i { color: #b07be0; }
 .cwf-chip.chip-explore:hover { border-color: #b07be0; }
+/* concise party supplies strip — totals + worst exhaustion at a glance; the per-character grid expands behind it */
+.cwf-supstrip { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
+.cwf-sup { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.cwf-sup .fa-drumstick-bite { color: #d8a24d; }
+.cwf-sup .fa-bottle-water { color: #4f9fe6; }
+.cwf-sup.ok .fa-face-dizzy { color: #6fb07a; }
+.cwf-sup.warn, .cwf-sup.warn .fa-face-dizzy { color: var(--cwf-hard); }
+.cwf-sup.low, .cwf-sup.low i { color: var(--cwf-hard); font-weight: 700; }
+.cwf-sup-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 9px; border-radius: 9px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-muted); cursor: pointer; }
+.cwf-sup-toggle:hover { border-color: var(--cwf-accent); color: var(--cwf-text); }
+.cwf-sup-toggle.on { background: color-mix(in srgb, var(--cwf-accent) 18%, var(--cwf-bg2)); color: var(--cwf-text); }
+.cwf-sup-toggle i { font-size: 11px; }
 /* fog-of-war planner hint */
 .cwf-foghint { font-size: 10px; color: var(--cwf-muted); display: flex; align-items: center; gap: 5px; margin: 7px 0 1px; opacity: .9; }
 .cwf-foghint i { color: #9fb4c9; }
