@@ -720,6 +720,7 @@
       buttons: [
         { action: "save", label: "Save", icon: "fa-solid fa-floppy-disk", default: true, callback: () => { try { game.settings.set(MOD, "esBiomeOverrides", ov); game.settings.set(MOD, "esTags", tags); game.settings.set(MOD, "esStoryTags", {}); } catch (e) {} ui.notifications?.info("Cavril: saved — encounters use your map choices + tags immediately."); } },   // clear the legacy single-tag store: it's now fully migrated into esTags (so a removed legacy tag stays removed)
         { action: "rebuild", label: "Rebuild index", icon: "fa-solid fa-arrows-rotate", callback: async () => { await buildBiomeIndex(); ui.notifications?.info("Cavril: rebuilt (maps + scenes) — reopen the grid."); } },
+        { action: "dump", label: "Copy for Claude", icon: "fa-solid fa-clipboard", callback: async () => { await dumpCatalog(); } },
         { action: "close", label: "Close", icon: "fa-solid fa-xmark" },
       ],
     });
@@ -851,6 +852,44 @@
       if (out == null) return [];
       return Array.from(new Set(String(out).split(",").map(s => s.trim()).filter(Boolean)));
     } catch (e) { return null; }   // cancelled / closed
+  }
+  // Export the live CZEPEKU catalog's METADATA (id + name + kind + the current biome/generic guess + CZEPEKU's own tags +
+  // variant names) to the clipboard, so Claude can hand-curate a more contextually accurate biome/generic/tag pass over
+  // the REAL names+tags (which it can't see offline). Paste the JSON to Claude; apply its answer with applyCuration(...).
+  // CavrilEncounterStage.dumpCatalog()  ·  dumpCatalog({kind:"maps"}) / {kind:"scenes"} if the whole thing is too big to paste.
+  async function dumpCatalog({ kind = "both" } = {}) {
+    if (!game.user?.isGM) return warn("GM only");
+    let cat = null; try { cat = await getCatalog(); } catch (e) { ui.notifications?.warn("Cavril: catalog unavailable — is CZEPEKU connected?"); return; }
+    const wantMap = kind !== "scenes", wantScene = kind !== "maps";
+    const items = [];
+    for (const it of (cat?.items || [])) {
+      if (it.genre !== "fantasy") continue;
+      const isScene = it.dataKey === "scenes"; if (it.dataKey !== "maps" && !isScene) continue;
+      if (isScene ? !wantScene : !wantMap) continue;
+      const c = classifyMap(it);
+      items.push({ id: it.id, name: it.name, kind: isScene ? "scene" : "map", biome: c.biome, biomes: c.biomes, generic: c.generic, tags: c.autoTags, variants: (it.variants || []).map(v => v.name).slice(0, 12) });
+    }
+    const payload = { note: "Cavril CZEPEKU catalog dump — curate biome/generic/tags from name+tags+variants; reply with {overrides:{id:{biome,generic,exclude}},tags:{id:[...]}} for applyCuration()", biomes: Object.keys(BIOME_TAGS), count: items.length, items };
+    const json = JSON.stringify(payload);
+    try { await game.clipboard?.copyPlainText?.(json); } catch (e) { try { await navigator.clipboard.writeText(json); } catch (x) {} }
+    console.log(`%c[EncounterStage] catalog dump — ${items.length} ${kind} items copied to clipboard (paste to Claude). Too big? dumpCatalog({kind:"maps"}) then {kind:"scenes"}.`, CSS, payload);
+    ui.notifications?.info(`Cavril: catalog dump (${items.length} items) copied — paste it to Claude to curate. Too big to paste? Run dumpCatalog({kind:"maps"}) and {kind:"scenes"} separately.`);
+    return payload;
+  }
+  // Apply Claude's curated pass — merge { overrides:{id→{biome?,generic?,exclude?}}, tags:{id→[tags]} } INTO the GM's
+  // esBiomeOverrides + esTags (additive; never clobbers your own edits). Accepts an object or a JSON string.
+  // CavrilEncounterStage.applyCuration(<paste the object>). Open the grid afterwards to review/adjust.
+  async function applyCuration(obj) {
+    if (!game.user?.isGM) return warn("GM only");
+    let data = obj; if (typeof obj === "string") { try { data = JSON.parse(obj); } catch (e) { ui.notifications?.error("Cavril: curation JSON didn't parse — paste the whole { overrides, tags } object."); return; } }
+    const overrides = data?.overrides || {}, tags = data?.tags || {};
+    const ov = foundry.utils.deepClone(game.settings.get(MOD, "esBiomeOverrides") || {});
+    for (const [id, o] of Object.entries(overrides)) { if (o && typeof o === "object") ov[id] = { ...(ov[id] || {}), ...o }; }
+    const et = foundry.utils.deepClone(game.settings.get(MOD, "esTags") || {});
+    for (const [id, arr] of Object.entries(tags)) { if (!Array.isArray(arr)) continue; et[id] = Array.from(new Set([...(et[id] || []), ...arr].map(s => String(s).trim()).filter(Boolean))); }
+    try { await game.settings.set(MOD, "esBiomeOverrides", ov); await game.settings.set(MOD, "esTags", et); } catch (e) { warn("applyCuration save failed", e); return; }
+    log(`curation applied — ${Object.keys(overrides).length} overrides, tags on ${Object.keys(tags).length} items`);
+    ui.notifications?.info(`Cavril: curation applied — ${Object.keys(overrides).length} biome/generic overrides + tags on ${Object.keys(tags).length} items. Open the grid to review.`);
   }
   // Verify the day/night + season variant selection: which MAP + variant would stage for a biome at a given
   // time/season/weather, without creating anything. CavrilEncounterStage.previewMap("forest", { when:"night", season:"autumn" }).
@@ -2747,7 +2786,7 @@
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
-    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, openMapGrid, mapPreviewProbe, storyMaps, storyTags, stageStoryMap, previewMap, czepekuProbe,
+    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, openMapGrid, mapPreviewProbe, storyMaps, storyTags, stageStoryMap, dumpCatalog, applyCuration, previewMap, czepekuProbe,
     tokenCatalog, tokenProbe, tokenPacks, tokenSubjects, tokenSample, tokenFor, tokenUrl,   // CZEPEKU NPC art: tokenSubjects() lists the character vocab, tokenFor(keywords) matches a face
     tokenArtFor, saveExternalImage, stageInterior, sceneImage,   // durable art (download → local path) + keyword-matched enterable interior scenes for storefronts
     tokenRank, tokenPick, openTokenPicker, closeTokenPicker,     // CZEPEKU token picker: scored search (tokenRank), best/wildcard single pick (tokenPick), GM dialog (openTokenPicker)
