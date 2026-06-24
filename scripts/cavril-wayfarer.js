@@ -3779,6 +3779,42 @@ const cwfRow = (label, value) => `<div class="cwf-card-row"><span class="cwf-car
 // SRD foes + combat music for the current hex, on a matched CZEPEKU map if connected
 // (else the current scene). data-cwf="stage".
 const cwfStageBtn = () => globalThis.CavrilEncounterStage ? `<button class="cwf-cardbtn" data-cwf="stage" title="Build this encounter — SRD foes + combat music, on a matched CZEPEKU battlemap if connected"><i class="fa-solid fa-dragon"></i> Build encounter</button>` : "";
+// Best-guess travel SFX from YOUR Cavril: Maestro soundboard — walks your sound library, matches footstep/cart/boat cues
+// by filename, and SETS your Wayfarer travel-sound settings to them (your current values, not the code defaults). A
+// standalone helper you run by hand: CavrilWayfarer.suggestSounds(). GM-only; Maestro must have a soundboard folder set.
+async function cwfSuggestSounds() {
+    if (!game.user?.isGM) return null;
+    const M = globalThis.Maestro;
+    if (typeof M?.browseSoundboard !== "function") { ui.notifications?.warn("Cavril: Cavril: Maestro (with a soundboard folder configured) isn't available."); return null; }
+    const files = [], seen = new Set(); let calls = 0;
+    const walk = async (path, depth) => {
+        if (depth > 4 || files.length > 3000 || calls > 120) return;
+        calls++; let r; try { r = await M.browseSoundboard(path); } catch (e) { return; }
+        for (const f of (r?.files || [])) { if (f?.src && !seen.has(f.src)) { seen.add(f.src); files.push({ src: f.src, hay: `${f.stem || f.name || ""} ${path || ""}`.toLowerCase() }); } }
+        for (const d of (r?.dirs || [])) await walk(d.path, depth + 1);
+    };
+    await walk(undefined, 0);
+    if (!files.length) { ui.notifications?.warn("Cavril: no soundboard cues found — set Maestro's soundboard folder first (Maestro settings)."); return null; }
+    const CATS = [
+        { key: "sfxFoot", label: "Footsteps (walking)", kw: ["footstep", "foot", "step", "walk", "march", "boot", "stroll", "hike", "trek", "tramp", "trudge", "wood"] },
+        { key: "sfxCart", label: "Cart / road (riding)", kw: ["cart", "wagon", "wheel", "carriage", "horse", "hoof", "trot", "gallop", "ride", "caravan"] },
+        { key: "sfxBoat", label: "Boat / water (rowing)", kw: ["boat", "row", "oar", "paddle", "sail", "ship", "splash", "water", "river", "stream", "lake", "creak"] },
+    ];
+    const score = (hay, kw) => kw.reduce((s, k) => s + (hay.includes(k) ? 1 : 0), 0);
+    const set = [], miss = [];
+    for (const c of CATS) {
+        let best = null, bs = 0;
+        for (const f of files) { const s = score(f.hay, c.kw); if (s > bs) { bs = s; best = f; } }
+        if (best) { try { await game.settings.set(MOD, c.key, best.src); set.push(`${c.label} → ${best.src.split("/").pop()}`); } catch (e) {} }
+        else miss.push(c.label);
+    }
+    if (set.length) { try { await game.settings.set(MOD, "travelSfx", true); } catch (e) {} }
+    const body = (set.length ? set.map(s => `<div>✓ ${cwfEsc(s)}</div>`).join("") : "<div>no matches found</div>")
+        + (miss.length ? `<div class="cwf-muted2" style="margin-top:5px">No match for: ${cwfEsc(miss.join(", "))} — set those by hand (or rename a soundboard file to include the keyword).</div>` : "");
+    try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-music", "Travel sounds set from Maestro", body, { sub: `${files.length} cues scanned` }) }); } catch (e) {}
+    ui.notifications?.info(`Cavril: set ${set.length}/${CATS.length} travel sounds from your Maestro library.`);
+    return { set, miss, scanned: files.length };
+}
 const TIER_LABEL = { crit: "Critical Success", success: "Success", fail: "Failure", critfail: "Critical Failure" };
 // Per-role skill options the GM can switch between for the situation. First = default.
 const ROLE_SKILLS = {
@@ -4742,6 +4778,7 @@ Hooks.once("ready", () => {
         token: (q, opts) => globalThis.CavrilEncounterStage?.tokenPick?.(q, opts),                  // best/wildcard CZEPEKU token for a description (durable). CavrilWayfarer.token("grizzled dwarf smith") · .token("", {wildcard:true})
         tokenSearch: (q, n) => globalThis.CavrilEncounterStage?.tokenRank?.(q, { n: n || 24 }),      // ranked matches (no download) — inspect the scoring
         tokenPicker: (q) => globalThis.CavrilEncounterStage?.openTokenPicker?.(q || ""),             // open the searchable GM picker dialog
+        suggestSounds: () => cwfSuggestSounds(),                                                     // best-guess travel SFX from your Maestro soundboard → sets sfxFoot/sfxCart/sfxBoat
         automation: (mode) => cwfApplyAutomation(mode),
         journeyStatus: () => Tables.journeyStatus(),
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, _installed: true
