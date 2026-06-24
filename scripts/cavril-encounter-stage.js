@@ -615,6 +615,64 @@
     }).render({ force: true });
   }
 
+  // Diagnostic: dump the CZEPEKU map-preview URL TEMPLATE + a few sample maps' variant ids so we can nail the thumbnail
+  // URL if the grid's best-guess is wrong. CavrilEncounterStage.mapPreviewProbe() → copies to clipboard.
+  async function mapPreviewProbe() {
+    let cat = null; try { cat = await getCatalog(true); } catch (e) {}
+    const urls = cat?.urls || {};
+    const maps = (cat?.items || []).filter(it => it.dataKey === "maps" && it.genre === "fantasy").slice(0, 6);
+    const out = { urlsKeys: Object.keys(urls), mapPreviewTemplate: urls.mapPreview || urls.mapThumbnail || urls.preview || "(none found — paste urlsKeys)", urls, samples: maps.map(it => ({ name: it.name, mapId: it.id, variants: (it.variants || []).slice(0, 2).map(v => ({ id: v.id, name: v.name, key: v.key })) })) };
+    console.log("%c[Cavril map-preview probe]", "color:#caa6ff;font-weight:bold", out);
+    try { await game.clipboard?.copyPlainText?.(JSON.stringify(out, null, 2)); ui.notifications?.info("Cavril: map-preview probe copied to clipboard — paste it to Claude to fix thumbnails."); } catch (e) {}
+    return out;
+  }
+
+  // LIGHTROOM-STYLE CURATION GRID: large map thumbnails grouped by biome. Click a thumb to toggle it IN/OUT of that biome's
+  // generic random-encounter pool; right-click to exclude entirely. Persists to esBiomeOverrides (same as the text review
+  // panel) so pickMap honours it immediately. CavrilEncounterStage.openMapGrid(). v0.55.72.
+  async function openMapGrid() {
+    if (!game.user.isGM) return;
+    const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
+    let rows = biomeIndexRows();
+    if (!rows) {
+      const go = await foundry.applications.api.DialogV2.confirm({ window: { title: "Cavril — Map Grid" }, content: "<p>No biome index built yet. Build it from your CZEPEKU catalog now?</p>" }).catch(() => false);
+      if (!go) return; await buildBiomeIndex(); rows = biomeIndexRows();
+      if (!rows) { ui.notifications?.warn("Cavril: couldn't build the index — is CZEPEKU connected?"); return; }
+    }
+    let cat = null; try { cat = await getCatalog(); } catch (e) {}
+    const urls = cat?.urls || {}; const byId = {}; for (const it of (cat?.items || [])) byId[it.id] = it;
+    const tmpl = urls.mapPreview || urls.mapThumbnail || urls.preview || "";
+    log(`map grid: preview template = ${tmpl || "(none — run mapPreviewProbe())"}`);
+    const thumbFor = (m) => { try { const it = byId[m.id]; if (!it || !tmpl) return ""; const nat = naturalBase(it) || it.variants?.[0]; if (!nat) return ""; return tmpl.replace(/<[^>]*>/, encodeURIComponent(nat.id)); } catch (e) { return ""; } };
+    const base = {}; for (const m of (game.settings.get(MOD, "esBiomeIndex")?.maps || [])) base[m.id] = m;
+    const BIOMES = Object.keys(BIOME_TAGS);
+    const byBiome = {}; for (const m of rows) (byBiome[m.biome] ??= []).push(m);
+    const card = (m) => { const url = thumbFor(m), on = m.generic && !m.exclude; return `<div class="cmg-card${on ? " on" : ""}${m.exclude ? " ex" : ""}" data-id="${esc(m.id)}" title="${esc(m.name)} — click: toggle generic · right-click: exclude">${url ? `<div class="cmg-img" style="background-image:url('${esc(url)}')"></div>` : `<div class="cmg-img cmg-noimg"></div>`}<div class="cmg-nm">${esc(m.name)}</div><div class="cmg-badge"><i class="fa-solid fa-check"></i></div></div>`; };
+    const sections = BIOMES.filter(b => byBiome[b]?.length).map(b => {
+      const ms = byBiome[b].slice().sort((a, c) => (Number(c.generic) - Number(a.generic)) || String(a.name).localeCompare(String(c.name)));
+      const g = ms.filter(m => m.generic && !m.exclude).length;
+      return `<details open><summary><b>${esc(b)}</b> <span class="cmg-c">${g}/${ms.length} generic</span></summary><div class="cmg-grid">${ms.map(card).join("")}</div></details>`;
+    }).join("");
+    const content = `<style>.cmg{max-height:72vh;overflow:auto}.cmg details{border:1px solid #8884;border-radius:6px;margin:6px 0;padding:4px 8px}.cmg summary{cursor:pointer;padding:4px 0;font-size:14px}.cmg-c{color:#888;margin-left:6px;font-size:12px}.cmg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;padding:6px 0}.cmg-card{position:relative;border-radius:7px;overflow:hidden;cursor:pointer;border:2px solid transparent;background:#0006;opacity:.5;transition:opacity .12s,border-color .12s}.cmg-card.on{opacity:1;border-color:#8fd98f}.cmg-card.ex{opacity:.28;border-color:#d65a5a}.cmg-img{height:96px;background-size:cover;background-position:center}.cmg-noimg{background:repeating-linear-gradient(45deg,#333,#333 8px,#2a2a2a 8px,#2a2a2a 16px)}.cmg-nm{font-size:11px;padding:3px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#000a}.cmg-badge{position:absolute;top:5px;right:5px;width:22px;height:22px;border-radius:50%;background:#8fd98f;color:#0a0a0a;display:none;align-items:center;justify-content:center;font-size:12px}.cmg-card.on .cmg-badge{display:flex}</style><div class="cmg">${sections || "<p>No maps classified — build the index.</p>"}</div>`;
+    const ov = foundry.utils.deepClone(game.settings.get(MOD, "esBiomeOverrides") || {});
+    const setOv = (id, patch) => { const b0 = base[id] || {}; const cur = { biome: b0.biome, generic: b0.generic, exclude: false, ...(ov[id] || {}), ...patch }; const o = {}; if (cur.biome !== b0.biome) o.biome = cur.biome; if (cur.generic !== b0.generic) o.generic = cur.generic; if (cur.exclude) o.exclude = true; if (Object.keys(o).length) ov[id] = o; else delete ov[id]; return cur; };
+    const dlg = new foundry.applications.api.DialogV2({
+      window: { title: "Cavril — Map Grid · click = toggle generic · right-click = exclude", resizable: true },
+      position: { width: 920, height: 720 }, content,
+      buttons: [
+        { action: "save", label: "Save", icon: "fa-solid fa-floppy-disk", default: true, callback: () => { game.settings.set(MOD, "esBiomeOverrides", ov); ui.notifications?.info("Cavril: saved — encounters use your map choices immediately."); } },
+        { action: "rebuild", label: "Rebuild index", icon: "fa-solid fa-arrows-rotate", callback: async () => { await buildBiomeIndex(); ui.notifications?.info("Cavril: rebuilt — reopen the grid."); } },
+        { action: "close", label: "Close", icon: "fa-solid fa-xmark" },
+      ],
+    });
+    await dlg.render({ force: true });
+    for (const cardEl of dlg.element.querySelectorAll(".cmg-card")) {
+      const id = cardEl.dataset.id;
+      cardEl.addEventListener("click", () => { const cur = setOv(id, { generic: !cardEl.classList.contains("on"), exclude: false }); cardEl.classList.toggle("on", !!cur.generic && !cur.exclude); cardEl.classList.remove("ex"); });
+      cardEl.addEventListener("contextmenu", (ev) => { ev.preventDefault(); const ex = !cardEl.classList.contains("ex"); setOv(id, { exclude: ex }); cardEl.classList.toggle("ex", ex); if (ex) cardEl.classList.remove("on"); });
+    }
+  }
+
   // Story-seed maps: the SPECIFIC (landmark/structure) battlemaps per biome — the opposite of the generic wild pool.
   // These are the ones that can ANCHOR a set-piece, a quest beat, or inspire a story (a temple, a wreck, a keep).
   // CavrilEncounterStage.storyMaps() or .storyMaps("jungle").
@@ -1972,7 +2030,7 @@
     }
     let dragOff = null, pendScale = null, scaleT = null;
     function chip(r, suggested) {
-      const t = r.t, img = t.document?.texture?.src || t.actor?.img || "";
+      const t = r.t, img = t.actor?.img || t.document?.texture?.src || "";   // PORTRAIT art (actor.img) for the target chips, falling back to token art
       const tip = `${t.name} · ${Math.round(r.dist)} ft · ${r.rel}${r.adv ? " · advantage" : ""}${suggested ? " · suggested" : ""}`;
       return `<button class="cwf-tgt ${r.rel}${suggested ? " sug" : ""}${targeted(t) ? " on" : ""}" data-tid="${t.id}" title="${esc(tip)}"><img src="${esc(img)}" alt="">${r.adv ? '<i class="fa-solid fa-bolt cwf-tgt-adv"></i>' : ""}</button>`;
     }
@@ -2522,7 +2580,7 @@
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS },
-    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, storyMaps, previewMap, czepekuProbe,
+    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, openMapGrid, mapPreviewProbe, storyMaps, previewMap, czepekuProbe,
     tokenCatalog, tokenProbe, tokenPacks, tokenSubjects, tokenSample, tokenFor, tokenUrl,   // CZEPEKU NPC art: tokenSubjects() lists the character vocab, tokenFor(keywords) matches a face
     tokenArtFor, saveExternalImage, stageInterior, sceneImage,   // durable art (download → local path) + keyword-matched enterable interior scenes for storefronts
     tokenRank, tokenPick, openTokenPicker, closeTokenPicker,     // CZEPEKU token picker: scored search (tokenRank), best/wildcard single pick (tokenPick), GM dialog (openTokenPicker)
