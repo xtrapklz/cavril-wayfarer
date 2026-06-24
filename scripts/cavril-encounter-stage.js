@@ -643,20 +643,28 @@
     const urls = cat?.urls || {}; const byId = {}; for (const it of (cat?.items || [])) byId[it.id] = it;
     const tmpl = urls.mapPreview || urls.mapThumbnail || urls.preview || "";
     log(`map grid: preview template = ${tmpl || "(none — run mapPreviewProbe())"}`);
-    // CZEPEKU preview URL: template "…/map/preview/<MAP_ID>.webp" where <MAP_ID> = slug(mapName + " " + variantName) + "-" + variant.id
-    // (32-char hex). Prefer a "Day" variant for a clean, lit preview; fall back to the first variant.
-    const cwfSlug = (s) => String(s || "").toLowerCase().replace(/['‘’]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-    const thumbFor = (m) => { try { const it = byId[m.id]; if (!it || !tmpl) return ""; const vs = it.variants || []; const v = vs.find(x => /\bday\b/i.test(x.name)) || vs[0]; if (!v) return ""; return tmpl.replace("<MAP_ID>", `${cwfSlug(`${it.name} ${v.name}`)}-${v.id}`); } catch (e) { return ""; } };
+    // CZEPEKU preview URL — mirrors the module's own MapCard (czepeku.js) EXACTLY: <MAP_ID> is just the variant id
+    // (a 32-char hex). The human-readable "henge-cave-entrance-rain-…" prefix you see on a downloaded file is NOT part
+    // of the fetch path — prepending it 404s. The final <img src> goes through CZEPEKU's Cloudflare image-resize loader
+    // (width=400 keeps a grid of hundreds light: ~9KB vs ~39KB raw). The endpoint is public (no EncounterKit session
+    // needed). Prefer a "Day" variant for a clean, lit thumbnail; any variant id resolves, so fall back to the first.
+    const _cfOrigin = (() => { try { return new URL(tmpl).origin; } catch (e) { return "https://content.encounterkit.com"; } })();
+    const cfLoader = (src, width = 400) => `${_cfOrigin}/cdn-cgi/image/width=${width},quality=75,format=auto/${src}`;
+    const thumbFor = (m) => { try { const it = byId[m.id]; if (!it || !tmpl) return ""; const vs = it.variants || []; const v = vs.find(x => /\bday\b/i.test(x.name)) || vs[0]; if (!v?.id) return ""; return cfLoader(tmpl.replace("<MAP_ID>", v.id)); } catch (e) { return ""; } };
     const base = {}; for (const m of (game.settings.get(MOD, "esBiomeIndex")?.maps || [])) base[m.id] = m;
     const BIOMES = Object.keys(BIOME_TAGS);
     const byBiome = {}; for (const m of rows) (byBiome[m.biome] ??= []).push(m);
-    const card = (m) => { const url = thumbFor(m), on = m.generic && !m.exclude; return `<div class="cmg-card${on ? " on" : ""}${m.exclude ? " ex" : ""}" data-id="${esc(m.id)}" title="${esc(m.name)} — click: toggle generic · right-click: exclude">${url ? `<div class="cmg-img" style="background-image:url('${esc(url)}')"></div>` : `<div class="cmg-img cmg-noimg"></div>`}<div class="cmg-nm">${esc(m.name)}</div><div class="cmg-badge"><i class="fa-solid fa-check"></i></div></div>`; };
+    let _withUrl = 0;
+    const card = (m) => { const url = thumbFor(m), on = m.generic && !m.exclude; if (url) _withUrl++; return `<div class="cmg-card${on ? " on" : ""}${m.exclude ? " ex" : ""}" data-id="${esc(m.id)}" title="${esc(m.name)} — click: toggle generic · right-click: exclude"><div class="cmg-thumb">${url ? `<img class="cmg-img" src="${esc(url)}" loading="lazy" alt="">` : ""}</div><div class="cmg-nm">${esc(m.name)}</div><div class="cmg-badge"><i class="fa-solid fa-check"></i></div><div class="cmg-x"><i class="fa-solid fa-ban"></i></div></div>`; };
     const sections = BIOMES.filter(b => byBiome[b]?.length).map(b => {
       const ms = byBiome[b].slice().sort((a, c) => (Number(c.generic) - Number(a.generic)) || String(a.name).localeCompare(String(c.name)));
       const g = ms.filter(m => m.generic && !m.exclude).length;
       return `<details open><summary><b>${esc(b)}</b> <span class="cmg-c">${g}/${ms.length} generic</span></summary><div class="cmg-grid">${ms.map(card).join("")}</div></details>`;
     }).join("");
-    const content = `<style>.cmg{max-height:72vh;overflow:auto}.cmg details{border:1px solid #8884;border-radius:6px;margin:6px 0;padding:4px 8px}.cmg summary{cursor:pointer;padding:4px 0;font-size:14px}.cmg-c{color:#888;margin-left:6px;font-size:12px}.cmg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;padding:6px 0}.cmg-card{position:relative;border-radius:7px;overflow:hidden;cursor:pointer;border:2px solid transparent;background:#0006;opacity:.5;transition:opacity .12s,border-color .12s}.cmg-card.on{opacity:1;border-color:#8fd98f}.cmg-card.ex{opacity:.28;border-color:#d65a5a}.cmg-img{height:96px;background-size:cover;background-position:center}.cmg-noimg{background:repeating-linear-gradient(45deg,#333,#333 8px,#2a2a2a 8px,#2a2a2a 16px)}.cmg-nm{font-size:11px;padding:3px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#000a}.cmg-badge{position:absolute;top:5px;right:5px;width:22px;height:22px;border-radius:50%;background:#8fd98f;color:#0a0a0a;display:none;align-items:center;justify-content:center;font-size:12px}.cmg-card.on .cmg-badge{display:flex}</style><div class="cmg">${sections || "<p>No maps classified — build the index.</p>"}</div>`;
+    // NOTE: DialogV2 strips <style> tags out of the `content` string, so we inject the stylesheet as a real DOM node
+    // AFTER render (see below). Keeping the CSS here as a const keeps it close to the markup it styles.
+    const cmgCss = `.cmg{max-height:74vh;overflow:auto;padding-right:4px}.cmg details{border:1px solid #ffffff1f;border-radius:8px;margin:8px 0;padding:6px 10px;background:#ffffff08}.cmg summary{cursor:pointer;padding:5px 2px;font-size:15px;font-weight:600;letter-spacing:.02em;text-transform:capitalize}.cmg-c{color:#9aa6b2;margin-left:8px;font-size:12px;font-weight:400}.cmg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;padding:10px 2px}.cmg-card{position:relative;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid transparent;background:#0006;opacity:.45;transition:opacity .12s,border-color .12s,transform .08s,box-shadow .12s}.cmg-card:hover{transform:translateY(-2px);box-shadow:0 4px 14px #000a}.cmg-card.on{opacity:1;border-color:#8fd98f}.cmg-card.ex{opacity:.32;border-color:#d65a5a}.cmg-thumb{height:124px;background:repeating-linear-gradient(45deg,#2c2c34,#2c2c34 9px,#24242b 9px,#24242b 18px)}.cmg-img{width:100%;height:100%;object-fit:cover;display:block}.cmg-nm{font-size:11.5px;padding:5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#000b;font-weight:500}.cmg-badge,.cmg-x{position:absolute;top:7px;width:24px;height:24px;border-radius:50%;display:none;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px #000b}.cmg-badge{right:7px;background:#8fd98f;color:#0a0a0a}.cmg-x{left:7px;background:#d65a5a;color:#fff}.cmg-card.on .cmg-badge{display:flex}.cmg-card.ex .cmg-x{display:flex}.cmg-hint{font-size:11px;color:#9aa6b2;padding:2px 2px 8px}`;
+    const content = `<div class="cmg"><div class="cmg-hint">Click a tile to toggle it in/out of that biome's generic random pool · right-click to exclude entirely · Save to apply.</div>${sections || "<p style='padding:12px;color:#9aa6b2'>No maps classified — build the index first (Rebuild index).</p>"}</div>`;
     const ov = foundry.utils.deepClone(game.settings.get(MOD, "esBiomeOverrides") || {});
     const setOv = (id, patch) => { const b0 = base[id] || {}; const cur = { biome: b0.biome, generic: b0.generic, exclude: false, ...(ov[id] || {}), ...patch }; const o = {}; if (cur.biome !== b0.biome) o.biome = cur.biome; if (cur.generic !== b0.generic) o.generic = cur.generic; if (cur.exclude) o.exclude = true; if (Object.keys(o).length) ov[id] = o; else delete ov[id]; return cur; };
     const dlg = new foundry.applications.api.DialogV2({
@@ -669,6 +677,11 @@
       ],
     });
     await dlg.render({ force: true });
+    // DialogV2 sanitizes <style> out of `content`; inject the stylesheet as a real DOM node so the grid/tiles actually style.
+    try { const st = document.createElement("style"); st.textContent = cmgCss; dlg.element.prepend(st); } catch (e) {}
+    // Any thumbnail that 404s collapses to the placeholder stripe rather than showing a broken-image glyph.
+    let _broke = 0; for (const img of dlg.element.querySelectorAll("img.cmg-img")) { const hide = () => { _broke++; try { img.remove(); } catch (e) {} }; img.addEventListener("error", hide); if (img.complete && img.naturalWidth === 0) hide(); }
+    log(`map grid: ${_withUrl} tiles have preview URLs${_broke ? `, ${_broke} failed to load` : ""}`);
     for (const cardEl of dlg.element.querySelectorAll(".cmg-card")) {
       const id = cardEl.dataset.id;
       cardEl.addEventListener("click", () => { const cur = setOv(id, { generic: !cardEl.classList.contains("on"), exclude: false }); cardEl.classList.toggle("on", !!cur.generic && !cur.exclude); cardEl.classList.remove("ex"); });
