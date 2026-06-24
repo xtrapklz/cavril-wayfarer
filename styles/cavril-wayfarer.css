@@ -364,16 +364,22 @@
 .cwf-dials-hd { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--cwf-muted); display: flex; align-items: center; gap: 5px; margin-bottom: 5px; }
 .cwf-dials-hd i { opacity: .75; }
 .cwf-danger-row { display: flex; align-items: center; gap: 9px; margin-top: 8px; }
-.cwf-dials .cwf-danger-row { margin-top: 5px; }
+/* inside the dial group: a fixed label column + equal-width segments → all three rows line up uniformly */
+.cwf-dials .cwf-danger-row { display: grid; grid-template-columns: 86px 1fr; gap: 9px; align-items: center; margin-top: 6px; }
 .cwf-dials .cwf-danger-row:first-of-type { margin-top: 0; }
-.cwf-danger-l { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--cwf-muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; min-width: 74px; }
-.cwf-danger-l i { color: var(--cwf-hard); width: 13px; text-align: center; }
+.cwf-danger-l { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--cwf-muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; min-width: 74px; }
+.cwf-dials .cwf-danger-l { min-width: 0; }
+.cwf-danger-l i { color: var(--cwf-hard); width: 14px; text-align: center; font-size: 12px; }
 /* strong, distinct dial colours */
 .cwf-dials .cwf-danger-l .fa-skull { color: #d65a3a; }
-.cwf-dials .cwf-danger-l .fa-gauge-high { color: #e0a82e; }
-.cwf-dials .cwf-danger-l .fa-user-secret { color: #b07be0; }
-.cwf-seg-mini { flex: 1; gap: 3px; }
-.cwf-seg-mini .cwf-seg { height: 20px; font-size: 11px; border-radius: 6px; }
+.cwf-dials .cwf-danger-l .fa-gauge-high { color: #4f9fe6; }
+.cwf-dials .cwf-danger-l .fa-star { color: #f2c64b; }
+.cwf-seg-mini { flex: 1; gap: 4px; }
+.cwf-dials .cwf-seg-mini { display: flex; }
+.cwf-seg-mini .cwf-seg { flex: 1 1 0; min-width: 0; height: 21px; font-size: 11px; border-radius: 6px; }
+/* fog-of-war planner hint */
+.cwf-foghint { font-size: 10px; color: var(--cwf-muted); display: flex; align-items: center; gap: 5px; margin: 7px 0 1px; opacity: .9; }
+.cwf-foghint i { color: #9fb4c9; }
 
 /* per-character readout — exhaustion / rations / water */
 .cwf-pm { display: grid; grid-template-columns: 1fr 34px 34px 34px; gap: 5px 7px; align-items: center; font-size: 11.5px; padding: 3px 2px; }

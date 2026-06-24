@@ -1558,28 +1558,19 @@
   // dnd5e XP thresholds × the encounter multiplier, so a "danger 3" fight reliably lands ~Hard.
   const CR_XP = { 0: 10, 0.125: 25, 0.25: 50, 0.5: 100, 1: 200, 2: 450, 3: 700, 4: 1100, 5: 1800, 6: 2300, 7: 2900, 8: 3900, 9: 5000, 10: 5900, 11: 7200, 12: 8400, 13: 10000, 14: 11500, 15: 13000, 16: 15000, 17: 18000, 18: 20000, 19: 22000, 20: 25000, 21: 33000, 22: 41000, 23: 50000, 24: 62000, 25: 75000 };
   function crToXp(cr) { const c = Number(cr) || 0; if (CR_XP[c] != null) return CR_XP[c]; let best = -1, bx = 10; for (const k in CR_XP) { const n = Number(k); if (n <= c && n > best) { best = n; bx = CR_XP[k]; } } return bx; }
-  const encMult = (n) => n <= 1 ? 1 : n === 2 ? 1.5 : n <= 6 ? 2 : n <= 10 ? 2.5 : n <= 14 ? 3 : 4;   // dnd5e encounter multiplier by foe count
   const XP_THRESH = [[25, 50, 75, 100], [50, 100, 150, 200], [75, 150, 225, 400], [125, 250, 375, 500], [250, 500, 750, 1100], [300, 600, 900, 1400], [350, 750, 1100, 1700], [450, 900, 1300, 2000], [550, 1100, 1600, 2400], [600, 1200, 1900, 2800], [800, 1600, 2400, 3600], [1000, 2000, 3000, 4800], [1100, 2200, 3400, 5200], [1250, 2500, 3800, 5900], [1400, 2800, 4300, 6400], [1600, 3200, 4800, 6800], [2000, 3900, 5900, 8800], [2100, 4200, 6300, 9500], [2400, 4900, 7300, 10900], [2800, 5700, 8500, 12700]];
-  const NEW_ENGINE = () => { try { return !!game.settings.get(MOD, "newEngine"); } catch { return false; } };
   const swarmMult = (n) => n <= 4 ? 1 : n <= 6 ? 1.15 : n <= 8 ? 1.3 : 1.5;   // 2024 drops the group XP tax; a LIGHT bump keeps big swarms from being a free win
-  // Target ADJUSTED-xp for the fight. CLASSIC: party thresholds [easy,med,hard,deadly]×size, danger 0-5 → easy…deadly, ×encMult.
-  // NEW ENGINE: three tiers [easy,med,hard] ONLY — Challenge 0-5 slides easy→hard, CAPPED at hard (a gentler top, no "deadly")
-  // — with the swarm-only multiplier (in composeEncounter). encounterBudgetMul still scales both globally.
+  // Target ADJUSTED-xp for the fight. THREE tiers [easy,med,hard] only — Challenge 0-5 slides easy→hard, CAPPED at hard
+  // (a gentler 2024 top, no "deadly") — with the swarm-only multiplier (in composeEncounter). encounterBudgetMul scales it.
   function encounterTargetXp(level, size, dial) {
     const L = Math.max(1, Math.min(20, level | 0)), n = Math.max(1, size | 0);
     const row = XP_THRESH[L - 1];
     const d = Math.max(0, Math.min(5, Number.isFinite(dial) ? dial : 2));
     const mult = Math.max(0.5, Math.min(2, (CFG.encounterBudgetMul ?? 0.5) * 2));
-    if (NEW_ENGINE()) {
-      const t = row.slice(0, 3).map(v => v * n);                       // [easy, med, hard] × size — no deadly tier
-      const pos = (d / 5) * 2, lo = Math.floor(pos), hi = Math.min(2, lo + 1);
-      const base = t[lo] + (t[hi] - t[lo]) * (pos - lo);
-      return Math.round(base * (0.9 + Math.random() * 0.2) * mult);    // gentler ±10% jitter
-    }
-    const t = row.map(v => v * n);
-    const pos = (d / 5) * 3, lo = Math.floor(pos), hi = Math.min(3, lo + 1);
+    const t = row.slice(0, 3).map(v => v * n);                       // [easy, med, hard] × size — no deadly tier (2024 curve)
+    const pos = (d / 5) * 2, lo = Math.floor(pos), hi = Math.min(2, lo + 1);
     const base = t[lo] + (t[hi] - t[lo]) * (pos - lo);
-    return Math.round(base * (0.85 + Math.random() * 0.3) * mult);     // ±15% run-to-run variety
+    return Math.round(base * (0.9 + Math.random() * 0.2) * mult);    // gentler ±10% jitter
   }
   // Compose an encounter from the biome roster + a danger-weighted composition. Each ROLE draws from its own CR band
   // (pool = weak/numerous, lurker = mid, apex = near party level); foes are added until the encounter's ADJUSTED XP
@@ -1599,7 +1590,7 @@
     const targetXp = encounterTargetXp(level, size, danger);   // dnd5e party threshold, danger-scaled
     const maxN = CFG.maxMonsters ?? 6;
     const chosen = [];
-    const adjXp = () => chosen.reduce((s, c) => s + crToXp(c.cr), 0) * (NEW_ENGINE() ? swarmMult(chosen.length) : encMult(chosen.length));   // how the party will FEEL it (new engine: no group tax for ≤4)
+    const adjXp = () => chosen.reduce((s, c) => s + crToXp(c.cr), 0) * swarmMult(chosen.length);   // how the party will FEEL it (no group tax for ≤4)
     for (const [role, lo, hi] of comp.slots) {
       let opts = optsFor(role); if (!opts.length) opts = optsFor("pool"); if (!opts.length) opts = optsFor("apex");
       if (!opts.length) continue;
@@ -1676,7 +1667,7 @@
     // to the random budget-fill of the type-pool when the roster has nothing in this CR band.
     let chosen = [], compId = null;
     if (CFG.encounterTables ?? true) {
-      let danger = 2; try { const cw = globalThis.CavrilWayfarer?.Camp; danger = Number(NEW_ENGINE() ? (cw?.challengeScore?.() ?? cw?.dangerScore?.()) : cw?.dangerScore?.()); if (!Number.isFinite(danger)) danger = 2; } catch { danger = 2; }
+      let danger = 2; try { const cw = globalThis.CavrilWayfarer?.Camp; danger = Number(cw?.challengeScore?.() ?? cw?.dangerScore?.()); if (!Number.isFinite(danger)) danger = 2; } catch { danger = 2; }
       const composed = composeEncounter(cls, index, level, size, danger);
       if (composed) { chosen = composed.chosen; compId = composed.comp; }
     }
