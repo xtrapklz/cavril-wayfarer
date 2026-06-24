@@ -62,6 +62,7 @@
     hideGrid: true,                // staged maps: hide Foundry's grid overlay (CZEPEKU art has its own)
     gridType: 4,                   // grid for staged (and, with the hook below, all new) scenes: 4 = Hexagonal Columns (Odd); 1 = Square; 0 = Gridless
     hideFoes: true,                // spawn foe tokens HIDDEN (GM reveals them) so players don't see the ambush before it's sprung
+    citizenFoeTokens: true,        // humanoid foes borrow your Cavril: Cities citizen art (race-matched; CZEPEKU reserved for named NPCs)
     defaultNewSceneGrid: true,     // also default ANY manually-created new scene to gridType via a preCreateScene hook
     lightColoration: 10,           // force every authored light to Foundry "Natural Light" technique (10); null = leave as-authored
     excludeVariantWords: ["rain", "storm", "downpour"], // never instantiate these variants — CZEPEKU's top-down rain clashes with our weather system
@@ -1525,12 +1526,68 @@
     const flip = (CFG.faceFlip ?? true) ? 180 : 0;
     return (Math.atan2(dx, -dy) * 180 / Math.PI + flip + 360) % 360;
   }
+  // ── Citizen FOE faces ─────────────────────────────────────────────────────────────────────────────
+  // Humanoid foes borrow a face from your Cavril: Cities (CityHUD) citizen art so encounters look like THIS
+  // city's people — CZEPEKU stays reserved for named NPCs. Best-effort + race-matched: reuses CityHUD's PUBLIC
+  // Domain.Portrait scorer (race +100 / gender / avoid) when present, else a plain filename match. Non-humanoids
+  // and races with no citizen art (goblins, kobolds, beasts…) keep their own statblock token.
+  let _citizenFilesCache = null;
+  async function citizenArtFiles() {
+    if (_citizenFilesCache) return _citizenFilesCache;
+    let folder = "modules/cavril-cityhud/Citizen Tokens 5e", source = "data";
+    try { folder = String(game.settings.get("cavril-cityhud", "portraitFolder") || folder).trim() || folder; } catch (e) { /* CityHUD not installed → default folder */ }
+    try { source = String(game.settings.get("cavril-cityhud", "portraitSource") || source).trim() || source; } catch (e) { /* default source */ }
+    const FP = foundry.applications?.apps?.FilePicker?.implementation ?? globalThis.FilePicker;
+    const IMG = /\.(?:png|jpe?g|webp|gif|avif)$/i, out = [];
+    const browse = async (s, p) => { try { return await FP.browse(s, p); } catch (e) { return null; } };
+    const order = /^https?:/i.test(folder) ? ["forgevtt", "s3", "data"] : [source, "data", "forgevtt"];
+    let root = null, used = source;
+    for (const s of order) { root = await browse(s, folder); if (root) { used = s; break; } }
+    if (root) {
+      for (const f of (root.files || [])) if (IMG.test(f.split("?")[0])) out.push(f);
+      for (const d of (root.dirs || [])) { const sub = await browse(used, d); if (sub) for (const f of (sub.files || [])) if (IMG.test(f.split("?")[0])) out.push(f); }   // depth-1 subfolders (race/gender packs)
+    }
+    _citizenFilesCache = out;
+    log(`citizen foe art: ${out.length} files from "${folder}"${out.length ? "" : " (none — humanoid foes keep their default tokens)"}`);
+    return out;
+  }
+  const _MONSTROUS_RACE = /goblin|kobold|gnoll|hobgoblin|bugbear|lizardfolk|bullywug|grung|troglodyte|sahuagin|kuo|merfolk|yuan|gith|thri|quaggoth|grimlock|troll|orog/i;
+  function _foeRace(a) {
+    const st = String(a.system?.details?.type?.subtype || "").trim();
+    if (st && !/^any(\s+race)?$/i.test(st)) return st;          // explicit subtype, e.g. "humanoid (orc)" → "orc"
+    const nm = String(a.name || "").toLowerCase();
+    for (const r of ["drow", "duergar", "githyanki", "gith", "orc", "hobgoblin", "goblin", "kobold", "gnoll", "bugbear", "lizardfolk", "tiefling", "dragonborn", "aasimar", "gnome", "dwarf", "halfling", "elf", "half-orc", "half-elf"]) if (nm.includes(r)) return r;
+    return "human";                                              // generic people foe (bandit / guard / cultist…)
+  }
+  function citizenFoeArt(a, files, usage) {
+    if (!files?.length) return null;
+    const type = String(a.system?.details?.type?.value ?? a.system?.details?.type ?? "").toLowerCase();
+    if (type && type !== "humanoid") return null;               // only PEOPLE-type foes borrow a citizen face
+    const race = _foeRace(a);
+    if (_MONSTROUS_RACE.test(race)) return null;                // goblinoids etc. → keep their own token
+    const CH = (window.CavrilCityHUD || game.modules.get?.("cavril-cityhud")?.api)?.Domain?.Portrait;
+    let pool;
+    if (CH?.fileMatchesRace) pool = files.filter(f => { try { return CH.fileMatchesRace(f, race); } catch (e) { return false; } });
+    else { const r = race.toLowerCase().split(/[\s\-()]+/)[0]; pool = files.filter(f => (f.split("/").pop() || "").toLowerCase().startsWith(r)); }
+    if (!pool.length) return null;                              // no citizen art for this race → keep default token
+    let pick = null;
+    if (CH?.pickPortrait) { try { pick = CH.pickPortrait(pool, { race, gender: "" }, null, { usage, randomTopN: Math.min(8, pool.length) }); } catch (e) { /* fall through to random */ } }
+    if (!pick || /mystery-man/.test(pick)) pick = pool[Math.floor(Math.random() * pool.length)];
+    if (pick && usage) usage.set(pick, (usage.get(pick) || 0) + 1);
+    return pick || null;
+  }
+
   // Build token data straight from each actor's PROTOTYPE token (robust across V14 — getTokenDocument
   // had quirks that were silently dropping the party). Strip the id, set position + actorId. When a
   // faceTarget point is given (the party muster point for foes), rotate each token to face it.
   async function placeTokens(scene, actors, points, faceTarget = null) {
     const data = [];
     const gs = scene.grid?.size || CFG.fallbackGridSize;
+    // Foes (faceTarget = the party muster point) optionally borrow this city's citizen faces — load the art pool ONCE
+    // per drop, and spread the picks with a shared usage map so a band of 5 bandits doesn't wear the same face.
+    const useCitizen = !!faceTarget && (CFG.citizenFoeTokens ?? true);
+    const citizenFiles = useCitizen ? await citizenArtFiles() : null;
+    const citizenUsage = new Map();
     for (let i = 0; i < actors.length; i++) {
       const a = actors[i]; if (!a?.id) continue;
       const x = Math.round(points[i].x), y = Math.round(points[i].y);
@@ -1549,6 +1606,9 @@
           const cx = x + (proto.width || 1) * gs / 2, cy = y + (proto.height || 1) * gs / 2;
           proto.rotation = Math.round(faceAngle(cx, cy, faceTarget.x, faceTarget.y));
           proto.lockRotation = false;
+          // Skin humanoid foes with THIS city's citizen art (CZEPEKU reserved for named NPCs). Best-effort + race-matched;
+          // reset scale since citizen tokens are standard full-frame medium art (the monster's own scale tweak no longer applies).
+          if (useCitizen) { try { const art = citizenFoeArt(a, citizenFiles, citizenUsage); if (art) proto.texture = { ...(proto.texture || {}), src: art, scaleX: 1, scaleY: 1 }; } catch (e) { /* keep the actor's own token */ } }
         }
         data.push(proto);
       } catch (e) { warn(`token data for ${a?.name} failed`, e); }
@@ -2314,6 +2374,7 @@
     reg("esLoreRostersJSON",  { name: "  · Primus lore rosters (JSON)", hint: 'Add your own creatures per biome, merged over the SRD rosters. JSON: {"jungle":{"pool":["My Beast"],"apex":["My Warlord"]}}. Names must exist in the monster compendium.', scope: "world", config: true, type: String, default: "" });
     reg("esAddToCombat",      { name: "  · Build the encounter", hint: "Add the party + foes to the combat tracker, roll NPC initiative, and call for initiative. You still press Begin Combat yourself.", scope: "world", config: true, type: Boolean, default: true });
     reg("esCombatMusic",      { name: "  · Combat music on entering the map", hint: "When you ENTER a staged battlemap (the Enter encounter button), start the Cavril: Maestro combat theme for the dominant foe type — setting the battle vibe while everyone rolls initiative; it keeps playing through Begin Combat. (At stage time the current music just shifts tense.)", scope: "world", config: true, type: Boolean, default: true });
+    reg("esCitizenFoeTokens", { name: "  · Citizen faces for humanoid foes", hint: "Skin HUMANOID foe tokens (bandits, guards, cultists, orcs…) with your Cavril: Cities citizen art — the same portrait folder CityHUD uses — so encounters look like THIS city's people, race-matched. Goblins/kobolds/beasts and named CZEPEKU NPCs keep their own art. Off = foes use their statblock's default token.", scope: "world", config: true, type: Boolean, default: true });
     reg("esEncounterSfx",     { name: "  · Encounter alert sound", hint: "Optional Cavril: Maestro cue played when an encounter stages (sfx:path / preset:tag / @Maestro[…]). Blank = no alert sound (the tension shift + cinematic still fire).", scope: "world", config: true, type: String, default: "" });
     reg("esFoeMinFt",         { name: "  · Foe min distance (ft)", hint: "Foes spawn at LEAST this far from the party.", scope: "world", config: true, type: Number, default: 15, range: { min: 0, max: 120, step: 5 } });
     reg("esFoeMaxFt",         { name: "  · Foe max distance (ft)", hint: "Foes spawn at MOST this far from the party.", scope: "world", config: true, type: Number, default: 40, range: { min: 5, max: 200, step: 5 } });
@@ -2358,6 +2419,7 @@
       try { LORE_ROSTER = JSON.parse(game.settings.get(MOD, "esLoreRostersJSON") || "{}") || {}; }
       catch (e) { warn("esLoreRostersJSON invalid — ignoring", e); LORE_ROSTER = {}; }
       CFG.playCombatMusic    = game.settings.get(MOD, "esCombatMusic");
+      CFG.citizenFoeTokens   = game.settings.get(MOD, "esCitizenFoeTokens"); _citizenFilesCache = null;   // drop the art cache so a folder-setting change re-scans
       CFG.foeMinFt           = Number(game.settings.get(MOD, "esFoeMinFt")) ?? CFG.foeMinFt;
       CFG.foeMaxFt           = Number(game.settings.get(MOD, "esFoeMaxFt")) || CFG.foeMaxFt;
       CFG.maxMonsters        = Number(game.settings.get(MOD, "esMaxMonsters")) || CFG.maxMonsters;
