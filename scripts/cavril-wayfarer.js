@@ -4721,13 +4721,27 @@ function wayfarerTool() {
     };
 }
 
+// GM-only momentary button → opens the Lightroom-style map curation grid (tag/approve maps per biome). Same shape as
+// Augur's own "back" button (button:true + onChange). Hidden unless the bundled EncounterStage exposes openMapGrid.
+function mapGridTool() {
+    return {
+        name: "wayfarer-mapgrid",
+        title: `${TITLE} — map curation grid`,
+        icon: "fa-solid fa-images",
+        button: true,
+        order: 100,
+        onChange: () => { try { globalThis.CavrilEncounterStage?.openMapGrid?.(); } catch (e) { warn("openMapGrid", e); } },
+        isVisible: () => !!game.user?.isGM && !!globalThis.CavrilEncounterStage?.openMapGrid
+    };
+}
+
 // Preferred path: contribute to Augur: Nexus's shared "Augur Tools" control group
 // (the exact mechanism Hexlands uses, proven on this setup).
 async function registerWayfarerToolbar() {
     if (!game.modules.get("augur-nexus")?.active) return false;
     try {
         const { registerToolbarTools } = await import("/modules/augur-nexus/scripts/api/toolbar.js");
-        registerToolbarTools(MOD, [wayfarerTool()]);
+        registerToolbarTools(MOD, [wayfarerTool(), mapGridTool()]);
         _toolbarViaAugur = true;
         ui.controls?.render?.(true);
         log("Toolbar button registered in the Augur Tools group.");
@@ -4959,6 +4973,8 @@ Hooks.on("getSceneControlButtons", (controls) => {
         const { isVisible, ...wt } = wayfarerTool(); addTool(tokenGrp, wt);
         // CZEPEKU token picker — GM-only quick face search (also CavrilWayfarer.tokenPicker()).
         if (game.user?.isGM) addTool(tokenGrp, { name: "cwf-token-picker", title: `${TITLE} — token picker (CZEPEKU)`, icon: "fa-solid fa-masks-theater", button: true, order: 98, onClick: () => globalThis.CavrilEncounterStage?.openTokenPicker?.("") });
+        // Map curation grid — GM-only Lightroom panel to tag/approve maps per biome (also CavrilEncounterStage.openMapGrid()).
+        if (game.user?.isGM && globalThis.CavrilEncounterStage?.openMapGrid) addTool(tokenGrp, { name: "cwf-map-grid", title: `${TITLE} — map curation grid`, icon: "fa-solid fa-images", button: true, order: 97, onClick: () => globalThis.CavrilEncounterStage?.openMapGrid?.() });
         // Return-to-overworld: on a staged scene, put it in EVERY tool group so it never
         // vanishes when you switch to walls / lighting / drawings / the Augur set, etc.
         if (canvas?.scene?.getFlag?.(MOD, "originScene")) {
