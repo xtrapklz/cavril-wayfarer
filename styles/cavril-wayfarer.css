@@ -319,6 +319,8 @@
 .cwf-psum-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .cwf-psum-chips span { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 11px; color: #e7e1f3; background: color-mix(in srgb, var(--cwf-accent, #bda9e8) 16%, rgba(20, 20, 26, 0.5)); border: 1px solid color-mix(in srgb, var(--cwf-accent, #bda9e8) 35%, transparent); }
 .cwf-psum-chips i { opacity: .85; }
+.cwf-ptrek-bar { height: 5px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; margin: 9px 0 2px; }
+.cwf-ptrek-fill { height: 100%; background: var(--cwf-accent, #bda9e8); border-radius: 3px; transition: width .45s ease; }
 
 /* chat */
 .cwf-chat { line-height: 1.4; }

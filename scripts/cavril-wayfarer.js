@@ -446,6 +446,8 @@ const Store = (() => {
         // days, thirst the moment you go dry. Wayfarer only APPLIES exhaustion; the native dnd5e long rest recovers it.
         g.register(MOD, "starveExhaustion", { name: "Starvation & thirst exhaustion", hint: "Going without food or water at camp exhausts the members who went short, and blocks their long-rest exhaustion recovery. No dice — it just applies.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "foodGraceDays", { name: "Food reserve (days before hunger)", hint: "How many consecutive days a member can go unfed before the next dry day adds +1 exhaustion — a flat reserve, no CON math. Water has NO reserve: any night without water is +1 exhaustion immediately. Default 1.", scope: "world", config: true, type: Number, default: 1 });
+        g.register(MOD, "restThresholdHours", { name: "Hours awake before exhaustion", hint: "How long the party can go since its last LONG REST before fatigue sets in. Past this, each travel leg adds +1 exhaustion to everyone until they bed down. The HUD shows the hours-awake clock. Default 24.", scope: "world", config: true, type: Number, default: 24 });
+        g.register(MOD, "lastRestTime", { scope: "world", config: false, type: Number, default: 0 });   // worldTime of the party's last long rest — drives the hours-awake clock
         // Watch ↔ rest: a long watch shift BLOCKS that member's long-rest exhaustion
         // recovery (the native rest still restores HP / slots / hit dice).
         g.register(MOD, "watchRest", { name: "Watches cost exhaustion", hint: "Standing watch applies an exhaustion toll = the shift length ÷ the hours below (the dawn long rest gives 1 level back). They still recover HP / slots / hit dice. Off = the watch costs nothing.", scope: "world", config: true, type: Boolean, default: true });
@@ -1344,6 +1346,29 @@ function cwfChallenge() {
     const v = Number.isFinite(s.challenge) ? s.challenge : (Number.isFinite(s.danger) ? s.danger : (Number(game.settings.get(MOD, "dangerDefault")) || 0));
     return Math.max(0, Math.min(5, v));
 }
+// EFFECTIVE challenge used in play: the dial + a NIGHT bump. Travelling in the dark makes EVERYTHING harder (skill DCs +
+// encounter budget) — the dial keeps showing the base value, but encounters and route DCs read this. +1 at night.
+const cwfNightNow = () => { try { return cwfTimeOfDay().key === "night"; } catch (e) { return false; } };
+const cwfChallengeEff = () => Math.max(0, Math.min(5, cwfChallenge() + (cwfNightNow() ? 1 : 0)));
+// Route DC the travel roles check against: the worst biome's DC, +2 when travelling at NIGHT (everything's harder in the dark).
+const cwfRouteDc = (gov) => (gov?.dc ?? 10) + (cwfNightNow() ? 2 : 0);
+// HOURS SINCE LAST LONG REST — the "running on no sleep" clock. Reset on a long rest (cwfMarkRested), seeded on the first
+// travel turn. Past `restThresholdHours` (default 24) each travel leg adds +1 exhaustion until the party beds down.
+const cwfLastRest = () => { try { const v = Number(game.settings.get(MOD, "lastRestTime")); return Number.isFinite(v) && v > 0 ? v : null; } catch (e) { return null; } };
+const cwfHoursSinceRest = () => { const last = cwfLastRest(); if (last == null) return 0; return Math.max(0, ((game.time?.worldTime ?? 0) - last) / 3600); };
+const cwfRestThreshold = () => Math.max(1, Number(game.settings.get(MOD, "restThresholdHours")) || 24);
+async function cwfMarkRested() { try { await game.settings.set(MOD, "lastRestTime", game.time?.worldTime ?? 0); } catch (e) { /* noop */ } }
+// Past the awake-threshold, a finished travel leg costs the WHOLE PARTY +1 exhaustion — the pressure to bed down. Returns
+// a short note for the trek card, or null if they're still within their stride.
+async function cwfOvertiredCheck() {
+    if (!game.user?.isGM) return null;
+    const hrs = cwfHoursSinceRest(), thr = cwfRestThreshold();
+    if (hrs <= thr) return null;
+    const mem = Party.members(); if (!mem.length) return null;
+    for (const a of mem) { const lvl = Math.min(6, (a.system?.attributes?.exhaustion ?? 0) + 1); try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { /* noop */ } }
+    ui.notifications?.warn(`${TITLE}: ${Math.round(hrs)}h without a long rest — the party gains a level of exhaustion. Time to make camp.`);
+    return `😴 ${Math.round(hrs)}h awake (over ${thr}h) — +1 exhaustion party-wide`;
+}
 const cwfPaceMod = (pace) => ((Domain.PACE?.[pace]?.spaces ?? 2) - 2);   // slow −1 · normal 0 · fast +1
 // Auto-stage encounters in the background the moment they fire (so the map preloads while you narrate), then one
 // "Roll for initiative / Ambush" button drops you in. OFF = the manual "Build encounter" button + lead-in cinematic.
@@ -1414,36 +1439,38 @@ async function cwfHexEvent(cls, { scoutGood = false, pace = "normal", encUsed = 
 
 // THE d20 RESOLVER (engine v2). ONE d20 per hex, banded: `1..combatSlots` = combat · next `heatSlots` = a PERSONAL
 // (Heat) reckoning tied to a party member · `20` = discovery · the rest = the biome's table (flavour / arc beat /
-// merchant). DAY DOUBLES Danger (the biome hunts you); a successful scout shaves Danger (never Heat); pace ±1 Danger.
-// ONE combat/heat encounter PER DAY — once `encUsed`, the danger + heat bands go quiet (flavour/discovery only).
+// merchant). By DAY: 2×Danger / 1×Heat (the biome hunts you). By NIGHT (travelling in the dark): the SWAP — 1×Danger /
+// 2×Heat (your past hunts you) — same inversion the night-watch uses; a scout shaves Danger; pace ±1 Danger.
+// ONE combat/heat encounter PER PERIOD — once `encUsed`, the danger + heat bands go quiet (flavour/discovery only).
 async function cwfHexEventV2(cls, { scoutGood = false, pace = "normal", encUsed = false } = {}) {
     const biome = cls?.label || "Wilderness";
+    const night = (() => { try { return cwfTimeOfDay().key === "night"; } catch (e) { return false; } })();
     const dangerEff = Math.max(0, cwfThreat(cls) + cwfPaceMod(pace) - (scoutGood ? 1 : 0));
-    const combatSlots = encUsed ? 0 : Math.max(0, Math.min(12, 2 * dangerEff));   // DAY = 2×Danger
-    const heatSlots   = encUsed ? 0 : Math.max(0, Math.min(5, cwfHeat(cls)));       // DAY = 1×Heat
+    const combatSlots = encUsed ? 0 : Math.max(0, Math.min(12, (night ? 1 : 2) * dangerEff));   // DAY 2×Danger · NIGHT 1×
+    const heatSlots   = encUsed ? 0 : Math.max(0, Math.min(10, (night ? 2 : 1) * cwfHeat(cls))); // DAY 1×Heat · NIGHT 2×
     const roll = Math.ceil(Math.random() * 20);
-    if (roll <= combatSlots) return await cwfCombatBeat(cls, biome, { surprised: !scoutGood });
-    if (roll <= combatSlots + heatSlots) return await cwfHeatBeat(cls, biome, { surprised: !scoutGood });
+    if (roll <= combatSlots) return await cwfCombatBeat(cls, biome, { surprised: !scoutGood, night });
+    if (roll <= combatSlots + heatSlots) return await cwfHeatBeat(cls, biome, { surprised: !scoutGood, night });
     if (roll === 20) return await cwfDiscoveryBeat(cls);
     return await cwfTableBeat(cls, { road: !!cls?.infrastructure });
 }
 const cwfEncHours = () => Math.max(0, Number(game.settings.get(MOD, "encounterHours")) || 1);
 // A biome COMBAT encounter (halts + auto-stages). Surprised if the scout/watch missed.
-async function cwfCombatBeat(cls, biome, { surprised = false } = {}) {
-    const text = await cwfEncounterText(cls, { when: "day", surprised });
+async function cwfCombatBeat(cls, biome, { surprised = false, night = false } = {}) {
+    const text = await cwfEncounterText(cls, { when: night ? "night" : "day", surprised });
     const tag = surprised ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
     return { halt: true, hours: cwfEncHours(), kind: "combat", icon: "fa-dragon", label: "Encounter!", tag, line: text, cinematic: { icon: "fa-dragon", title: "Encounter!", subtitle: biome, tone: "encounter" } };
 }
 // A PERSONAL / Heat reckoning — a hostile encounter tied to a party member's past. We flag WHO; the GM narrates the rest
 // (you killed their mother → it's them; stole the jewels → a guard/bounty hunter). Reuses the combat machinery (it IS a fight).
-async function cwfHeatBeat(cls, biome, { surprised = false } = {}) {
+async function cwfHeatBeat(cls, biome, { surprised = false, night = false } = {}) {
     const member = cwfRandomMember(), who = member?.name || "the party";
     const hooks = [
         `A figure steps from cover — and ${who} knows them. Someone from their past has finally caught up.`,
         `This one didn't come for the road. They came for ${who} — a debt, a grudge, a name remembered.`,
         `${who} goes still. Whoever this is, they came hunting, and they found exactly who they wanted.`,
     ];
-    const text = await cwfEncounterText(cls, { when: "day", surprised });
+    const text = await cwfEncounterText(cls, { when: night ? "night" : "day", surprised });
     const tag = surprised ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
     const lead = `<span class="cwf-tier-badge" title="A Heat / renown encounter — tied to this character">Personal · ${cwfEsc(who)}</span> ${hooks[Math.floor(Math.random() * hooks.length)]}`;
     return { halt: true, hours: cwfEncHours(), kind: "combat", heat: true, heatMember: who, icon: "fa-user-secret", label: "A Reckoning", tag, line: `${lead}<br>${text}`, cinematic: { icon: "fa-user-secret", title: "A Reckoning", subtitle: who, tone: "encounter" } };
@@ -1488,17 +1515,24 @@ function cwfHexLineHTML(off, idx, biome, weatherLabel, content, hit, extraCls = 
     const wx = weatherLabel ? ` · ${cwfEsc(weatherLabel)}` : "";
     return `<div class="cwf-night-h ${hit ? "hit" : ""} ${extraCls} cwf-hexline" data-cwf="ping" data-x="${x}" data-y="${y}" title="Click to ping this hex on the map"><span class="cwf-rr-sk">Hex ${idx} · ${biome}${wx} · ${cwfClockLabel()}</span> ${content}</div>`;
 }
-// A clean, PUBLIC, spoiler-free arrival card for the players — where the road brought them and the day's mood, no
-// mechanics, no events, no upcoming hints. Posted (un-whispered) on a peaceful arrival; the GM keeps the full trek card.
+// A clean, PUBLIC, spoiler-free journey card for the players — LIVE: posted as the trek begins and updated hex by hex so
+// the table watches the party cross the map and the clock turn, no mechanics / events / upcoming hints. The GM keeps the
+// full trek card. `arrived` = the final beat (peaceful arrival); otherwise it shows the in-progress leg + a progress bar.
 function cwfPlayerSummaryHTML(t) {
     const biome = t?.lastBiome || "the wilds";
     const tod = (() => { try { return cwfTimeOfDay(); } catch (e) { return null; } })();
     const todLabel = tod?.label || "", todIcon = tod?.icon || "fa-route";
     const weather = (() => { try { return MiniCal.label() || ""; } catch (e) { return ""; } })();
-    const clock = cwfClockLabel(), hexes = t?.idx || 0;
-    const lead = `After ${hexes} hex${hexes === 1 ? "" : "es"} on the road, the party comes to <b>${cwfEsc(biome)}</b>${todLabel ? ` as ${cwfEsc(todLabel.toLowerCase())} settles in` : ""}${weather ? `, under ${cwfEsc(weather.toLowerCase())}` : ""}.`;
-    const chips = `<div class="cwf-psum-chips"><span><i class="fa-solid ${todIcon}"></i> ${cwfEsc(clock)}</span><span><i class="fa-solid fa-mountain-sun"></i> ${cwfEsc(biome)}</span>${weather ? `<span><i class="fa-solid fa-cloud"></i> ${cwfEsc(weather)}</span>` : ""}</div>`;
-    return cwfCardShell("fa-route", "The Party Travels On", `<div class="cwf-psum">${lead}${chips}</div>`, { sub: clock });
+    const clock = cwfClockLabel();
+    const total = t?.route?.length || 0, done = Math.min(t?.idx || 0, total || (t?.idx || 0));
+    const arrived = !!t?.done && !t?.halted;
+    const lead = arrived
+        ? `After ${done} hex${done === 1 ? "" : "es"} on the road, the party comes to <b>${cwfEsc(biome)}</b>${todLabel ? ` as ${cwfEsc(todLabel.toLowerCase())} settles in` : ""}${weather ? `, under ${cwfEsc(weather.toLowerCase())}` : ""}.`
+        : `The party travels on through <b>${cwfEsc(biome)}</b> — ${done}${total ? ` of ${total}` : ""} hex${done === 1 ? "" : "es"} crossed, the hour now ${cwfEsc(clock)}.`;
+    const pct = total > 0 ? Math.round((Math.min(done, total) / total) * 100) : 100;
+    const bar = total > 1 ? `<div class="cwf-ptrek-bar"><div class="cwf-ptrek-fill" style="width:${pct}%"></div></div>` : "";
+    const chips = `<div class="cwf-psum-chips"><span><i class="fa-solid ${todIcon}"></i> ${cwfEsc(clock)}</span><span><i class="fa-solid fa-mountain-sun"></i> ${cwfEsc(biome)}</span>${total ? `<span><i class="fa-solid fa-shoe-prints"></i> ${done}/${total}</span>` : ""}${weather ? `<span><i class="fa-solid fa-cloud"></i> ${cwfEsc(weather)}</span>` : ""}</div>`;
+    return cwfCardShell("fa-route", arrived ? "The Party Arrives" : "The Party Travels", `<div class="cwf-psum">${lead}${bar}${chips}</div>`, { sub: clock });
 }
 function cwfTrekCardHTML() {
     const t = cwfTrek; if (!t) return "";
@@ -1518,6 +1552,8 @@ async function cwfTrekRefresh() {
     const t = cwfTrek; if (!t?.msgId) return;
     const msg = game.messages.get(t.msgId);
     if (msg) { try { await msg.update({ content: cwfTrekCardHTML() }); } catch (e) { warn("trek card update failed", e); } }
+    // Mirror the spoiler-free PLAYER journey card live — the table watches the party cross the map hex by hex.
+    if (t.playerMsgId) { const pm = game.messages.get(t.playerMsgId); if (pm) { try { await pm.update({ content: cwfPlayerSummaryHTML(t) }); } catch (e) { /* noop */ } } }
 }
 // Pan every client's camera (GM locally + players via socket) so the whole table's view glides WITH the party token
 // as it travels — instead of the GM watching the move alone and the transition cutting in over an unseen glide.
@@ -1532,12 +1568,15 @@ function cwfCourseBroadcast(route, opts = {}) {
 }
 async function cwfStartTravel(tok, route, { pace = "normal", boat = false, scoutGood = false, lostHours = 0, header = "", title = "Travel", icon = "fa-person-walking-arrow-right", sub = "" } = {}) {
     if (!game.user.isGM || !tok) return;
+    try { globalThis.CavrilAdvance?.clear?.("cwf-travel-on"); } catch (e) { /* a fresh leg → drop the "travel on" nudge */ }
     try { CourseOverlay.stop(); cwfCourseBroadcast(null); } catch { /* noop */ }
     Music.combat(false);   // clear any lingering encounter tension as a fresh trek starts
     try { globalThis.CavrilAdvance?.clear?.("cwf-enter-settlement"); } catch (e) {}   // drop any stale "Enter <town>" prompt from the last arrival
     cwfTrek = { tokId: tok.id, route: (route || []).slice(), idx: 0, pace, boat, scoutGood, acc: 0, prev: Hex.offsetOf(tok.center), lines: [], header, title, icon, sub, halted: false, done: false, lostHours, marchHTML: "", marchSub: "", tod: cwfTimeOfDay().key, lastBiome: (Hex.classifyAt(Hex.offsetOf(tok.center))?.label || null), leg: null, running: false, encUsed: false };
     const msg = await ChatMessage.create({ content: cwfTrekCardHTML(), whisper: cwfGmIds() }).catch(() => null);
     cwfTrek.msgId = msg?.id;
+    // PUBLIC live journey card for the table (spoiler-free) — posted now, updated hex by hex in cwfTrekRefresh.
+    if (cwfTrek.route.length && game.settings.get(MOD, "playerTravelCard")) { const pmsg = await ChatMessage.create({ content: cwfPlayerSummaryHTML(cwfTrek) }).catch(() => null); cwfTrek.playerMsgId = pmsg?.id; }
     if (!cwfTrek.route.length) {   // a "got lost" day — no hexes, just spend the time
         if (lostHours > 0) await Store.advanceWorldTime(Math.round(lostHours));
         cwfTrek.lines.push(`<div class="cwf-night-h hit">Lost — you wander all day and make no progress.</div>`);
@@ -1655,13 +1694,23 @@ async function cwfFinishTravel() {
     t.running = false; cwfFlushLeg();   // commit any uneventful run still accumulating
     if (!t.halted && t.acc >= 0.5) { await Store.advanceWorldTime(Math.round(t.acc)); t.acc = 0; }
     try { const fm = await cwfForcedMarch(t.pace); if (fm?.html) { t.marchHTML = fm.html; t.marchSub = fm.sub || ""; } } catch (e) { warn("forced march failed", e); }
+    if (t.idx > 0 && !t.halted) { try { await cwfOvertiredCheck(); } catch (e) { warn("overtired check failed", e); } }   // running on no sleep → exhaustion
     t.done = true;
     await cwfTrekRefresh();
     // Players get a clean, public, spoiler-free arrival card — only on a PEACEFUL arrival (a halt = an encounter, which the cinematic/map reveals).
-    try { if (!t.halted && t.idx > 0 && game.settings.get(MOD, "playerTravelCard")) ChatMessage.create({ content: cwfPlayerSummaryHTML(t) }); } catch (e) { warn("player travel card failed", e); }
+    // (the public journey card was posted at trek start + just updated to its "arrives" state by cwfTrekRefresh above)
+    if (!t.playerMsgId && !t.halted && t.idx > 0 && game.settings.get(MOD, "playerTravelCard")) { try { ChatMessage.create({ content: cwfPlayerSummaryHTML(t) }); } catch (e) { warn("player travel card failed", e); } }   // fallback if no live card was posted
     WayfarerPanel.renderExternal(); BiomeBadge.update();
     cwfRefreshVision();   // travel ended (maybe at dusk/night) → recompute vision now so the map never stays black
     try { cwfMaybeOfferSettlement(); } catch (e) { warn("settlement arrival check failed", e); }
+    // Daylight left after a peaceful arrival → obviously nudge the GM to press on with another leg (centre button +
+    // the HUD's "Plan a route" goes primary). At night the GM chooses camp or — now — night travel, so no auto-nudge.
+    try {
+        const ADV = globalThis.CavrilAdvance;
+        if (ADV?.push && game.user?.isGM && !t.halted && t.idx > 0 && !cwfNightNow()) {
+            ADV.push({ id: "cwf-travel-on", label: "Travel on", icon: "fa-person-walking-arrow-right", priority: 13, run: () => { try { ADV.clear?.("cwf-travel-on"); } catch (e) {} Travel.startPlot(); } });
+        }
+    } catch (e) { /* noop */ }
 }
 
 // Feed the universal CavrilAdvance button (the movable centre button Core/EncounterStage also use) with the current
@@ -1962,6 +2011,7 @@ async function cwfPartyRest(type, { newDay = false, silent = false } = {}) {
     cwfRestSummary(type, rows);
     // Heat/Wanted bleeds off −1 per long rest — surviving to a rest cools your notoriety (engine v2 only).
     if (type === "long" && cwfWanted() > 0) { try { await cwfSetWanted(cwfWanted() - 1); } catch (e) { warn("heat decay failed", e); } }
+    if (type === "long") await cwfMarkRested();   // reset the hours-awake clock — the party is freshly rested
 }
 
 // GM confirm dialog (DialogV2 with a Dialog fallback).
@@ -4163,7 +4213,7 @@ const Turn = (() => {
 
     function outcomeFor(s) {
         if (s.total == null) return null;
-        const dc = governing?.dc ?? 10;
+        const dc = cwfRouteDc(governing);
         if (s.nat === 20) return "crit";
         if (s.nat === 1) return "critfail";           // a fumble is a natural 1 — not just a low total
         if (s.total >= dc + 10) return "crit";
@@ -4190,7 +4240,7 @@ const Turn = (() => {
     }
 
     async function resolve() {
-        const dc = governing?.dc ?? 10;
+        const dc = cwfRouteDc(governing);
         emitTravelGroup(false);             // rolls are in → reveal the group cinematic as the RESULT (clears the persistent progress one)
         syncRollSuppress(false);            // rolls are in → release the suppress
         let navEffect = "arrive";
@@ -4293,10 +4343,11 @@ const Camp = (() => {
 
     const nightHours = () => Math.max(1, Number(game.settings.get(MOD, "nightHours")) || 8);
     const dangerScore = () => Store.sceneState().danger ?? (Number(game.settings.get(MOD, "dangerDefault")) || 0);
-    const challengeScore = () => cwfChallenge();   // public seam for EncounterStage's difficulty (the Challenge dial)
+    const challengeScore = () => cwfChallengeEff();   // public seam for EncounterStage's difficulty — the dial + night bump
 
     function begin(note = "", consumeResult = null, foraged = false) {
         if (!game.user.isGM) return;
+        if (cwfLastRest() == null) cwfMarkRested();   // seed the hours-awake clock on the first leg of the journey
         active = true; supplyNote = note; mealResult = consumeResult; mealForaged = !!foraged;
         nightDawnPending = null;
         const members = new Set(Party.members().map(a => a.id));
@@ -4555,7 +4606,6 @@ const WayfarerPanel = (() => {
                 case "reset-journey": case "end-journey": await endJourney(); break;
                 case "haul": await foragerHaul(); break;
                 case "restock": await restockSupplies(); break;
-                case "stash": await Party.adjustStash(btn.dataset.t === "water" ? "water" : "ration", Number(btn.dataset.d)); break;
                 case "edit-member": await cwfEditMember(btn.dataset.id, btn.dataset.field); break;
                 case "rest-short": await cwfPartyRest("short"); break;
                 case "rest-long": await cwfPartyRest("long", { newDay: true }); break;
@@ -4651,6 +4701,7 @@ const WayfarerPanel = (() => {
     }
 
     async function makeCamp() {
+        try { globalThis.CavrilAdvance?.clear?.("cwf-travel-on"); } catch (e) { /* bedding down → drop the "travel on" nudge */ }
         if (Turn.active) Turn.end();   // close out a resolved travel turn before bedding down
         const st = Store.sceneState();
         // Consume 1 ration + 1 waterskin-use per member (group stash first, then one
@@ -4707,7 +4758,7 @@ const WayfarerPanel = (() => {
     // The active group-check card (claim → swap skill → roll → resolve).
     function turnCard(dis) {
         const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
-        const dc = Turn.governing?.dc ?? 10;
+        const dc = cwfRouteDc(Turn.governing);
         const govLabel = Turn.governing?.label || "—";
         // Show the DC SPREAD across the route, not just the governing (worst) DC — so the GM sees at a glance the
         // day runs e.g. "DC 10–17" (easy plains into hard mountains), not a single number that hides the easy legs.
@@ -4811,9 +4862,6 @@ const WayfarerPanel = (() => {
         const bd = Party.breakdown();
         const size = Party.size();
         const dangerNow = Camp.dangerScore();
-        const stepper = (t, val) => isGM
-            ? `<span class="cwf-stepper"><button class="cwf-step-btn" data-action="stash" data-t="${t}" data-d="-1" title="−1">−</button><span class="cwf-step-v">${val}</span><button class="cwf-step-btn" data-action="stash" data-t="${t}" data-d="1" title="+1">+</button></span>`
-            : `<span class="cwf-step-v">${val}</span>`;
         const w = Domain.WEATHER[effectiveWeather()] || Domain.WEATHER.clear;
         const site = Canvasry.augurSiteUnder(tok);
         const dis = isGM ? "" : "disabled";
@@ -4914,10 +4962,12 @@ const WayfarerPanel = (() => {
                     ${(() => {
                         const worst = bd.members.reduce((w, m) => (m.exh > w.exh ? { exh: m.exh, name: m.name } : w), { exh: 0, name: "" });
                         const rLow = sup.rations < size, wLow = sup.water < size;
+                        const awake = Math.round(cwfHoursSinceRest()), thr = cwfRestThreshold(), tired = awake > thr;
                         return `<div class="cwf-supstrip">
                             <span class="cwf-sup ${rLow ? "low" : ""}" title="Rations — stash + on members. The party eats ${size}/day."><i class="fa-solid fa-drumstick-bite"></i> ${sup.rations}</span>
                             <span class="cwf-sup ${wLow ? "low" : ""}" title="Waterskins — stash + on members. The party drinks ${size}/day."><i class="fa-solid fa-bottle-water"></i> ${sup.water}</span>
                             <span class="cwf-sup ${worst.exh > 0 ? "warn" : "ok"}" title="Worst exhaustion in the party"><i class="fa-solid fa-face-dizzy"></i> ${worst.exh > 0 ? `Lvl ${worst.exh}${worst.name ? ` · ${esc(worst.name)}` : ""}` : "rested"}</span>
+                            <span class="cwf-sup ${tired ? "low" : ""}" title="Hours since the party's last long rest. Past ${thr}h, each leg adds +1 exhaustion until they camp."><i class="fa-solid fa-moon"></i> ${awake}h</span>
                             <button class="cwf-sup-toggle ${_partyOpen ? "on" : ""}" data-action="toggle-party" title="Per-character rations / water / exhaustion"><i class="fa-solid fa-users"></i> ${size} <i class="fa-solid fa-chevron-${_partyOpen ? "up" : "down"}"></i></button>
                         </div>`;
                     })()}
@@ -4928,12 +4978,6 @@ const WayfarerPanel = (() => {
                             : `<span class="cwf-pm-v ${cls2}">${val}</span>`;
                         return `<div class="cwf-pm"><span class="cwf-pm-n">${esc(m.name)}</span>${cell("exh", m.exh, m.exh > 0 ? "warn" : "")}${cell("rations", m.rations, m.rations <= 0 ? "low" : "")}${cell("water", m.water, m.water <= 0 ? "low" : "")}</div>`;
                     }).join("") || `<div class="cwf-muted2">No party members found.</div>`}` : ""}
-                </div>
-
-                <div class="cwf-section">
-                    <div class="cwf-label">Shared stash <span class="cwf-muted2">group inventory</span></div>
-                    <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-drumstick-bite"></i> Rations</span>${stepper("ration", bd.stash.rations)}</div>
-                    <div class="cwf-supply"><span class="cwf-supply-l"><i class="fa-solid fa-bottle-water"></i> Waterskins</span>${stepper("water", bd.stash.water)}</div>
                 </div>
 
                 ${isGM ? `<div class="cwf-section">
@@ -5240,7 +5284,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
         const SECTIONS = [
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
-            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "wakeHour", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "foodGraceDays", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
+            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "wakeHour", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "foodGraceDays", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
             ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
         ];
