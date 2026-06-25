@@ -450,6 +450,7 @@ const Store = (() => {
         // days, thirst the moment you go dry. Wayfarer only APPLIES exhaustion; the native dnd5e long rest recovers it.
         g.register(MOD, "starveExhaustion", { name: "Starvation & thirst exhaustion", hint: "Going without food or water at camp exhausts the members who went short, and blocks their long-rest exhaustion recovery. No dice — it just applies.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "mealsPerDay", { name: "Meals & drinks per day", hint: "How many rations AND waterskin charges each character needs per travel day (breakfast / lunch / dinner). At camp the party eats this many of each from their packs. Default 3.", scope: "world", config: true, type: Number, default: 3 });
+        g.register(MOD, "shareProvisions", { name: "Prompt to share provisions", hint: "When a character can't cover their own rations or water at camp, prompt who shares from their pack — so the table role-plays the moment AND the right person actually gives. Refusal (or no one with surplus) leaves them to go without, taking the hunger/thirst toll. Default on.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "foodGraceDays", { name: "Food reserve (days before hunger)", hint: "How many consecutive HUNGRY days (a character ate ≤⅓ of the day's meals) a member can stack before the next adds +1 exhaustion — a flat reserve, no CON math. Eating ≥⅔ of the day's meals keeps you fed. Default 1.", scope: "world", config: true, type: Number, default: 1 });
         g.register(MOD, "carryBase", { name: "Carry base (rations / water capacity)", hint: "Each character carries up to this many rations AND this many waterskin charges, PLUS their Strength modifier. The party's totals are just the sum of what everyone holds — no shared stockpile. At 3 meals/day this is ~days of autonomy. Default 9 (STR 14 → 11 ≈ 3½ days, STR 8 → 8).", scope: "world", config: true, type: Number, default: 9 });
         g.register(MOD, "restThresholdHours", { name: "Hours awake before exhaustion", hint: "How long the party can go since its last LONG REST before fatigue sets in. Past this, each travel leg adds +1 exhaustion to everyone until they bed down. The HUD shows the hours-awake clock. Default 24.", scope: "world", config: true, type: Number, default: 24 });
@@ -1040,16 +1041,38 @@ const Party = (() => {
         if (!game.user.isGM) return { rations: 0, water: 0, need, rationsShort: 0, waterShort: 0, perMember: [] };
         const mem = members();
         const fedThreshold = Math.max(1, Math.ceil(need * 0.6));   // ate ≥⅔ of the day's meals → not hungry (a skipped meal is fine)
+        // 1) Each member eats from their OWN pack first.
+        const rows = [];
+        for (const m of mem) rows.push({ m, id: m.id, name: m.name, foodGot: await take(m, RATION_RE, need), waterGot: await take(m, WATER_RE, need), need });
+        // 2) SHARING: anyone who couldn't cover their own portion can be topped up from a packmate's surplus — GM-prompted, so
+        //    the table role-plays "here, take some of mine." Pulls from whoever the GM picks; refusal leaves them to go short.
+        if (game.settings.get(MOD, "shareProvisions")) { try { await shareProvisions(rows, need); } catch (e) { warn("provision sharing failed", e); } }
+        // 3) Tally.
         let rations = 0, water = 0;
-        const perMember = [];
-        for (const m of mem) {
-            const foodGot = await take(m, RATION_RE, need);   // up to `need` rations from this member's own pack
-            const waterGot = await take(m, WATER_RE, need);   // up to `need` waterskin charges
-            rations += foodGot; water += waterGot;
-            perMember.push({ id: m.id, name: m.name, foodGot, waterGot, need, food: foodGot >= fedThreshold, water: waterGot >= need });
-        }
+        const perMember = rows.map(r => { rations += r.foodGot; water += r.waterGot; return { id: r.id, name: r.name, foodGot: r.foodGot, waterGot: r.waterGot, need, food: r.foodGot >= fedThreshold, water: r.waterGot >= need }; });
         const want = mem.length * need;
         return { rations, water, need, rationsShort: Math.max(0, want - rations), waterShort: Math.max(0, want - water), perMember };
+    }
+    // Cover shortfalls from packmates' surplus. Builds the short list + each shortfall's possible donors (members who still
+    // have that resource), asks the GM who shares (cwfShareDialog — the role-play prompt), then PULLS from the chosen donor.
+    async function shareProvisions(rows, need) {
+        const shorts = [];
+        for (const r of rows) {
+            if (need - r.foodGot > 0) shorts.push({ row: r, kind: "rations", re: RATION_RE, amt: need - r.foodGot });
+            if (need - r.waterGot > 0) shorts.push({ row: r, kind: "water", re: WATER_RE, amt: need - r.waterGot });
+        }
+        if (!shorts.length) return;
+        const decisions = await cwfShareDialog(shorts.map(s => ({
+            name: s.row.name, kind: s.kind, amt: s.amt,
+            donors: rows.filter(r => r.m.id !== s.row.m.id && countItems(r.m, s.re) > 0).map(r => ({ id: r.m.id, name: r.name, have: countItems(r.m, s.re) }))
+        })));
+        for (let i = 0; i < shorts.length; i++) {
+            const s = shorts[i], donorId = decisions?.[i]?.donorId;
+            if (!donorId) continue;   // go without → the toll lands at the survival check
+            const donor = rows.find(r => r.m.id === donorId); if (!donor) continue;
+            const pulled = await take(donor.m, s.re, s.amt);
+            if (s.kind === "rations") s.row.foodGot += pulled; else s.row.waterGot += pulled;
+        }
     }
     // Add `k` units to an item, USES-aware (the mirror of takeFromItem). A Waterskin tracks supply as
     // limited uses, not quantity — so refill spent uses first (then expand capacity); a Ration tracks
@@ -2303,6 +2326,24 @@ async function cwfForageCritFail(actorId, cls) {
     if (sick) return cwfForageSickness(actorId);
     try { Cinematic.broadcast({ icon: "fa-paw", title: "Territorial Wildlife", subtitle: "the forage roused something — ambush!", tone: "danger" }); } catch (e) { /* noop */ }
     try { await cwfCombatBeat(cls, cls?.biome, { surprised: true }); } catch (e) { warn("forage wildlife encounter failed", e); }
+}
+// The role-play prompt when the party can't all feed themselves at camp: who shares from their own pack? Returns a decision
+// per shortfall ({ donorId }) — null = go without (the toll lands at the survival check). v0.55.127.
+async function cwfShareDialog(shortfalls) {
+    if (!shortfalls?.length) return [];
+    const ic = (k) => k === "water" ? "💧" : "🍖";
+    const rowsHtml = shortfalls.map((s, i) => {
+        const opts = `<option value="">— go without (takes the toll) —</option>` + s.donors.map(d => `<option value="${d.id}">${cwfEsc(d.name)} — has ${d.have}${ic(s.kind)}</option>`).join("");
+        return `<div class="form-group" style="display:flex;align-items:center;gap:8px;margin:5px 0"><label style="flex:1"><b>${cwfEsc(s.name)}</b> is short ${s.amt}${ic(s.kind)}</label><select name="share_${i}" style="flex:1.4">${opts}</select></div>`;
+    }).join("");
+    const content = `<div class="cwf-dialog"><p>Not everyone could feed themselves tonight. Who shares from their own pack? <em>Refusal leaves them to go without.</em></p>${rowsHtml}</div>`;
+    const DialogV2 = foundry.applications?.api?.DialogV2;
+    if (DialogV2) {
+        const res = await DialogV2.prompt({ window: { title: "🤝 Share provisions" }, content,
+            ok: { label: "Resolve the night", callback: (_e, btn) => shortfalls.map((s, i) => ({ donorId: btn.form.elements[`share_${i}`]?.value || null })) } }).catch(() => null);
+        return res || shortfalls.map(() => ({ donorId: null }));
+    }
+    return new Promise(resolve => { new Dialog({ title: "Share provisions", content, buttons: { ok: { label: "Resolve", callback: (h) => resolve(shortfalls.map((s, i) => ({ donorId: h[0].querySelector(`[name="share_${i}"]`)?.value || null }))) } }, default: "ok", close: () => resolve(shortfalls.map(() => ({ donorId: null }))) }).render(true); });
 }
 async function cwfPartyRest(type, { newDay = false, silent = false, extraExh = 0, shortIds = null } = {}) {
     if (!game.user.isGM) return;
@@ -6159,7 +6200,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
         const SECTIONS = [
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "autoTravelOnResolve", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
-            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "mealsPerDay", "foodGraceDays", "carryBase", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
+            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "mealsPerDay", "shareProvisions", "foodGraceDays", "carryBase", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
             ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeForageJSON", "gatherIngredients", "biomeGatherJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
