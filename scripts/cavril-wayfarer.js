@@ -3661,7 +3661,8 @@ const TravelingMerchants = (() => {
             + (m.rumour ? row("Rumour", `<em>“${esc(m.rumour)}”</em>`) : "")
             + (m.hook ? `<div class="cwf-merch-hook"><span class="cwf-merch-l"><i class="fa-solid fa-scroll"></i> Hook${m.arc ? ` · ${esc(m.arc)}` : ""}</span> ${esc(m.hook)}</div>` : "")
             + (m.lore ? `<div class="cwf-merch-lore"><span class="cwf-merch-l"><i class="fa-solid fa-eye-low-vision"></i> GM only</span> ${esc(m.lore)}</div>` : "");
-        return cwfCardShell("fa-store", `${m.name}${m.title ? ", " + m.title : ""}`, body, { sub: `${esc(m.species || "")}${cls?.label ? " · " + esc(cls.label) : ""}` });
+        const foot = globalThis.CavrilEncounterStage ? `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="stage-scene" title="Stage a best-match scene backdrop for this meeting (a built place, no foes)"><i class="fa-solid fa-masks-theater"></i> Stage a scene</button></div>` : "";
+        return cwfCardShell("fa-store", `${m.name}${m.title ? ", " + m.title : ""}`, body, { sub: `${esc(m.species || "")}${cls?.label ? " · " + esc(cls.label) : ""}`, footerHTML: foot });
     }
     async function onTrade(cls) {
         try {
@@ -3729,7 +3730,8 @@ const NarrativeNPCs = (() => {
             + (n.hook ? `<div class="cwf-merch-hook"><span class="cwf-merch-l"><i class="fa-solid fa-scroll"></i> Hook${n.arc ? ` · ${esc(n.arc)}` : ""}</span> ${esc(n.hook)}</div>` : "")
             + (n.twist ? `<div class="cwf-merch-lore"><span class="cwf-merch-l"><i class="fa-solid fa-mask"></i> Twist</span> ${esc(n.twist)}</div>` : "")
             + row("Branches", esc(outc));
-        return cwfCardShell("fa-user", `${n.name}${n.title ? " · " + n.title : ""}`, body, { sub: `${esc(n.species || "")}${cls?.label ? " · " + esc(cls.label) : ""}` });
+        const foot = globalThis.CavrilEncounterStage ? `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="stage-scene" title="Stage a best-match scene backdrop for this meeting (a built place, no foes)"><i class="fa-solid fa-masks-theater"></i> Stage a scene</button></div>` : "";
+        return cwfCardShell("fa-user", `${n.name}${n.title ? " · " + n.title : ""}`, body, { sub: `${esc(n.species || "")}${cls?.label ? " · " + esc(cls.label) : ""}`, footerHTML: foot });
     }
     async function onBeat(cls) {
         try {
@@ -5290,6 +5292,15 @@ Hooks.once("ready", () => {
         roadNpcs: () => { const l = NarrativeNPCs.list().map(n => ({ name: n.name, title: n.title, biomes: (n.biomes || []).join("/"), arc: n.arc })); console.table(l); return l; },   // the hand-crafted road-encounter NPCs
         roadNpcCard: (key) => { const n = NarrativeNPCs.list().find(x => x.key === key || (x.name || "").toLowerCase().includes(String(key || "").toLowerCase())); if (n) ChatMessage.create({ content: NarrativeNPCs.card(n, {}), whisper: game.users.filter(u => u.isGM).map(u => u.id) }); return n || null; },
         buildRoadEncounterTable: () => NarrativeNPCs.buildTable(),     // create the editable "Cavril Road Encounters (NPCs)" RollTable
+        buildAllTables: async () => {   // one call: every editable RollTable the system can seed — biome, locations, merchants, road NPCs
+            const r = {};
+            try { r.encounter = await Tables.buildEncounterTables(); } catch (e) { warn("buildAll: encounter", e); }
+            try { r.locations = await Tables.buildLocationTables(); } catch (e) { warn("buildAll: locations", e); }
+            try { r.merchants = await TravelingMerchants.buildTable(); } catch (e) { warn("buildAll: merchants", e); }
+            try { r.roadNpcs = await NarrativeNPCs.buildTable(); } catch (e) { warn("buildAll: roadNpcs", e); }
+            ui.notifications?.info(`${TITLE}: built every editable RollTable — biome flavour/site/trade, named locations, traveling merchants, and road-encounter NPCs. Find them in the "${Tables.FOLDER}" folder.`);
+            return r;
+        },
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, TravelingMerchants, NarrativeNPCs, _installed: true
     };
     // Phase-transition cinematics broadcast from the GM → every client plays them.
@@ -5346,6 +5357,8 @@ function wireCardButtons(root) {
                 if (act === "dawn") { advanceToDawn(); return; }
                 if (!game.user.isGM) return;
                 if (act === "stage") { await globalThis.CavrilEncounterStage?.stageEncounter?.({ surprised: el.dataset.surprised === "1" }); }   // build CZEPEKU map + foes + music; pass the surprise so a Scout-failed / unwatched encounter fires the Ambush cinematic
+                else if (act === "stage-scene") { await globalThis.CavrilEncounterStage?.stageScene?.(); }   // best-match narrative backdrop for THIS meeting (no foes)
+                else if (act === "stage-map") { await globalThis.CavrilEncounterStage?.stageBattlemap?.(); }   // best-match empty battle map for this hex
                 else if (act === "enter-encounter") { await globalThis.CavrilEncounterStage?.enterEncounter?.(el.dataset.scene); }   // move to the staged scene
                 else if (act === "return-overworld") { await returnToOrigin(el.dataset.scene); }   // back to the overworld after the fight
                 else if (act === "step") await cwfDoHexStep();
