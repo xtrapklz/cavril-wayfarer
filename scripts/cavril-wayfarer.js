@@ -4754,12 +4754,24 @@ const Turn = (() => {
             v.result = drawn.text;
             if (k === "navigate") navEffect = drawn.effect || (tier === "fail" || tier === "critfail" ? "dead" : "arrive");
             if (k === "forage") {
-                // Foraging never banks surplus. Success COVERS THE DAY (no rations/water spent at tonight's camp); a crit
-                // also turns up a medicinal find that eases the weariest member; a crit-fail is resolved after the loop.
+                // Forage PRODUCES food/water into the party's packs (capped at carry capacity — no infinite stockpile),
+                // scaled to the biome's separate food/water thresholds: clear the food DC → find food, clear the water DC →
+                // find water. A clean success ≈ covers the party's day; margin + a crit build a small reserve. The packs are
+                // then drawn down normally at camp, so a good forage nets flat-or-up and a poor one leaves them eating reserves.
                 if (tier === "success" || tier === "crit") {
-                    await Store.setSceneState({ foraged: true });
-                    v.result += ` <em>— tonight's food &amp; water are covered; no supplies consumed.</em>`;
-                    if (tier === "crit") { const eased = await cwfForageMedicinal(); if (eased) v.result += ` <em>${eased}</em>`; }
+                    const rdc = cwfRoleDc("forage", governing);
+                    const size = Party.size() || 1, meals = Math.max(1, Number(game.settings.get(MOD, "mealsPerDay")) || 3);
+                    const dayNeed = size * meals, crit = tier === "crit";
+                    const yieldOf = (threshold) => {
+                        if (v.total < threshold && !crit) return 0;           // didn't clear this resource's DC → none of it (unless a crit)
+                        return dayNeed + Math.floor(Math.max(0, v.total - threshold) / 4) + (crit ? size : 0);
+                    };
+                    const got = await Party.addSupplies(yieldOf(rdc.food), yieldOf(rdc.water));
+                    const bits = [];
+                    if (got.rations) bits.push(`+${got.rations}🍖`);
+                    if (got.water) bits.push(`+${got.water}💧`);
+                    v.result += bits.length ? ` <em>— foraged ${bits.join(" / ")} into the party's packs.</em>` : ` <em>— but every pack is already full.</em>`;
+                    if (crit) { const eased = await cwfForageMedicinal(); if (eased) v.result += ` <em>${eased}</em>`; }
                 } else if (tier === "critfail") {
                     forageMishap = v.actorId;   // tainted flora or a roused beast → sickness OR a surprise wildlife fight
                 }
@@ -5282,20 +5294,15 @@ const WayfarerPanel = (() => {
     async function makeCamp() {
         try { globalThis.CavrilAdvance?.clear?.("cwf-travel-on"); } catch (e) { /* bedding down → drop the "travel on" nudge */ }
         if (Turn.active) Turn.end();   // close out a resolved travel turn before bedding down
-        const st = Store.sceneState();
         // Eat the day's meals: up to mealsPerDay rations + that many waterskin charges per member from their own packs
-        // (waterskins lose charges, not the whole item), then bed down into the night/watch flow. A successful forage
-        // covered the whole day, so nothing is consumed.
-        let note = "The Forager fed the party — nothing consumed.";
-        let consumeResult = null;
-        if (!st.foraged) {
-            consumeResult = await Party.consume();
-            const c = consumeResult, sup = Party.supplies();
-            note = `Ate ${c.rations}🍖 / ${c.water}💧${c.rationsShort || c.waterShort ? ` (⚠ ${c.rationsShort}🍖/${c.waterShort}💧 short)` : ""} · ${sup.rations}🍖 / ${sup.water}💧 left`;
-        }
+        // (waterskins lose charges, not the whole item), then bed down. A successful forage already PUT food/water into
+        // the packs during the day, so camp always consumes normally — a good forage nets flat-or-up, a poor one eats reserves.
+        const consumeResult = await Party.consume();
+        const c = consumeResult, sup = Party.supplies();
+        const note = `Ate ${c.rations}🍖 / ${c.water}💧${c.rationsShort || c.waterShort ? ` (⚠ ${c.rationsShort}🍖/${c.waterShort}💧 short)` : ""} · ${sup.rations}🍖 / ${sup.water}💧 left`;
         // The meal is eaten now, but hunger/thirst/recovery resolve at dawn in
         // resolveNight — once the watch order (which sets rest quality) is known.
-        Camp.begin(note, consumeResult, !!st.foraged);
+        Camp.begin(note, consumeResult, false);
     }
 
     async function enterSite() {
