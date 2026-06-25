@@ -3949,11 +3949,57 @@ function cwfRoadCastToken(m) {   // best-effort: a world actor whose name/race m
         return a?.prototypeToken?.texture?.src || a?.img || null;
     } catch (e) { return null; }
 }
+// A simple dnd5e "loot" item for a road-cast pack — junk (0gp) or a saleable ware (a few gp).
+function cwfGenericLoot(name, valuable) {
+    return { name: String(name).slice(0, 60), type: "loot", img: "icons/containers/bags/pouch-leather-brown-orange.webp",
+        system: { quantity: 1, price: { value: valuable ? 5 + Math.floor(Math.random() * 20) : 0, denomination: "gp" }, rarity: "", description: { value: "" } } };
+}
+// Draw n items from the hex's PCAG gather table (biome herbs) as real item objects to drop on an NPC's sheet.
+async function cwfGatherItems(cls, n) {
+    const out = [];
+    try {
+        const table = await cwfFindGatherTable(cls || {}); if (!table) return out;
+        for (let i = 0; i < Math.max(0, n); i++) {
+            let res; try { res = await table.roll(); } catch (e) { break; }
+            for (const r of (res?.results || [])) {
+                try { const doc = r.documentUuid ? await fromUuid(r.documentUuid) : null; if (doc?.documentName === "Item") out.push(doc.toObject()); } catch (e) { /* skip */ }
+            }
+        }
+    } catch (e) { /* no table → no herbs */ }
+    return out;
+}
+// Create (once) a linked NPC ACTOR for a road-cast character — durable artwork + a TIERED inventory so the Campaign Codex
+// journal has a real sheet behind it: merchants carry their wares, named NPCs a signature effect, everyone a herb or two
+// from the biome they're met in plus pocket sundries. Idempotent via the roadCast flag. v0.55.124.
+async function cwfRoadCastActor(m, kind) {
+    if (!game.user?.isGM || !m?.name) return null;
+    let actor = (game.actors || []).find(a => { try { return a.getFlag(MOD, "roadCast") === m.name; } catch (e) { return false; } }) || null;
+    if (actor) return actor;
+    let img = "icons/svg/mystery-man.svg";
+    try { const tk = await globalThis.CavrilEncounterStage?.tokenArtFor?.([cwfShortSpecies(m.species || ""), m.title || "", kind].filter(Boolean)); if (tk?.url) img = tk.url; } catch (e) { /* offline */ }
+    if (img === "icons/svg/mystery-man.svg") { const bm = cwfRoadCastToken(m); if (bm) img = bm; }
+    let folder = game.folders?.find(f => f.type === "Actor" && f.name === "Cavril Road Cast");
+    try { if (!folder) folder = await Folder.create({ name: "Cavril Road Cast", type: "Actor" }); } catch (e) { /* folder optional */ }
+    try { actor = await Actor.create({ name: m.name, type: "npc", img, folder: folder?.id, prototypeToken: { name: m.name, texture: { src: img }, actorLink: false }, flags: { [MOD]: { roadCast: m.name } } }); }
+    catch (e) { warn("road-cast actor create failed", e); return null; }
+    if (!actor) return null;
+    const cls = (() => { try { const tok = Canvasry.activeToken(); return tok ? Canvasry.biomeForToken(tok) : null; } catch (e) { return null; } })();
+    const items = [];
+    try {
+        items.push(...await cwfGatherItems(cls, kind === "merchant" ? 3 : 2));                                    // biome herbs
+        if (kind === "merchant" && Array.isArray(m.stock)) for (const s of m.stock.slice(0, 8)) items.push(cwfGenericLoot(s, true));   // their wares
+        else if (m.title || m.arc) items.push(cwfGenericLoot(`${m.title || m.name}'s effects`, false));           // a named NPC's signature
+        items.push(cwfGenericLoot("Traveler's sundries", false));                                                 // pocket loot for everyone
+    } catch (e) { warn("road-cast loot failed", e); }
+    if (items.length) { try { await actor.createEmbeddedDocuments("Item", items); } catch (e) { warn("road-cast items failed", e); } }
+    return actor;
+}
 async function cwfRoadCastJournal(m, kind) {   // find or CREATE + populate this character's Campaign Codex NPC journal
     if (!game.campaignCodex || !game.user?.isGM || !m) return null;
     let doc = (game.journal || []).find(j => { try { return j.getFlag(CC_NS, "type") === "npc" && j.name === m.name; } catch (e) { return false; } });
     if (doc) return doc;
-    try { doc = await game.campaignCodex.createNPCJournal(null, m.name, false); } catch (e) { warn("createNPCJournal failed", e); return null; }
+    const actor = await cwfRoadCastActor(m, kind);   // a real linked sheet behind the journal — durable art + tiered inventory
+    try { doc = await game.campaignCodex.createNPCJournal(actor || null, m.name, false); } catch (e) { warn("createNPCJournal failed", e); return null; }
     if (!doc) return null;
     const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
     const ul = (arr) => (arr?.length) ? `<ul>${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
@@ -3977,7 +4023,7 @@ async function cwfRoadCastJournal(m, kind) {   // find or CREATE + populate this
     try {
         const data = doc.getFlag(CC_NS, "data") || {};
         await doc.setFlag(CC_NS, "data", { ...data, description: desc, notes, associates: cwfRoadCastLinks(m, [m.lore, m.hook, m.readAloud, m.appearance].join(" ")) });
-        const img = cwfRoadCastToken(m); if (img) await doc.setFlag(CC_NS, "image", img);
+        const img = (actor?.img && actor.img !== "icons/svg/mystery-man.svg") ? actor.img : cwfRoadCastToken(m); if (img) await doc.setFlag(CC_NS, "image", img);
     } catch (e) { warn("populate road-cast journal failed", e); }
     return doc;
 }
