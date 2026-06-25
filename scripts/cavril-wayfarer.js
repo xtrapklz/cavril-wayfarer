@@ -459,8 +459,8 @@ const Store = (() => {
         g.register(MOD, "extraRestRecovery", { name: "Sleep in to recover more exhaustion", hint: "Resting past the base 8h removes 1 EXTRA exhaustion per 2 hours slept in, to a max of 3 total per rest (8h=1, 10h=2, 12h=3). The cost is a longer, more dangerous night and a later start. Off = the dnd5e standard of 1 per long rest.", scope: "world", config: true, type: Boolean, default: true });
         // SUPERSEDED by the self-sizing night (the night now runs long enough that every watcher sleeps a full 8h, so a watch
         // costs TIME — a later wake — not exhaustion). Default OFF; left for GMs who want the old grueling-watch toll back.
-        g.register(MOD, "watchRest", { name: "Watches cost exhaustion (legacy)", hint: "OFF by default now the night self-sizes so watchers get a full 8h. On = the old toll: a watch applies exhaustion = shift ÷ the hours below.", scope: "world", config: true, type: Boolean, default: false });
-        g.register(MOD, "watchBlockHours", { name: "Hours per watch-exhaustion level", hint: "Each whole multiple of this in a watcher's shift = +1 exhaustion (the dawn rest then recovers 1). The night (Night length) splits evenly among watchers, so with an 8h night & 4h here: 1 watcher (8h)=+2 → nets +1 (all-nighter gains a level), 2 (4h)=+1 → nets 0 (no recovery), 3+ (<4h)=0 → recovers. Default 4.", scope: "world", config: true, type: Number, default: 4 });
+        g.register(MOD, "watchRest", { name: "Watches cost exhaustion (legacy)", hint: "Superseded by the self-sizing night + forgo mechanic.", scope: "world", config: false, type: Boolean, default: false });
+        g.register(MOD, "watchBlockHours", { name: "Hours per watch-exhaustion level", hint: "Legacy (paired with the retired watch-toll).", scope: "world", config: false, type: Number, default: 4 });
         // Rest & D&D Beyond re-sync.
         g.register(MOD, "longRestAtDawn", { name: "Long rest at dawn", hint: "When the night resolves to dawn, run a dnd5e long rest for the party (HP, spell slots, hit dice). Exhaustion stays under Wayfarer's watch rules.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "resyncAtDawn", { name: "Offer DDB re-sync at dawn", hint: "After the dawn long rest, prompt to re-sync the party's sheets from D&D Beyond (you confirm each time). Off = use the Re-sync button when you're ready.", scope: "world", config: true, type: Boolean, default: false });
@@ -6113,7 +6113,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
         const SECTIONS = [
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "autoTravelOnResolve", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
-            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "mealsPerDay", "foodGraceDays", "carryBase", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
+            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "mealsPerDay", "foodGraceDays", "carryBase", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
             ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeForageJSON", "gatherIngredients", "biomeGatherJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
