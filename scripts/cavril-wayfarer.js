@@ -496,7 +496,7 @@ const Store = (() => {
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "biomeForageJSON", { name: "Forage difficulty by biome (advanced)", hint: 'Optional JSON of per-biome forage DCs, e.g. {"desert":{"food":18,"water":20},"jungle":{"food":10,"water":11}}. Lower = easier to find. Blank uses the defaults (temperate easy, desert brutal; rivers/coast make water easy, forest eases food).', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "gatherIngredients", { name: "Forage gathers crafting ingredients", hint: "On a HIGH forage roll (a crit, or well over the DC) also draw a craftable INGREDIENT from this biome's gather table (your Gatherer / world RollTable) and add it to the Forager's pack. Separate from rations & water — never touches the supply counts. Default on.", scope: "world", config: true, type: Boolean, default: true });
-        g.register(MOD, "biomeGatherJSON", { name: "Biome → gather table (advanced)", hint: 'Optional JSON mapping a biome to a RollTable name or id, e.g. {"jungle":"Jungle Gathering","desert":"Desert Foraging"}. Blank auto-matches any world RollTable whose name contains the biome word.', scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "biomeGatherJSON", { name: "Biome → gather table (advanced)", hint: 'Optional JSON to remap a biome to a specific RollTable name or id, e.g. {"jungle":"Gathering: Swamp"}. Blank uses the built-in map to Potion-Crafting-&-Gathering\'s "Gathering: <Environment>" tables (searched in world AND compendiums): temperate→Grasslands, boreal/jungle→Forests, savanna→Savannahs, swamp→Swamp, desert→Desert, tundra/frozen→Arctic, volcanic→Volcanos, wasteland/tainted→Blightshore, void→Underground, water & coast→Coast, high elevation→Mountains.', scope: "world", config: true, type: String, default: "" });
         // Cavril: Maestro biome → environment soundscape.
         g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Set this visually with the “Assign biome ambience…” button above (or right-click the ♪ on the travel HUD). Advanced: raw JSON of biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay"}. Blank = defaults; "" = silence for that biome.', scope: "world", config: true, type: String, default: "" });
@@ -2138,28 +2138,59 @@ function cwfRestSummary(type, rows) {
 // Rest the whole party. Long rest restores HP/slots/hit dice (NOT exhaustion).
 // Short rest auto-spends hit dice (Foundry-rolled for now; DDB-sourced is the next step).
 // A crit-SUCCESS forage turns up a medicinal find that eases the WEARIEST member by one exhaustion. Returns a note (or "").
-// Find the gather RollTable for a biome: an explicit biomeGatherJSON mapping (table name or id) first, else auto-match any
-// world RollTable whose name contains the biome word (a table named "Jungle Gathering" serves the jungle).
-function cwfFindGatherTable(biome) {
-    if (!game.tables) return null;
+// Map each Wayfarer biome to a Potion-Crafting-&-Gathering environment table ("Gathering: <Env>"). Coast/water → Coast and
+// high elevation → Mountains override the biome (the strongest environmental signal). Override any biome via biomeGatherJSON.
+const CWF_BIOME_GATHER = {
+    temperate: "Grasslands", boreal: "Forests", jungle: "Forests", savanna: "Savannahs",
+    swamp: "Swamp", desert: "Desert", tundra: "Arctic", frozen: "Arctic", volcanic: "Volcanos",
+    wasteland: "Blightshore", tainted: "Blightshore", void: "Underground", water: "Coast"
+};
+function cwfGatherEnv(gov) {
+    const b = gov?.biome || "temperate";
+    if (gov?.coast || b === "water") return "Coast";
+    if (gov?.elevation === "high") return "Mountains";
+    return CWF_BIOME_GATHER[b] || "Forests";
+}
+// Resolve a RollTable by id or name across WORLD tables AND every compendium RollTable pack (PCAG's gather tables live in a
+// compendium, not the world). Exact-name first, then contains. Returns the (compendium-loaded) RollTable document or null.
+async function cwfResolveTable(ref) {
+    if (!ref || !game.tables) return null;
+    const want = String(ref).toLowerCase();
+    let t = game.tables.get(ref) || game.tables.getName?.(ref)
+        || game.tables.find(x => String(x.name || "").toLowerCase() === want)
+        || game.tables.find(x => String(x.name || "").toLowerCase().includes(want));
+    if (t) return t;
+    for (const pack of (game.packs || [])) {
+        if (pack.documentName !== "RollTable") continue;
+        try {
+            const idx = (pack.index && pack.index.size) ? pack.index : await pack.getIndex();
+            const e = idx.find(x => String(x.name || "").toLowerCase() === want) || idx.find(x => String(x.name || "").toLowerCase().includes(want));
+            if (e) { const doc = await pack.getDocument(e._id); if (doc) return doc; }
+        } catch (err) { /* skip an unreadable pack */ }
+    }
+    return null;
+}
+// The gather table for a hex: an explicit biomeGatherJSON mapping (name or id) first, else "Gathering: <mapped environment>".
+async function cwfFindGatherTable(gov) {
+    const biome = gov?.biome || "temperate";
     let map = {};
     try { const raw = game.settings.get(MOD, "biomeGatherJSON"); if (raw && String(raw).trim()) { const p = JSON.parse(raw); if (p && typeof p === "object") map = p; } } catch (e) { /* ignore bad JSON */ }
-    const ref = map[biome];
-    if (ref) { const t = game.tables.get(ref) || game.tables.getName?.(ref); if (t) return t; }
-    const want = String(biome || "").toLowerCase();
-    return want ? (game.tables.find(t => String(t.name || "").toLowerCase().includes(want)) || null) : null;
+    if (map[biome]) { const t = await cwfResolveTable(map[biome]); if (t) return t; }
+    const env = cwfGatherEnv(gov);
+    return (await cwfResolveTable(`Gathering: ${env}`)) || (await cwfResolveTable(env));
 }
 // A HIGH forage also gathers a craftable INGREDIENT from the biome's gather table (Gatherer / a world RollTable) onto the
 // Forager's sheet — toObject() preserves the item's flags so Gatherer & Mastercrafted still recognise it. Wholly separate
 // from rations/water (never touches the supply counts). Returns a note for the result line, or "" if nothing was gathered.
 async function cwfForageGather(actorId, gov, { crit = false } = {}) {
     if (!game.user.isGM || !game.settings.get(MOD, "gatherIngredients")) return "";
-    const table = cwfFindGatherTable(gov?.biome || "temperate");
+    const table = await cwfFindGatherTable(gov);
     if (!table) return "";
     const actor = game.actors.get(actorId);
     const found = [];
     for (let i = 0; i < (crit ? 2 : 1); i++) {   // a crit forage turns up more
-        let res; try { res = await table.draw({ displayChat: false }); } catch (e) { warn("gather draw failed", e); break; }
+        // roll() doesn't persist a "drawn" flag — safe on a read-only compendium table (draw() would try to write the pack)
+        let res; try { res = await table.roll(); } catch (e) { try { res = await table.draw({ displayChat: false }); } catch (e2) { warn("gather roll failed", e2); break; } }
         for (const r of (res?.results || [])) {
             try {
                 let doc = null;
@@ -5804,8 +5835,8 @@ Hooks.once("ready", () => {
         createTables: () => Tables.ensureAll(),
         reseedTables: () => Tables.reseed(),
         resetJourney: () => Tables.resetJourney(),
-        // Which world RollTable each biome's forage-gather will draw from (auto-match by name + your biomeGatherJSON override).
-        gatherTables: () => { const out = {}; for (const b of ["temperate", "boreal", "jungle", "savanna", "swamp", "desert", "tundra", "frozen", "volcanic", "wasteland", "tainted", "void", "water"]) out[b] = cwfFindGatherTable(b)?.name || "(none found)"; return out; },
+        // Which RollTable (world or compendium) each biome's forage-gather resolves to — mapped env + biomeGatherJSON override.
+        gatherTables: async () => { const out = {}; for (const b of ["temperate", "boreal", "jungle", "savanna", "swamp", "desert", "tundra", "frozen", "volcanic", "wasteland", "tainted", "void", "water"]) { const t = await cwfFindGatherTable({ biome: b }); out[b] = `${cwfGatherEnv({ biome: b })} → ${t ? t.name : "(none found)"}`; } return out; },
         forageGather: (actorId, biome = "temperate", crit = false) => cwfForageGather(actorId, { biome }, { crit }),   // manual test: draws + awards an ingredient
         roleDc: (biome, role = "forage", extra = {}) => cwfRoleDc(role, { biome, dc: 13, ...extra }),
         wanted: (d) => (d == null ? cwfWanted() : cwfWantedAdjust(d)),   // .wanted() reads · .wanted(1)/.wanted(-1) adjusts the Heat/Wanted score
