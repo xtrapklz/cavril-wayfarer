@@ -1154,6 +1154,9 @@ let cwfBusy = false;
 // Wayfarer move from a manual drag.
 let cwfMoving = false;
 const cwfEsc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
+// The writers'-room agents often wrote a descriptive "species" ("Drowned — the Ferryman's other half…", "Human (or what
+// wears her coat)"). Trim it to its leading clause for a tidy card SUB; the full line still shows as a body "Nature" row.
+const cwfShortSpecies = (s) => { const w = String(s || "").split(/\s*[—–(,;:]\s*/)[0].trim(); return w.length > 30 ? w.slice(0, 28).trim() + "…" : w; };
 // Recompute token vision + lighting against the CURRENT scene darkness. The day/night module raises darkness when the
 // clock crosses dusk/night; during a multi-hex travel turn those clock jumps can outrun the darkness animation, leaving
 // the canvas dark with STALE vision (the scene goes black except the token + weather) until something else refreshes it.
@@ -3709,7 +3712,9 @@ const TravelingMerchants = (() => {
     function card(m, cls) {
         const list = (arr) => (arr || []).map(x => `<li>${esc(x)}</li>`).join("");
         const row = (l, v) => `<div class="cwf-merch-meta"><span class="cwf-merch-l">${l}</span> ${v}</div>`;
+        const fullSp = String(m.species || "").trim(), shortSp = cwfShortSpecies(fullSp);
         const body = `<div class="cwf-merch-read">${esc(m.readAloud)}</div>`
+            + (fullSp.length > shortSp.length + 2 ? row("Nature", esc(fullSp)) : "")
             + row("Looks", esc(m.appearance)) + row("Voice", esc(m.voice))
             + `<div class="cwf-merch-sec"><span class="cwf-merch-l"><i class="fa-solid fa-sack-dollar"></i> Sells</span><ul class="cwf-merch-ul">${list(m.stock)}</ul></div>`
             + ((m.buys || []).length ? `<div class="cwf-merch-sec"><span class="cwf-merch-l"><i class="fa-solid fa-coins"></i> Pays well for</span><ul class="cwf-merch-ul">${list(m.buys)}</ul></div>` : "")
@@ -3717,7 +3722,7 @@ const TravelingMerchants = (() => {
             + (m.hook ? `<div class="cwf-merch-hook"><span class="cwf-merch-l"><i class="fa-solid fa-scroll"></i> Hook${m.arc ? ` · ${esc(m.arc)}` : ""}</span> ${esc(m.hook)}</div>` : "")
             + (m.lore ? `<div class="cwf-merch-lore"><span class="cwf-merch-l"><i class="fa-solid fa-eye-low-vision"></i> GM only</span> ${esc(m.lore)}</div>` : "");
         const foot = globalThis.CavrilEncounterStage ? `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="stage-scene" title="Stage a best-match scene backdrop for this meeting (a built place, no foes)"><i class="fa-solid fa-masks-theater"></i> Stage a scene</button></div>` : "";
-        return cwfCardShell("fa-store", `${m.name}${m.title ? ", " + m.title : ""}`, body, { sub: `${esc(m.species || "")}${cls?.label ? " · " + esc(cls.label) : ""}`, footerHTML: foot });
+        return cwfCardShell("fa-store", `${m.name}${m.title ? ", " + m.title : ""}`, body, { sub: `${esc(shortSp)}${cls?.label ? " · " + esc(cls.label) : ""}`, footerHTML: foot });
     }
     async function onTrade(cls) {
         try {
@@ -3780,13 +3785,15 @@ const NarrativeNPCs = (() => {
     function card(n, cls) {
         const outc = Array.isArray(n.outcomes) ? n.outcomes.join(" · ") : n.outcomes;
         const row = (l, v) => v ? `<div class="cwf-merch-meta"><span class="cwf-merch-l">${l}</span> ${v}</div>` : "";
+        const fullSp = String(n.species || "").trim(), shortSp = cwfShortSpecies(fullSp);
         const body = `<div class="cwf-merch-read">${esc(n.readAloud)}</div>`
+            + (fullSp.length > shortSp.length + 2 ? row("Nature", esc(fullSp)) : "")
             + row("Scene", esc(n.situation)) + row("Looks", esc(n.appearance)) + row("Voice", esc(n.voice)) + row("Wants", esc(n.wants))
             + (n.hook ? `<div class="cwf-merch-hook"><span class="cwf-merch-l"><i class="fa-solid fa-scroll"></i> Hook${n.arc ? ` · ${esc(n.arc)}` : ""}</span> ${esc(n.hook)}</div>` : "")
             + (n.twist ? `<div class="cwf-merch-lore"><span class="cwf-merch-l"><i class="fa-solid fa-mask"></i> Twist</span> ${esc(n.twist)}</div>` : "")
             + row("Branches", esc(outc));
         const foot = globalThis.CavrilEncounterStage ? `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="stage-scene" title="Stage a best-match scene backdrop for this meeting (a built place, no foes)"><i class="fa-solid fa-masks-theater"></i> Stage a scene</button></div>` : "";
-        return cwfCardShell("fa-user", `${n.name}${n.title ? " · " + n.title : ""}`, body, { sub: `${esc(n.species || "")}${cls?.label ? " · " + esc(cls.label) : ""}`, footerHTML: foot });
+        return cwfCardShell("fa-user", `${n.name}${n.title ? " · " + n.title : ""}`, body, { sub: `${esc(shortSp)}${cls?.label ? " · " + esc(cls.label) : ""}`, footerHTML: foot });
     }
     async function onBeat(cls) {
         try {
