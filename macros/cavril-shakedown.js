@@ -44,12 +44,13 @@
   await pause();
 
   // ── 2 · night / rest model (self-sizing night) ──────────────────────────
-  await beat("Night sizes to the watch — 5→10h · 3→12h · nobody→8h");
+  await beat("Night sizes to the watch — 1→16h · 2→14 · 3→12 · 4→10");
   const C = W.Camp;
   ok(C.baseNightHours(0) === 8, `no watch → ${C.baseNightHours(0)}h (want 8)`);
-  ok(C.baseNightHours(5) === 10, `5 on watch → ${C.baseNightHours(5)}h (want 10, your 2h-each case)`);
-  ok(C.baseNightHours(3) === 12, `3 on watch → ${C.baseNightHours(3)}h (want 12, 4h shifts)`);
-  ok(C.baseNightHours(6) < C.baseNightHours(5), "more watchers → shorter night (earlier wake)");
+  ok(C.baseNightHours(1) === 16, `1 on watch → ${C.baseNightHours(1)}h (want 16 — lone watcher pulls the full shift)`);
+  ok(C.baseNightHours(2) === 14, `2 on watch → ${C.baseNightHours(2)}h (want 14)`);
+  ok(C.baseNightHours(4) === 10, `4 on watch → ${C.baseNightHours(4)}h (want 10)`);
+  ok(C.baseNightHours(3) > C.baseNightHours(4), "more watchers → shorter night (earlier wake)");
   await pause();
 
   // ── 3 · landlocked-water map fix ────────────────────────────────────────

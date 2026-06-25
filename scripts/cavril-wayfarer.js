@@ -1929,12 +1929,15 @@ function cwfWatchRosterHTML(io) {
         const end = i === N - 1 ? H : Math.floor((i + 1) * per);
         const win = H ? (start >= end ? `Hr ${start}` : `Hr ${start}–${end}`) : "";
         const mod = Danger.highestMod(a);
-        return `<div class="cwf-shift">
+        const isShort = !!(io.shortrest && Camp.shortResters?.includes?.(a.id));
+        const restBtn = io.shortrest ? `<button class="cwf-shift-btn${isShort ? " on" : ""}" data-${io.attr}="${io.shortrest}" data-id="${a.id}" title="${isShort ? "Forgoing the long rest — short rest only (shortens the night, recovers nothing). Click for a full long rest." : "Taking a full long rest. Click to FORGO it (short rest) — shortens the night, recovers nothing."}"><i class="fa-solid ${isShort ? "fa-mug-hot" : "fa-bed"}"></i></button>` : "";
+        return `<div class="cwf-shift${isShort ? " cwf-shift-shortrest" : ""}">
             <span class="cwf-shift-n">${i + 1}</span>
             <span class="cwf-shift-nm">${cwfEsc(a.name)}</span>
-            <span class="cwf-shift-win">${win}</span>
+            <span class="cwf-shift-win">${isShort ? "☕ short rest" : win}</span>
             <span class="cwf-shift-mod" title="Best passive watch modifier (Perception/Survival)">−${mod}</span>
             <span class="cwf-shift-ctl">
+                ${restBtn}
                 <button class="cwf-shift-btn" data-${io.attr}="${io.up}" data-id="${a.id}" title="Earlier shift" ${i === 0 ? "disabled" : ""}><i class="fa-solid fa-chevron-up"></i></button>
                 <button class="cwf-shift-btn" data-${io.attr}="${io.down}" data-id="${a.id}" title="Later shift" ${i === N - 1 ? "disabled" : ""}><i class="fa-solid fa-chevron-down"></i></button>
                 <button class="cwf-shift-btn cwf-shift-x" data-${io.attr}="${io.toggle}" data-id="${a.id}" title="Take off watch"><i class="fa-solid fa-xmark"></i></button>
@@ -2055,30 +2058,31 @@ function cwfRestSummary(type, rows) {
 }
 // Rest the whole party. Long rest restores HP/slots/hit dice (NOT exhaustion).
 // Short rest auto-spends hit dice (Foundry-rolled for now; DDB-sourced is the next step).
-async function cwfPartyRest(type, { newDay = false, silent = false, extraExh = 0 } = {}) {
+async function cwfPartyRest(type, { newDay = false, silent = false, extraExh = 0, shortIds = null } = {}) {
     if (!game.user.isGM) return;
     const mem = Party.members();
     if (!mem.length) { ui.notifications?.warn(`${TITLE}: no party members found to rest.`); return; }
     if (!silent) Cinematic.broadcast(type === "long"
-        ? { icon: "fa-bed", title: "Long Rest", subtitle: extraExh > 0 ? `slept in — recovers ${1 + extraExh} exhaustion` : "the party recovers", tone: "dawn" }
+        ? { icon: "fa-bed", title: "Long Rest", subtitle: extraExh > 0 ? `slept in — recovers ${1 + extraExh} exhaustion` : (shortIds?.size ? "the party recovers — watchers short-rest" : "the party recovers"), tone: "dawn" }
         : { icon: "fa-mug-hot", title: "Short Rest", subtitle: "a moment's respite", tone: "dusk" });
     const rows = [];
     for (const a of mem) {
+        const memberType = (shortIds && shortIds.has(a.id)) ? "short" : type;   // a watcher who FORGOES the long rest takes only a SHORT rest, even on a long-rest night
         const before = cwfRestSnapshot(a);
         try {
             // Native rest does all recovery. Exhaustion recovery is blocked per-member
             // by the dnd5e.preLongRest hook when Wayfarer set the blockRest flag (bedded
-            // down without food or water). The watch toll is applied levels, not a block.
-            if (type === "long") await a.longRest({ dialog: false, chat: false, newDay });
+            // down without food or water).
+            if (memberType === "long") await a.longRest({ dialog: false, chat: false, newDay });
             else await a.shortRest({ dialog: false, chat: false, autoHD: true, autoHDThreshold: 1 });
         } catch (e) { warn("rest failed", a.name, e); }
         // Sleep-in bonus: extra hours past the base 8 remove MORE exhaustion — but only for a member the long rest actually
         // recovered (a starving member, blocked from recovery, gets no bonus either). cur < before.exh = it went down.
-        if (type === "long" && extraExh > 0) {
+        if (memberType === "long" && extraExh > 0) {
             const cur = a.system?.attributes?.exhaustion ?? 0;
             if (cur > 0 && cur < before.exh) { try { await a.update({ "system.attributes.exhaustion": Math.max(0, cur - extraExh) }); } catch (e) { /* noop */ } }
         }
-        rows.push({ name: a.name, before, after: cwfRestSnapshot(a) });
+        rows.push({ name: a.name, before, after: cwfRestSnapshot(a), short: memberType === "short" });
     }
     cwfRestSummary(type, rows);
     // Heat/Wanted bleeds off −1 per long rest — surviving to a rest cools your notoriety (engine v2 only).
@@ -4759,17 +4763,30 @@ const Camp = (() => {
     let mealResult = null, mealForaged = false;           // carried from Make Camp → resolved at dawn
     let nightDawnPending = null;                           // {nextDay,msgId} while a night encounter halts the flow before dawn
     let sleepIn = 0;                                       // extra rest hours past the minimum — later wake, more exhaustion recovered
+    let shortResters = [];                                 // watcher ids who FORGO the long rest (short rest only) — each acts as an extra shift
 
-    // Hours of SLEEP a long rest needs (the "nightHours" setting, default 8). Each watcher must still get this AROUND their
-    // shift, so a watched night runs longer: with w sharing the watch over a night N, each watches N/w and sleeps N−N/w;
-    // set that to the base sleep → N = sleep·w/(w−1). MORE watchers → shorter shifts → shorter night → everyone wakes
-    // EARLIER. Nobody (or a lone watcher who can't both cover the night and sleep) → a clean base sleep. + any sleep-in.
+    // The night runs long enough that every LONG-RESTING watcher still gets their 8h sleep AROUND their watch shift. ONE
+    // watcher pulls the whole 8h shift; each ADDED watcher trims the shift by 2h (split duty), so the night shortens.
+    // night = 8 + shift, shift = 8 − 2·(watchShifts−1):  1 watch→16h · 2→14 · 3→12 · 4→10 · 5+→8. A watcher who FORGOES the
+    // long rest (short rest) counts as an EXTRA shift (shrinking the night) and recovers nothing; if NOBODY long-rests the
+    // whole camp collapses to a ~1h short rest (no long-rest benefit, just +1h on the clock). + any deliberate sleep-in.
     const baseSleep = () => Math.max(1, Number(game.settings.get(MOD, "nightHours")) || 8);
-    function baseNightHours(w) { const s = baseSleep(); return w < 2 ? s : Math.round((s * w / (w - 1)) * 2) / 2; }   // to the half-hour
-    const nightHours = () => baseNightHours(watchers.length) + (sleepIn || 0);
+    const SHORT_NIGHT = 1;
+    function baseNightHours(w) { const s = baseSleep(); return w < 1 ? s : s + Math.max(0, s - 2 * (w - 1)); }   // preview (no forgoers)
+    function nightLength() {
+        const s = baseSleep(), W = watchers.length;
+        if (W === 0) return s;                                                    // nobody watching → a clean, unguarded base rest
+        const forgo = shortResters.filter(id => watchers.includes(id)).length;   // watchers taking a short rest instead of a long one
+        const longResters = (Party.members().length - W) + (W - forgo);          // sleepers + watchers still taking a long rest
+        if (longResters <= 0) return SHORT_NIGHT;                                 // EVERYONE short-rests → a short rest only
+        return s + Math.max(0, s - 2 * ((W + forgo) - 1));                        // a forgoer = "one more person on watch"
+    }
+    const nightHours = () => nightLength() + (sleepIn || 0);
     const setSleepIn = (h) => { sleepIn = Math.max(0, Math.min(8, Math.round((Number(h) || 0) * 2) / 2)); WayfarerPanel.render(); cwfCampRefresh(); };
-    // Exhaustion a peaceful long rest removes: 1 base, +1 per 2 SLEEP-IN hours, capped (so a wrecked party can claw back in
-    // one long, dangerous night). Gated by the extraRestRecovery setting — off = the dnd5e standard 1. v0.55.108.
+    const toggleShortRest = (id) => { const i = shortResters.indexOf(id); if (i >= 0) shortResters.splice(i, 1); else shortResters.push(id); WayfarerPanel.render(); cwfCampRefresh(); };
+    const shortResterSet = () => new Set(shortResters.filter(id => watchers.includes(id)));
+    const noLongRest = () => { const W = watchers.length; return W > 0 && (Party.members().length - W) + (W - shortResterSet().size) <= 0; };   // everyone short-rests → no long rest happens
+    // Exhaustion a peaceful long rest removes: 1 base, +1 per 2 SLEEP-IN hours, capped. Gated by the extraRestRecovery setting.
     const restRecovery = () => 1 + (game.settings.get(MOD, "extraRestRecovery") ? Math.min(2, Math.floor((sleepIn || 0) / 2)) : 0);
     const dangerScore = () => Store.sceneState().danger ?? (Number(game.settings.get(MOD, "dangerDefault")) || 0);
     const challengeScore = () => cwfChallengeEff();   // public seam for EncounterStage's difficulty — the dial + night bump
@@ -4778,7 +4795,7 @@ const Camp = (() => {
         if (!game.user.isGM) return;
         if (cwfLastRest() == null) cwfMarkRested();   // seed the hours-awake clock on the first leg of the journey
         active = true; supplyNote = note; mealResult = consumeResult; mealForaged = !!foraged;
-        nightDawnPending = null; sleepIn = 0;
+        nightDawnPending = null; sleepIn = 0; shortResters = [];
         const members = new Set(Party.members().map(a => a.id));
         watchers = (game.settings.get(MOD, "lastWatch") || []).filter(id => members.has(id));
         advanceToNight();
@@ -4922,8 +4939,8 @@ const Camp = (() => {
         catch (e) { warn("advance to dawn failed", e); }
         cwfSettleVision();   // big darkness jump back to day → recompute until the map brightens (no lingering black-out)
         if (game.settings.get(MOD, "longRestAtDawn")) {
-            if (rest === "short") await cwfPartyRest("short", { silent: true });   // a night fight they moved out of → only a short rest's benefit (no exhaustion recovery)
-            else await cwfPartyRest("long", { newDay: true, silent: true, extraExh: restRecovery() - 1 });
+            if (rest === "short" || noLongRest()) await cwfPartyRest("short", { silent: true });   // a night fight they moved out of, OR everyone forwent the long rest → short rest for all
+            else await cwfPartyRest("long", { newDay: true, silent: true, extraExh: restRecovery() - 1, shortIds: shortResterSet() });   // long rest, but the forgoing watchers only short-rest
         }
         active = false;
         if (pendingMsg) { const m = game.messages.get(pendingMsg); if (m) { try { await m.update({ content: cwfCardShell("fa-moon", "Night Watch", `<div class="cwf-muted2">Resolved — dawn breaks on Day ${nextDay}.</div>`) }); } catch { /* noop */ } } }
@@ -4935,7 +4952,8 @@ const Camp = (() => {
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
 
     return {
-        begin, setDanger, toggleWatcher, moveWatcher, setAllWatch, resolveNight, wakeAtDawn, cancel, watcherForHour, shiftHours, dangerScore, challengeScore, nightHours, setSleepIn, restRecovery, baseNightHours,
+        begin, setDanger, toggleWatcher, moveWatcher, setAllWatch, resolveNight, wakeAtDawn, cancel, watcherForHour, shiftHours, dangerScore, challengeScore, nightHours, setSleepIn, restRecovery, baseNightHours, toggleShortRest, shortResterSet, noLongRest,
+        get shortResters() { return shortResters; },
         get active() { return active; }, get watchers() { return watchers; }, get supplyNote() { return supplyNote; }, get sleepIn() { return sleepIn; },
         get nightEncounterPending() { return !!nightDawnPending; }
     };
@@ -5073,6 +5091,7 @@ const WayfarerPanel = (() => {
                 case "set-challenge": await Store.setSceneState({ challenge: Number(btn.dataset.n) }); WayfarerPanel.render(); break;
                 case "set-wanted": await cwfSetWanted(Number(btn.dataset.n)); break;
                 case "camp-watch": Camp.toggleWatcher(btn.dataset.id); break;
+                case "camp-short-rest": Camp.toggleShortRest(btn.dataset.id); break;
                 case "camp-watch-up": Camp.moveWatcher(btn.dataset.id, "up"); break;
                 case "camp-watch-down": Camp.moveWatcher(btn.dataset.id, "down"); break;
                 case "camp-watch-all": Camp.setAllWatch(true); break;
@@ -5318,13 +5337,15 @@ const WayfarerPanel = (() => {
                 <div class="cwf-seg-row">${dial}</div>
                 <div class="cwf-label cwf-watch-label" style="margin-top:6px">Watch order <span class="cwf-muted2">${watchNote}</span>
                     <span class="cwf-watch-bulk"><button class="cwf-mini-btn" data-action="camp-watch-all" ${dis} title="Put the whole party on watch">All</button><button class="cwf-mini-btn" data-action="camp-watch-none" ${dis} title="Clear the watch">Clear</button></span></div>
-                ${cwfWatchRosterHTML({ attr: "action", toggle: "camp-watch", up: "camp-watch-up", down: "camp-watch-down" })}
+                ${cwfWatchRosterHTML({ attr: "action", toggle: "camp-watch", up: "camp-watch-up", down: "camp-watch-down", shortrest: "camp-short-rest" })}
                 ${(() => {
                     const night = Camp.nightHours(), campH = Number(game.settings.get(MOD, "campHour")) || 21;
                     const wakeH = String(Math.round((campH + night) % 24)).padStart(2, "0");
                     const rec = Camp.restRecovery(), si = Camp.sleepIn, extraOn = !!game.settings.get(MOD, "extraRestRecovery");
-                    const sleepNote = watch.length >= 2 ? "all sleep 8h" : "8h base rest";
-                    return `<div class="cwf-rest-sum"><span><i class="fa-solid fa-bed"></i> Night <b>${night}h</b> · wake <b>${wakeH}:00</b></span><span class="cwf-muted2">${sleepNote} · recovers <b>${rec}</b> exhaustion</span></div>`
+                    const forgo = Camp.shortResterSet?.()?.size || 0;
+                    const sleepNote = Camp.noLongRest?.() ? "short rest only — no long-rest benefit"
+                        : (forgo ? `${forgo} forgoing (short rest) · recovers <b>${rec}</b>` : `long rest · recovers <b>${rec}</b> exhaustion`);
+                    return `<div class="cwf-rest-sum"><span><i class="fa-solid fa-bed"></i> Night <b>${night}h</b> · wake <b>${wakeH}:00</b></span><span class="cwf-muted2">${sleepNote}</span></div>`
                         + (extraOn ? `<div class="cwf-rest-sleepin"><span class="cwf-muted2">Sleep in</span><button class="cwf-mini-btn" data-action="camp-sleepin" data-d="-2" ${dis || si <= 0 ? "disabled" : ""}>−</button><span class="cwf-rest-si">+${si}h</span><button class="cwf-mini-btn" data-action="camp-sleepin" data-d="2" ${dis || si >= 8 ? "disabled" : ""}>+</button><span class="cwf-muted2">later wake, more recovery</span></div>` : "");
                 })()}
                 <div class="cwf-actions">

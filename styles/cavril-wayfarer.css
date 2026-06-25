@@ -270,6 +270,9 @@
 .cwf-shift-btn:hover:not(:disabled) { color: #fff; border-color: var(--cwf-accent); background: color-mix(in srgb, var(--cwf-accent) 16%, transparent); }
 .cwf-shift-btn:disabled { opacity: .25; cursor: default; }
 .cwf-shift-x:hover:not(:disabled) { color: #fff; border-color: var(--cwf-severe); background: color-mix(in srgb, var(--cwf-severe) 20%, transparent); }
+.cwf-shift-btn.on { color: var(--cwf-gold); border-color: var(--cwf-gold); background: color-mix(in srgb, var(--cwf-gold) 16%, transparent); }
+.cwf-shift-shortrest { background: color-mix(in srgb, var(--cwf-gold) 9%, var(--cwf-bg2)); }
+.cwf-shift-shortrest .cwf-shift-win { color: var(--cwf-gold); }
 .cwf-watch-empty { padding: 6px 8px; border-radius: 8px; border: 1px dashed var(--cwf-line); color: var(--cwf-muted); font-size: 11px; font-style: italic; }
 .cwf-watch-empty i { margin-right: 5px; opacity: .7; }
 .cwf-watch-rest { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
