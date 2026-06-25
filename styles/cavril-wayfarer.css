@@ -471,6 +471,7 @@
 /* concise party supplies strip — totals + worst exhaustion at a glance; the per-character grid expands behind it */
 .cwf-supstrip { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
 .cwf-sup { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.cwf-sup-max { opacity: .45; font-weight: 600; font-size: .82em; margin-left: 1px; }
 .cwf-sup .fa-drumstick-bite { color: #d8a24d; }
 .cwf-sup .fa-bottle-water { color: #4f9fe6; }
 .cwf-sup.ok .fa-face-dizzy { color: #6fb07a; }

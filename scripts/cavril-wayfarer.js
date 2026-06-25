@@ -1076,6 +1076,17 @@ const Party = (() => {
         }
         return out;
     }
+    // Water is a FULL RESET when a source is found: every member's waterskins fill to their carrying capacity. Returns the
+    // total charges added across the party (0 if everyone was already topped off). Rations have no equivalent — food is carried.
+    async function refillWater() {
+        if (!game.user.isGM) return 0;
+        let added = 0;
+        for (const m of members()) {
+            const need = Math.max(0, capacity(m).water - countItems(m, WATER_RE));
+            if (need > 0) { await addItem(m, WATER_RE, "Waterskin", need); added += need; }
+        }
+        return added;
+    }
     // Nudge the shared stash up/down by one (the HUD steppers). Works WITHOUT a dnd5e "group" actor: the group
     // inventory is preferred, but with individual PCs we add to / take from a party member instead (so the +/-
     // buttons always do something instead of silently bailing when there's no group actor).
@@ -1101,7 +1112,7 @@ const Party = (() => {
         if (delta > 0) await addItem(a, re, type === "water" ? "Waterskin" : "Rations", delta);
         else if (delta < 0) await take(a, re, -delta);
     }
-    return { groupActor, members, size, supplies, breakdown, capacity, countItems, consume, addSupplies, adjustStash, setMemberSupply, RATION_RE, WATER_RE };
+    return { groupActor, members, size, supplies, breakdown, capacity, countItems, consume, addSupplies, refillWater, adjustStash, setMemberSupply, RATION_RE, WATER_RE };
 })();
 
 /* =========================================================================
@@ -1403,11 +1414,13 @@ const cwfChallengeEff = () => Math.max(0, Math.min(5, cwfChallenge() + (cwfNight
 const cwfRouteDc = (gov) => (gov?.dc ?? 10) + (cwfNightNow() ? 2 : 0);
 // Per-biome forage difficulty — how hard food / water are to FIND, decoupled from terrain ruggedness (a desert is flat and
 // easy to cross but brutal to forage; a jungle is hard to cross but lush). Lower = easier. Overridable via biomeForageJSON.
+// Food DCs are everyday (you usually find SOMETHING to eat); WATER DCs are high — finding a source is rare and a big deal,
+// because it FULLY refills the party — except where there's standing water (swamp/jungle low; rivers & coast cut −8 in cwfRoleDc).
 const CWF_BIOME_FORAGE = {
-    temperate: { food: 11, water: 12 }, boreal: { food: 13, water: 12 }, jungle: { food: 10, water: 11 },
-    savanna:   { food: 13, water: 16 }, swamp:  { food: 12, water: 11 }, desert: { food: 18, water: 20 },
-    tundra:    { food: 17, water: 14 }, frozen: { food: 19, water: 15 }, volcanic: { food: 18, water: 18 },
-    wasteland: { food: 17, water: 18 }, tainted: { food: 19, water: 19 }, void: { food: 20, water: 20 },
+    temperate: { food: 11, water: 17 }, boreal: { food: 13, water: 17 }, jungle: { food: 10, water: 14 },
+    savanna:   { food: 13, water: 20 }, swamp:  { food: 12, water: 13 }, desert: { food: 18, water: 25 },
+    tundra:    { food: 17, water: 18 }, frozen: { food: 19, water: 19 }, volcanic: { food: 18, water: 23 },
+    wasteland: { food: 17, water: 23 }, tainted: { food: 19, water: 23 }, void: { food: 20, water: 25 },
     water:     { food: 12, water: 8 }
 };
 function cwfBiomeForage(biome) {
@@ -1429,7 +1442,7 @@ function cwfRoleDc(role, gov) {
     if (role === "forage") {
         const f = cwfBiomeForage(biome);
         let food = f.food + night, wat = f.water + night;
-        if (nearWater) wat -= 6;                       // a river or coast makes water easy
+        if (nearWater) wat -= 8;                       // a river or coast is a reliable water source (the rare find is easy here)
         if (gov?.vegetation === "high") food -= 2;     // forest mast, berries, game
         if (road) food += 2;                           // picked over near a road
         food = Math.max(5, food); wat = Math.max(5, wat);
@@ -4840,16 +4853,20 @@ const Turn = (() => {
                 if (tier === "success" || tier === "crit") {
                     const rdc = cwfRoleDc("forage", governing);
                     const size = Party.size() || 1, meals = Math.max(1, Number(game.settings.get(MOD, "mealsPerDay")) || 3);
-                    const dayNeed = size * meals, crit = tier === "crit";
-                    const yieldOf = (threshold) => {
-                        if (v.total < threshold && !crit) return 0;           // didn't clear this resource's DC → none of it (unless a crit)
-                        return dayNeed + Math.floor(Math.max(0, v.total - threshold) / 4) + (crit ? size : 0);
-                    };
-                    const got = await Party.addSupplies(yieldOf(rdc.food), yieldOf(rdc.water));
+                    const crit = tier === "crit";
+                    const spaces = Domain.PACE[pace]?.spaces ?? 2;   // hexes/day at this pace: slow 1 · normal 2 · fast 3
+                    // FOOD scales with time-per-hex: a slow day's forage feeds the whole day, a fast one a single meal — so the
+                    // daily total is pace-INVARIANT (3 fast forages ≈ 1 slow forage) and foraging every hex stops out-provisioning.
+                    const perMember = Math.max(1, meals - (spaces - 1));   // slow 3 · normal 2 · fast 1 (at 3 meals/day)
+                    const foodAmt = (v.total >= rdc.food || crit) ? size * perMember : 0;
+                    const got = await Party.addSupplies(foodAmt, 0);   // food into packs (capped at capacity); water is a separate reset
+                    // WATER is a rare FULL RESET: find a source and EVERYONE tops their skins off to capacity, until the next source.
+                    let waterFilled = 0;
+                    if (v.total >= rdc.water || crit) waterFilled = await Party.refillWater();
                     const bits = [];
                     if (got.rations) bits.push(`+${got.rations}🍖`);
-                    if (got.water) bits.push(`+${got.water}💧`);
-                    v.result += bits.length ? ` <em>— foraged ${bits.join(" / ")} into the party's packs.</em>` : ` <em>— but every pack is already full.</em>`;
+                    if (waterFilled) bits.push(`💧 water source — all skins topped off (+${waterFilled})`);
+                    v.result += bits.length ? ` <em>— foraged ${bits.join(" · ")}.</em>` : ` <em>— turned up nothing usable here.</em>`;
                     // A HIGH forage (a crit, or well clear of the DC) also turns up a craftable ingredient from the biome's gather table.
                     // Herbal finds scale with the MARGIN over the forage DC — one per 4 points clear — and a crit DOUBLES the haul.
                     let herbs = Math.floor(Math.max(0, v.total - rdc.dc) / 4);
@@ -5677,13 +5694,16 @@ const WayfarerPanel = (() => {
 
                 <div class="cwf-section">
                     ${(() => {
-                        const worst = bd.members.reduce((w, m) => (m.exh > w.exh ? { exh: m.exh, name: m.name } : w), { exh: 0, name: "" });
-                        const rLow = sup.rations < size, wLow = sup.water < size;
+                        const sumExh = bd.members.reduce((s, m) => s + (m.exh || 0), 0);
+                        const sumCapR = bd.members.reduce((s, m) => s + (m.capRations || 0), 0);
+                        const sumCapW = bd.members.reduce((s, m) => s + (m.capWater || 0), 0);
+                        const maxExh = bd.members.length * 6;
+                        const rLow = sup.rations < size, wLow = sup.water < size, exhCls = sumExh <= 0 ? "ok" : (sumExh >= size * 2 ? "low" : "warn");
                         const awake = Math.round(cwfHoursSinceRest()), thr = cwfRestThreshold(), tired = awake > thr;
                         return `<div class="cwf-supstrip">
-                            <span class="cwf-sup ${rLow ? "low" : ""}" title="Rations carried by the party (sum of every character's pack). The party eats ${size}/day. Expand for per-character bars."><i class="fa-solid fa-drumstick-bite"></i> ${sup.rations}</span>
-                            <span class="cwf-sup ${wLow ? "low" : ""}" title="Waterskin charges carried by the party (sum of every character's pack). The party drinks ${size}/day. Expand for per-character bars."><i class="fa-solid fa-bottle-water"></i> ${sup.water}</span>
-                            <span class="cwf-sup ${worst.exh > 0 ? "warn" : "ok"}" title="Worst exhaustion in the party"><i class="fa-solid fa-face-dizzy"></i> ${worst.exh > 0 ? `Lvl ${worst.exh}${worst.name ? ` · ${esc(worst.name)}` : ""}` : "rested"}</span>
+                            <span class="cwf-sup ${rLow ? "low" : ""}" title="Rations the party carries — ${sup.rations} of ${sumCapR} total capacity. The party eats ${size}/day. Expand for per-character bars."><i class="fa-solid fa-drumstick-bite"></i> ${sup.rations}<span class="cwf-sup-max">/${sumCapR}</span></span>
+                            <span class="cwf-sup ${wLow ? "low" : ""}" title="Waterskin charges the party carries — ${sup.water} of ${sumCapW} total capacity. Drinks ${size}/day; a found water source refills everyone. Expand for per-character bars."><i class="fa-solid fa-bottle-water"></i> ${sup.water}<span class="cwf-sup-max">/${sumCapW}</span></span>
+                            <span class="cwf-sup ${exhCls}" title="Total party exhaustion — the sum of all ${bd.members.length} members' levels, of ${maxExh} possible. Expand to see who carries it."><i class="fa-solid fa-face-dizzy"></i> ${sumExh}<span class="cwf-sup-max">/${maxExh}</span></span>
                             <span class="cwf-sup ${tired ? "low" : ""}" title="Hours since the party's last long rest. Past ${thr}h, each leg adds +1 exhaustion until they camp."><i class="fa-solid fa-moon"></i> ${awake}h</span>
                             <button class="cwf-sup-toggle ${_partyOpen ? "on" : ""}" data-action="toggle-party" title="Per-character rations / water / exhaustion"><i class="fa-solid fa-users"></i> ${size} <i class="fa-solid fa-chevron-${_partyOpen ? "up" : "down"}"></i></button>
                         </div>`;
