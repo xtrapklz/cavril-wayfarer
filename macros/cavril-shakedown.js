@@ -53,6 +53,21 @@
   ok(C.baseNightHours(3) > C.baseNightHours(4), "more watchers → shorter night (earlier wake)");
   await pause();
 
+  // ── 2b · resources are per-character (STR-scaled capacity, no stockpile) ──
+  await beat("Resources — capacity = carry-base + STR mod, totals = sum of packs");
+  const P = W.Party;
+  if (P?.members?.().length) {
+    const m0 = P.members()[0];
+    const cap = P.capacity(m0);
+    ok(cap.rations >= 1 && cap.water >= 1, `${m0.name} carries up to ${cap.rations}🍖 / ${cap.water}💧 (Strength-scaled)`);
+    const sup = P.supplies();
+    ok(typeof sup.rations === "number" && typeof sup.water === "number", `party holds ${sup.rations}🍖 / ${sup.water}💧 — summed from packs, no shared stockpile`);
+    ok(typeof P.addSupplies === "function" && typeof P.addToStash === "undefined", "addToStash retired → addSupplies distributes to capacity");
+  } else {
+    ok(true, "no party members loaded — skipping per-character resource check");
+  }
+  await pause();
+
   // ── 3 · landlocked-water map fix ────────────────────────────────────────
   await beat("Map fix — a DRY Temperate hex pulls 0 water maps (table → console)");
   try {

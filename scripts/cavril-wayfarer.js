@@ -450,6 +450,7 @@ const Store = (() => {
         // days, thirst the moment you go dry. Wayfarer only APPLIES exhaustion; the native dnd5e long rest recovers it.
         g.register(MOD, "starveExhaustion", { name: "Starvation & thirst exhaustion", hint: "Going without food or water at camp exhausts the members who went short, and blocks their long-rest exhaustion recovery. No dice — it just applies.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "foodGraceDays", { name: "Food reserve (days before hunger)", hint: "How many consecutive days a member can go unfed before the next dry day adds +1 exhaustion — a flat reserve, no CON math. Water has NO reserve: any night without water is +1 exhaustion immediately. Default 1.", scope: "world", config: true, type: Number, default: 1 });
+        g.register(MOD, "carryBase", { name: "Carry base (rations / water capacity)", hint: "Each character carries up to this many rations AND this many waterskin charges, PLUS their Strength modifier. The party's totals are just the sum of what everyone holds — no shared stockpile. The HUD shows per-character bars filled to this capacity. Default 6 (STR 14 → 8, STR 8 → 5).", scope: "world", config: true, type: Number, default: 6 });
         g.register(MOD, "restThresholdHours", { name: "Hours awake before exhaustion", hint: "How long the party can go since its last LONG REST before fatigue sets in. Past this, each travel leg adds +1 exhaustion to everyone until they bed down. The HUD shows the hours-awake clock. Default 24.", scope: "world", config: true, type: Number, default: 24 });
         g.register(MOD, "lastRestTime", { scope: "world", config: false, type: Number, default: 0 });   // worldTime of the party's last long rest — drives the hours-awake clock
         // Watch ↔ rest: a long watch shift BLOCKS that member's long-rest exhaustion
@@ -971,25 +972,35 @@ const Party = (() => {
         for (const it of (actor?.items ?? [])) if (re.test(it.name || "")) n += unitsOf(it);
         return n;
     }
-    // Live totals summed across the group's shared inventory + every member sheet.
+    // Live totals = the sum of what PARTY MEMBERS carry (rations + waterskin charges). No shared
+    // stockpile — the only supplies that exist are the ones on the characters' own sheets.
     function supplies() {
         let rations = 0, water = 0;
-        const g = groupActor();
-        if (g) { rations += countItems(g, RATION_RE); water += countItems(g, WATER_RE); }
         for (const a of members()) { rations += countItems(a, RATION_RE); water += countItems(a, WATER_RE); }
         return { rations, water };
     }
-    // Per-member breakdown (own exhaustion / rations / water on the sheet) + the
-    // shared GROUP stash, for the HUD's individual readout.
+    // What ONE character can carry: a base (setting) + their Strength modifier, for
+    // rations and for waterskin charges alike. No shared stockpile — the party total is
+    // just the sum of these. Floor of 1 so a feeble character still carries something.
+    function capacity(a) {
+        const base = Math.max(1, Number(game.settings.get(MOD, "carryBase")) || 6);
+        const str = a?.system?.abilities?.str?.mod ?? 0;
+        const c = Math.max(1, base + str);
+        return { rations: c, water: c };
+    }
+    // Per-member breakdown (own exhaustion / rations / water / carry capacity), for the
+    // HUD's per-character bars. Capacity is Strength-scaled; current is what's on the sheet.
     function breakdown() {
-        const g = groupActor();
-        const rows = members().map(a => ({
-            id: a.id, name: a.name,
-            exh: a.system?.attributes?.exhaustion ?? 0,
-            rations: countItems(a, RATION_RE), water: countItems(a, WATER_RE)
-        }));
-        const h = stashHolder();
-        return { members: rows, stash: { rations: h ? countItems(h, RATION_RE) : 0, water: h ? countItems(h, WATER_RE) : 0 } };
+        const rows = members().map(a => {
+            const cap = capacity(a);
+            return {
+                id: a.id, name: a.name,
+                exh: a.system?.attributes?.exhaustion ?? 0,
+                rations: countItems(a, RATION_RE), water: countItems(a, WATER_RE),
+                capRations: cap.rations, capWater: cap.water
+            };
+        });
+        return { members: rows };
     }
 
     // Consume 1 ration + 1 waterskin-use per member. Per member the source order is
@@ -998,12 +1009,12 @@ const Party = (() => {
     // a perMember [{ id, name, food, water }] breakdown.
     async function consume() {
         if (!game.user.isGM) return { rations: 0, water: 0, rationsShort: 0, waterShort: 0, perMember: [] };
-        const mem = members(), g = groupActor();
+        const mem = members();
         let rations = 0, water = 0, rationsShort = 0, waterShort = 0;
         const perMember = [];
         for (const m of mem) {
-            const food = ((g && await take(g, RATION_RE, 1) > 0) || await take(m, RATION_RE, 1) > 0);
-            const wat  = ((g && await take(g, WATER_RE, 1) > 0) || await take(m, WATER_RE, 1) > 0);
+            const food = (await take(m, RATION_RE, 1)) > 0;   // each member eats from their OWN pack — no shared pool
+            const wat  = (await take(m, WATER_RE, 1)) > 0;
             food ? rations++ : rationsShort++;
             wat ? water++ : waterShort++;
             perMember.push({ id: m.id, name: m.name, food, water });
@@ -1038,13 +1049,26 @@ const Party = (() => {
         if (existing) await addToItem(existing, qty);
         else { try { await actor.createEmbeddedDocuments("Item", [{ name: defaultName, type: "loot", system: { quantity: qty } }]); } catch (e) { warn("create stash item failed", e); } }
     }
-    // Forager haul → the group's shared inventory.
-    async function addToStash(rations, water) {
-        if (!game.user.isGM) return;
-        const g = groupActor();
-        if (!g) { ui.notifications?.warn(`${TITLE}: no party group actor to hold the haul.`); return; }
-        await addItem(g, RATION_RE, "Rations", rations);
-        await addItem(g, WATER_RE, "Waterskin", water);
+    // Distribute a haul (forage / restock) ACROSS party members, filling each toward their Strength-scaled carrying
+    // capacity — emptiest first, so short supplies reach the neediest. No shared stockpile: anything that won't fit on a
+    // character is left behind. Returns the totals actually stowed (may be < requested when packs are full).
+    async function addSupplies(rations, water) {
+        if (!game.user.isGM) return { rations: 0, water: 0 };
+        const mem = members();
+        if (!mem.length) { ui.notifications?.warn(`${TITLE}: no party members to carry supplies.`); return { rations: 0, water: 0 }; }
+        const out = { rations: 0, water: 0 };
+        for (const [key, re, want, name] of [["rations", RATION_RE, rations | 0, "Rations"], ["water", WATER_RE, water | 0, "Waterskin"]]) {
+            let need = Math.max(0, want);
+            const slots = mem.map(m => ({ m, room: Math.max(0, capacity(m)[key] - countItems(m, re)) }))
+                             .filter(s => s.room > 0).sort((a, b) => b.room - a.room);   // emptiest packs first
+            for (const s of slots) {
+                if (need <= 0) break;
+                const give = Math.min(s.room, need);
+                await addItem(s.m, re, name, give);
+                need -= give; out[key] += give;
+            }
+        }
+        return out;
     }
     // Nudge the shared stash up/down by one (the HUD steppers). Works WITHOUT a dnd5e "group" actor: the group
     // inventory is preferred, but with individual PCs we add to / take from a party member instead (so the +/-
@@ -1071,7 +1095,7 @@ const Party = (() => {
         if (delta > 0) await addItem(a, re, type === "water" ? "Waterskin" : "Rations", delta);
         else if (delta < 0) await take(a, re, -delta);
     }
-    return { groupActor, members, size, supplies, breakdown, countItems, consume, addToStash, adjustStash, setMemberSupply, RATION_RE, WATER_RE };
+    return { groupActor, members, size, supplies, breakdown, capacity, countItems, consume, addSupplies, adjustStash, setMemberSupply, RATION_RE, WATER_RE };
 })();
 
 /* =========================================================================
@@ -2058,6 +2082,31 @@ function cwfRestSummary(type, rows) {
 }
 // Rest the whole party. Long rest restores HP/slots/hit dice (NOT exhaustion).
 // Short rest auto-spends hit dice (Foundry-rolled for now; DDB-sourced is the next step).
+// A crit-SUCCESS forage turns up a medicinal find that eases the WEARIEST member by one exhaustion. Returns a note (or "").
+async function cwfForageMedicinal() {
+    if (!game.user.isGM) return "";
+    let worst = null, worstE = 0;
+    for (const m of Party.members()) { const e = m.system?.attributes?.exhaustion ?? 0; if (e > worstE) { worst = m; worstE = e; } }
+    if (!worst) return "";
+    try { await worst.update({ "system.attributes.exhaustion": Math.max(0, worstE - 1) }); } catch { return ""; }
+    return `a medicinal find eases ${worst.name} (−1 exhaustion).`;
+}
+// A crit-FAIL forage's sickness branch: tainted flora leaves the forager Poisoned — a lingering effect until cured / rested off.
+async function cwfForageSickness(actorId) {
+    const a = game.actors.get(actorId);
+    try { await a?.toggleStatusEffect?.("poisoned", { active: true }); } catch (e) { warn("forage sickness apply failed", e); }
+    try { Cinematic.broadcast({ icon: "fa-virus", title: "Tainted Forage", subtitle: `${a?.name || "the forager"} falls ill — Poisoned`, tone: "danger" }); } catch (e) { /* noop */ }
+    try { ChatMessage.create({ content: cwfCardShell("fa-virus", "Tainted Forage", cwfRow(a?.name || "Forager", "ate something foul out there — <b>Poisoned</b>, lingering until cured or a long rest clears it.")) }); } catch (e) { /* noop */ }
+}
+// Resolve a botched forage: a coin-flip between lingering sickness and a roused territorial beast — always a SURPRISE fight.
+async function cwfForageCritFail(actorId, cls) {
+    if (!game.user.isGM) return;
+    let sick = true;
+    try { sick = (await new Roll("1d2").evaluate()).total === 1; } catch { /* default to sickness */ }
+    if (sick) return cwfForageSickness(actorId);
+    try { Cinematic.broadcast({ icon: "fa-paw", title: "Territorial Wildlife", subtitle: "the forage roused something — ambush!", tone: "danger" }); } catch (e) { /* noop */ }
+    try { await cwfCombatBeat(cls, cls?.biome, { surprised: true }); } catch (e) { warn("forage wildlife encounter failed", e); }
+}
 async function cwfPartyRest(type, { newDay = false, silent = false, extraExh = 0, shortIds = null } = {}) {
     if (!game.user.isGM) return;
     const mem = Party.members();
@@ -3010,10 +3059,10 @@ const Tables = (() => {
             critfail: { name: "Scout — Critical Failure", entries: ["Spotted while ranging too far ahead — trapped alone for 1d4 rounds before the party reaches you. Forward movement stops."] }
         },
         forage: {
-            crit:     { name: "Forager — Critical Success", entries: ["A massive haul — add 1d4 + Wis modifier rations/water to the pool, or find a rare medicinal herb."] },
-            success:  { name: "Forager — Success", entries: ["You scavenge enough to feed the party — no rations or water consumed at the next camp."] },
-            fail:     { name: "Forager — Failure", entries: ["You find nothing. The party must consume its own supplies."] },
-            critfail: { name: "Forager — Critical Failure", entries: ["Toxic flora or a raided faction cache — the party is Poisoned next day, or faction hostility rises."] }
+            crit:     { name: "Forager — Critical Success", entries: ["A rich find — the day's food and water are covered, and a medicinal herb eases the party's weariest member."] },
+            success:  { name: "Forager — Success", entries: ["You scavenge enough to feed everyone — the day's food and water are covered; no supplies consumed tonight."] },
+            fail:     { name: "Forager — Failure", entries: ["You turn up nothing worth eating. The party draws on its own packs tonight — each character spends a ration and a drink."] },
+            critfail: { name: "Forager — Critical Failure", entries: ["A botched forage — tainted flora sickens you, or you blunder into a territorial beast. A nasty surprise either way."] }
         }
     };
 
@@ -4644,23 +4693,23 @@ const Turn = (() => {
         emitTravelGroup(false);             // rolls are in → reveal the group cinematic as the RESULT (clears the persistent progress one)
         syncRollSuppress(false);            // rolls are in → release the suppress
         let navEffect = "arrive";
+        let forageMishap = null;   // a botched forage's victim — resolved (sickness or a surprise fight) after the role loop
         for (const [k, v] of claimedRoles()) {
             const tier = outcomeFor(v) || "fail";
             v.outcome = tier;
             const drawn = await Tables.draw(k, tier);
             v.result = drawn.text;
             if (k === "navigate") navEffect = drawn.effect || (tier === "fail" || tier === "critfail" ? "dead" : "arrive");
-            if (k === "forage" && (tier === "success" || tier === "crit")) {
-                await Store.setSceneState({ foraged: true });
-                // Automatically forage supplies into the shared stash (the HUD + camp
-                // consumption update on their own via the item hooks). Crit hauls more.
-                const fa = game.actors.get(v.actorId);
-                const wis = Math.max(0, fa?.system?.abilities?.wis?.mod ?? 0);
-                let base = tier === "crit" ? 2 : 1;
-                try { base = (await new Roll(tier === "crit" ? "1d4" : "1d2").evaluate()).total; } catch { /* keep fallback */ }
-                const haul = Math.max(1, base + wis);
-                await Party.addToStash(haul, haul);
-                v.result += ` <em>(+${haul}🍖 / +${haul}💧 foraged into the stash)</em>`;
+            if (k === "forage") {
+                // Foraging never banks surplus. Success COVERS THE DAY (no rations/water spent at tonight's camp); a crit
+                // also turns up a medicinal find that eases the weariest member; a crit-fail is resolved after the loop.
+                if (tier === "success" || tier === "crit") {
+                    await Store.setSceneState({ foraged: true });
+                    v.result += ` <em>— tonight's food &amp; water are covered; no supplies consumed.</em>`;
+                    if (tier === "crit") { const eased = await cwfForageMedicinal(); if (eased) v.result += ` <em>${eased}</em>`; }
+                } else if (tier === "critfail") {
+                    forageMishap = v.actorId;   // tainted flora or a roused beast → sickness OR a surprise wildlife fight
+                }
             }
         }
         // Role outcomes become the HEADER of the single stepped travel card; the GM
@@ -4703,6 +4752,9 @@ const Turn = (() => {
                 setTimeout(() => { try { cwfMontage(); } catch (e) { warn("auto-travel on resolve failed", e); } }, 2800);   // let the GROUP-REVEAL cinematic play its FULL beat before the first glide starts (was 600ms — the move landed behind the cinematic)
             }
         }
+        // A crit-fail forage lands its consequence AFTER the travel beat: tainted flora (lingering sickness) or a roused
+        // territorial beast (a surprise fight). Always a surprise — the party blundered into it.
+        if (forageMishap) { try { await cwfForageCritFail(forageMishap, cls); } catch (e) { warn("forage crit-fail resolve failed", e); } }
 
         step = "resolved";
         WayfarerPanel.render(); BiomeBadge.update();
@@ -5111,14 +5163,14 @@ const WayfarerPanel = (() => {
     async function foragerHaul() {
         const content = `
             <div class="cwf-dialog">
-                <p>Add a Forager haul to the party's shared stash (the group actor's inventory).</p>
+                <p>Distribute a forage haul across the party — fills each character toward their carrying capacity. Anything that won't fit is left behind (no stockpile).</p>
                 <label>Rations <input type="number" name="rations" value="0" min="0"></label>
                 <label>Waterskins <input type="number" name="water" value="0" min="0"></label>
             </div>`;
         const DialogV2 = foundry.applications?.api?.DialogV2;
         const apply = async (rations, water) => {
-            await Party.addToStash(rations | 0, water | 0);
-            ChatMessage.create({ content: `<b>🧺 Forager Haul</b> — +${rations | 0} rations, +${water | 0} waterskins added to the party stash.` });
+            const got = await Party.addSupplies(rations | 0, water | 0);
+            ChatMessage.create({ content: `<b>🧺 Forager Haul</b> — +${got.rations} rations, +${got.water} waterskins distributed across the party.` });
             render();
         };
         if (DialogV2) {
@@ -5136,19 +5188,19 @@ const WayfarerPanel = (() => {
         }
     }
 
-    // Restock at a settlement: top the shared stash up by N days × party size.
+    // Restock at a settlement: distribute N days × party size across the party, up to each character's carrying capacity.
     async function restockSupplies() {
         const size = Party.size() || 1;
         const content = `
             <div class="cwf-dialog">
-                <p>Restock the party at a settlement — adds supplies to the shared stash for the journey ahead.</p>
+                <p>Restock at a settlement — distributes supplies across the party, filling each character toward their carrying capacity for the journey ahead.</p>
                 <label>Days of supplies <input type="number" name="days" value="7" min="1"></label>
-                <p class="cwf-muted2">Adds days × ${size} member${size === 1 ? "" : "s"} of rations and waterskins.</p>
+                <p class="cwf-muted2">Tries to add days × ${size} member${size === 1 ? "" : "s"} of rations and waterskins — capped at what they can carry.</p>
             </div>`;
         const apply = async (days) => {
             const r = Math.max(0, days | 0) * size;
-            await Party.addToStash(r, r);
-            ChatMessage.create({ content: cwfCardShell("fa-box-open", "Restocked", cwfRow("Supplies", `+${r}🍖 / +${r}💧 added to the party stash (${days | 0} day${(days | 0) === 1 ? "" : "s"} × ${size}).`)) });
+            const got = await Party.addSupplies(r, r);
+            ChatMessage.create({ content: cwfCardShell("fa-box-open", "Restocked", cwfRow("Supplies", `+${got.rations}🍖 / +${got.water}💧 distributed across the party (asked ${days | 0} day${(days | 0) === 1 ? "" : "s"} × ${size}).`)) });
             render();
         };
         const DialogV2 = foundry.applications?.api?.DialogV2;
@@ -5474,20 +5526,33 @@ const WayfarerPanel = (() => {
                         const rLow = sup.rations < size, wLow = sup.water < size;
                         const awake = Math.round(cwfHoursSinceRest()), thr = cwfRestThreshold(), tired = awake > thr;
                         return `<div class="cwf-supstrip">
-                            <span class="cwf-sup ${rLow ? "low" : ""}" title="Rations — stash + on members. The party eats ${size}/day."><i class="fa-solid fa-drumstick-bite"></i> ${sup.rations}</span>
-                            <span class="cwf-sup ${wLow ? "low" : ""}" title="Waterskins — stash + on members. The party drinks ${size}/day."><i class="fa-solid fa-bottle-water"></i> ${sup.water}</span>
+                            <span class="cwf-sup ${rLow ? "low" : ""}" title="Rations carried by the party (sum of every character's pack). The party eats ${size}/day. Expand for per-character bars."><i class="fa-solid fa-drumstick-bite"></i> ${sup.rations}</span>
+                            <span class="cwf-sup ${wLow ? "low" : ""}" title="Waterskin charges carried by the party (sum of every character's pack). The party drinks ${size}/day. Expand for per-character bars."><i class="fa-solid fa-bottle-water"></i> ${sup.water}</span>
                             <span class="cwf-sup ${worst.exh > 0 ? "warn" : "ok"}" title="Worst exhaustion in the party"><i class="fa-solid fa-face-dizzy"></i> ${worst.exh > 0 ? `Lvl ${worst.exh}${worst.name ? ` · ${esc(worst.name)}` : ""}` : "rested"}</span>
                             <span class="cwf-sup ${tired ? "low" : ""}" title="Hours since the party's last long rest. Past ${thr}h, each leg adds +1 exhaustion until they camp."><i class="fa-solid fa-moon"></i> ${awake}h</span>
                             <button class="cwf-sup-toggle ${_partyOpen ? "on" : ""}" data-action="toggle-party" title="Per-character rations / water / exhaustion"><i class="fa-solid fa-users"></i> ${size} <i class="fa-solid fa-chevron-${_partyOpen ? "up" : "down"}"></i></button>
                         </div>`;
                     })()}
-                    ${_partyOpen ? `<div class="cwf-pm cwf-pm-h"><span class="cwf-pm-n"></span><span class="cwf-pm-v" title="Exhaustion"><i class="fa-solid fa-face-dizzy"></i></span><span class="cwf-pm-v" title="Rations"><i class="fa-solid fa-drumstick-bite"></i></span><span class="cwf-pm-v" title="Waterskins"><i class="fa-solid fa-bottle-water"></i></span></div>
-                    ${bd.members.map(m => {
-                        const cell = (field, val, cls2) => isGM
-                            ? `<button class="cwf-pm-v ${cls2}" data-action="edit-member" data-id="${m.id}" data-field="${field}" title="Click to set ${esc(m.name)}'s ${field === "exh" ? "exhaustion" : field === "water" ? "waterskins" : "rations"}">${val}</button>`
-                            : `<span class="cwf-pm-v ${cls2}">${val}</span>`;
-                        return `<div class="cwf-pm"><span class="cwf-pm-n">${esc(m.name)}</span>${cell("exh", m.exh, m.exh > 0 ? "warn" : "")}${cell("rations", m.rations, m.rations <= 0 ? "low" : "")}${cell("water", m.water, m.water <= 0 ? "low" : "")}</div>`;
-                    }).join("") || `<div class="cwf-muted2">No party members found.</div>`}` : ""}
+                    ${_partyOpen ? `<div class="cwf-pcards">${bd.members.map(m => {
+                        const pct = (cur, cap) => cap > 0 ? Math.max(0, Math.min(100, Math.round(cur / cap * 100))) : 0;
+                        const tone = (cur, cap) => cur <= 0 ? "low" : (cur < cap * 0.34 ? "warn" : "ok");
+                        const bar = (icon, field, cur, cap, label) => {
+                            const inner = `<span class="cwf-cap-ic"><i class="fa-solid ${icon}"></i></span><span class="cwf-cap-track"><span class="cwf-cap-fill ${tone(cur, cap)}" style="width:${pct(cur, cap)}%"></span></span><span class="cwf-cap-num">${cur}<span class="cwf-cap-cap">/${cap}</span></span>`;
+                            return isGM
+                                ? `<button class="cwf-cap" data-action="edit-member" data-id="${m.id}" data-field="${field}" title="Click to set ${esc(m.name)}'s ${label} (${cur}/${cap} carried)">${inner}</button>`
+                                : `<div class="cwf-cap" title="${esc(m.name)}'s ${label}: ${cur}/${cap}">${inner}</div>`;
+                        };
+                        const exhInner = `<span class="cwf-cap-ic"><i class="fa-solid fa-face-dizzy"></i></span><span class="cwf-exh-track">${Array.from({ length: 6 }, (_, i) => `<span class="cwf-exh-seg ${i < m.exh ? (m.exh >= 5 ? "crit" : m.exh >= 3 ? "hi" : "lo") : ""}"></span>`).join("")}</span><span class="cwf-cap-num">${m.exh}<span class="cwf-cap-cap">/6</span></span>`;
+                        const exh = isGM
+                            ? `<button class="cwf-cap" data-action="edit-member" data-id="${m.id}" data-field="exh" title="Click to set ${esc(m.name)}'s exhaustion (${m.exh}/6)">${exhInner}</button>`
+                            : `<div class="cwf-cap" title="${esc(m.name)}'s exhaustion: ${m.exh}/6">${exhInner}</div>`;
+                        return `<div class="cwf-pcard">
+                            <div class="cwf-pcard-n">${esc(m.name)}</div>
+                            ${bar("fa-drumstick-bite", "rations", m.rations, m.capRations, "rations")}
+                            ${bar("fa-bottle-water", "water", m.water, m.capWater, "waterskin charges")}
+                            ${exh}
+                        </div>`;
+                    }).join("") || `<div class="cwf-muted2">No party members found.</div>`}</div>` : ""}
                 </div>
 
                 ${isGM ? `<div class="cwf-section">
@@ -5817,7 +5882,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
         const SECTIONS = [
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "autoTravelOnResolve", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
-            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "foodGraceDays", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
+            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "foodGraceDays", "carryBase", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
             ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
