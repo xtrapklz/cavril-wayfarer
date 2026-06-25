@@ -399,40 +399,44 @@
   }
 
   // Score an item by its best variant's weighted tag overlap with the candidate set.
-  // Score an item by its BEST variant: + candidate-tag weight, − mismatch-tag weight (water a landlocked hex lacks).
-  // A variant that's net-negative (water-dominant when dry) can't lift `best` above 0, so the > 0 filter drops the map —
-  // unless it ALSO has a drier variant (e.g. a "Natural" cut without the river), which then wins and gets staged.
+  // Score an item by its BEST variant's candidate-tag overlap. When missTags is given (a landlocked hex), any variant
+  // that carries a water tag the hex lacks is DISQUALIFIED outright — not merely penalised — so the map can only score
+  // through a genuinely dry cut. A map whose every variant is aquatic therefore scores 0 and is dropped by the > 0 filter,
+  // while a map with a dry "Natural"/"Original" variant still qualifies (and pickVariant's `dry` flag stages that cut).
+  // Verified against the live 576-map CZEPEKU catalog: this removes ALL aquatic leakage into dry biomes (penalty left 6).
   function scoreItem(item, candTags, missTags = null) {
     let best = 0;
     for (const v of item.variants) {
-      let s = 0;
+      let s = 0, disq = false;
       for (const t of v.tags) {
         const tl = String(t).toLowerCase();
+        if (missTags && missTags.has(tl)) { disq = true; break; }   // this variant needs water this dry hex doesn't have → skip it whole
         const w = candTags.get(tl); if (w) s += w;
-        if (missTags) { const m = missTags.get(tl); if (m) s -= m; }
       }
-      if (s > best) best = s;
+      if (!disq && s > best) best = s;
     }
     return best;
   }
-  // Tags to SUBTRACT for this hex: water/coast it doesn't have. Empty (no penalty) when the hex is genuinely wet or the
-  // biome is aquatic — so river hexes, coasts and the water biome still match their boats and docks. See WET_MISMATCH.
+  // The water/coast tags to DISQUALIFY variants on for this hex. Empty (nothing disqualified) when the hex is genuinely
+  // wet or the biome is aquatic — so river hexes, coasts and the water biome still match their boats and docks. A Set so
+  // scoreItem/pickVariant can membership-test it. See WET_MISMATCH.
   function mismatchTags(cls) {
-    const out = new Map();
+    const out = new Set();
     if (cls?.river || cls?.coast || effectiveBiome(cls) === "water") return out;
-    for (const t of WET_MISMATCH) out.set(t, WEIGHT.mismatch);
+    for (const t of WET_MISMATCH) out.add(t);
     return out;
   }
 
   // Pick the best variant within an item for the current day/night + weather. When `natural` is set
   // (the combat path), strongly prefer the map's "Natural"/"Empty" variant — CZEPEKU ships these as the
   // building-stripped, generic-terrain version of a themed map (Viking Market → beach·natural).
-  function pickVariant(item, { when = "day", weather = null, season = null, natural = false } = {}) {
+  function pickVariant(item, { when = "day", weather = null, season = null, natural = false, dry = false } = {}) {
     const wantNight = when === "night";
     const wxWords = weather && VARIANT_WORDS[weather] ? VARIANT_WORDS[weather] : null;
     const seWords = season && VARIANT_WORDS[season] ? VARIANT_WORDS[season] : null;
     let allowed = item.variants.filter(v => !isExcluded(v));
     if (!allowed.length) allowed = item.variants;               // if every variant is excluded, fall back to all
+    if (dry) { const d = allowed.filter(v => !(v.tags || []).some(t => WET_MISMATCH.includes(String(t).toLowerCase()))); if (d.length) allowed = d; }   // landlocked: never STAGE a flooded/river/boats cut when a dry one exists (scoreItem already dropped all-aquatic maps)
     // ENFORCE time-of-day first: at night restrict to night-named variants when any exist; by day drop the night
     // variants. Only this hard filter guarantees the muffle of a wrong-time map — the natural/weather boosts below
     // are soft and would otherwise let a "Natural Day" version win a night fight. Falls back to all if it'd empty.
@@ -463,9 +467,9 @@
     const dataKey = type === "social" ? "scenes" : "maps";
     const cat = await getCatalog();
     const candTags = candidateTags(cls, { type, season: ctx.season, foes: ctx.foes });
-    const missTags = mismatchTags(cls);   // water/coast this hex lacks → subtracted, so a landlocked hex never lands on a river/swamp/boats map
+    const missTags = mismatchTags(cls);   // water/coast this hex lacks → disqualifies aquatic variants, so a landlocked hex never lands on a river/swamp/boats map
     const genericBias = (CFG.preferGenericMaps ?? true) && type !== "social";   // social WANTS built places
-    const vctx = { ...ctx, natural: genericBias && (CFG.naturalizeMaps ?? true) };   // combat → naturalized variant
+    const vctx = { ...ctx, natural: genericBias && (CFG.naturalizeMaps ?? true), dry: missTags.size > 0 };   // combat → naturalized variant; dry hex → never stage a water variant
     // Curated index: when built, restrict combat picks to THIS biome's stored generic pool (your reviewed
     // selection), falling back to the full catalog if the pool is empty or yields no tag match.
     let poolIds = null;
