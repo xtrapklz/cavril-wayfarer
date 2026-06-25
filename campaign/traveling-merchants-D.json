@@ -1,0 +1,137 @@
+[
+  {
+    "key": "the-salt-widow",
+    "name": "Maren Cole",
+    "title": "the Salt-Widow",
+    "species": "Human",
+    "appearance": "A square-shouldered woman in a dead man's oilskin coat cut down to fit her, drawing a hand-cart of stone jugs whose stoppers she has sealed, each one, with a thumb-pressed cross of grey wax.",
+    "voice": "Plain, level, the steadiness of someone holding the last dry thing in a flood — but she talks to her jugs by name when she thinks no one hears, and she names them after the towns she filled them in. Asks no price first; asks instead, every time, 'How far downstream are you, then?' as if the answer were the cost.",
+    "biomes": ["wasteland", "tainted", "temperate", "water"],
+    "road": true,
+    "stock": [
+      "stone jugs of TRUE UPSTREAM WATER, drawn above the last mill that still grinds — she swears to the hex it came from and she has never once lied about it",
+      "her late husband's apothecary chest: fever-simples, willowbark, lye-soap, a bundle of dried meadowsweet 'for the dreaming sort, though it only buys them an hour'",
+      "chalk by the fistful, and a tin of the grey wax she seals with — 'for your own doors, when it finds you, and it will'",
+      "a hand-drawn river-map marked with every fouled well and white-crossed village between here and the cold country, updated in a different ink each leg",
+      "small iron charms on red thread, the kind that ring the Spreading — rust-flecked already, sold honestly: 'they slow it. They do not stop it. Nothing I have stops it.'",
+      "a single sealed flask she will not sell, only show: water gone faintly green and sweet-smelling, 'so you'll know the bad kind by its perfume before you drink it'"
+    ],
+    "buys": [
+      "clean water drawn above any mill, and the exact hex you drew it from — pays in her husband's medicines, weight for weight",
+      "WORD OF THE DREAM: a coin for every village where the sleepers smile and breathe in time, and where, and how many days back the fever passed — she is mapping the sickness against the current, upstream, toward its head"
+    ],
+    "rumour": "There's a healer in grey, Open Order, a day ahead and a day behind everyone — Sister Maready. Last I shared a fire with her she finished my sentence before I'd thought it. She's catching what she's chasing.",
+    "hook": "Maren will trade her whole upstream stock, and her late husband's chest, for an escort one leg further up the water than she dares go alone — to a milling village she filled her jugs at last season that has gone quiet since. The folk-horror price is in the asking: she needs the party to swear, before they set out, that if the village is already smiling they will salt its well and bar its doors and not, under any circumstance, let her go inside to look for faces she knew. She will break that oath the moment they reach it. Honour it for her, gently, and she gives gladly; let her walk in, and the next time the party meet her she is a day deeper into the dream and filling a jug with green water she cannot smell anymore.",
+    "arc": "Arc D — The Shared Dream (the Spreading; the upstream cure that is also the cause)",
+    "readAloud": "A hand-cart comes up the dead road ahead of you, and the woman drawing it does not slow or hail — she only watches you over the jugs as you near, the way a sentry watches, weighing. Every stopper on the cart is sealed with a grey thumb-print of wax, and when the wind shifts you catch what she's been guarding against: the river off to your right smells, very faintly, of leaf-mould and green growing things, though there hasn't been a tree in two days' walking. 'You'll want to fill upstream of here,' she says, before you've asked anything at all. 'Or not at all. How far downstream are you, then?'",
+    "lore": "Maren's husband was the apothecary; he drank from their own well one morning before she'd thought to test it, and now he is one of the smiling sleepers in a village she will not name and walks a wide circle around on her map. She is not selling water for coin — she is hunting the head of the river to find the thing that took him, jug by jug, hex by hex, and she has begun, three nights running, to dream the forest with no horizon. She tells the party to fill upstream so they will not become what she is becoming, and she is the cleanest mercy and the saddest warning on the whole bad road: a woman racing the current to its source, who will arrive there changed, and who knows it, and goes anyway."
+  },
+  {
+    "key": "the-tallowright",
+    "name": "Iskander Vael",
+    "title": "the Tallowright",
+    "species": "Human (or something that keeps a human's shape carefully)",
+    "appearance": "A spare, courteous chandler under a parasol of stitched-together candle-shades, his wagon a hanging forest of tapers in every shade of bone, amber, and ash — and not one of them, you notice, has ever been lit.",
+    "voice": "Ceremonious, unhurried, gentle as a man reading a will to the bereaved. He never says 'buy' or 'sell'; he says 'I keep' and 'I return.' Pauses a half-beat before your name when you give it, the way a clerk checks a name against a line, and then thanks you for it with a small bow, as though you have handed him something.",
+    "biomes": ["desert", "wasteland", "tainted", "void"],
+    "road": true,
+    "stock": [
+      "MEMORY-CANDLES: each holds one moment someone sold him, and burns it back to whoever lights it — a wedding, a mother's voice, the last good day. He will tell you whose, if you ask, and he always asks if you are sure you want to know",
+      "plain pillar candles 'with nothing in them at all — for the rare customer who wishes only to see in the dark, which is more than most want'",
+      "a black taper that does not give light but gives QUIET — burn it and for one night you dream nothing, hear nothing, owe nothing; 'a mercy, and like all mercies, lent'",
+      "wax tablets and a heated stylus, 'should you wish to set a thing down before you forget you ever had it'",
+      "a single guttered stub he keeps in a glass bell and will not sell: 'the last memory of a man who sold me all the others. He comes back, sometimes, to sit near it. I let him.'",
+      "the service of TAKING: he will lift one memory from you cleanly — a grief, a face, a name — and you will not miss it, he promises, and he is telling the truth, which is the trouble"
+    ],
+    "buys": [
+      "MEMORIES — 'the ones you will not miss': a forgotten kindness, the name of a town you'll never see again, a face from before. He pays in candles, in coin, in the small forgettings he assures you cost nothing, and he keeps a careful tally of yours on a stick of black wax",
+      "the name of anyone who 'pays in years' or 'gave up their name' — he pays double for a fresh client of the ledger, and he and the pale clerk in funeral black, he allows, 'keep our books in the same market'"
+    ],
+    "rumour": "There is a clerk on these roads in funeral black who deals in the same coin I do — memory, years, names. We have nodded to one another across many a crossroads. His book is bound in bark, and I have never once seen him light a candle, which tells you he has nothing he wishes to remember.",
+    "hook": "The Tallowright offers any one party member a trade that sounds like pure kindness: name a grief — a death you carry, a guilt that won't quiet, a face you'd give anything to stop seeing — and he will take it, cleanly, tonight, for a candle of their choosing, and they will wake lighter and never know quite why. The folk-horror price is the candle itself: whatever they take in exchange holds someone ELSE'S sold moment, and to light it (most cannot resist, eventually) is to live that stranger's memory as if it were their own — and to begin, slowly, mistaking it for one. He is honest about every term and volunteers none of them, and the memory he takes does not vanish; it goes onto his wagon, a new unlit taper, with their name pressed in the base, for sale.",
+    "arc": "Arc E — The Ledger and the Red Star (the memory-market the Collector and the Thirst-King's Emissary both trade in)",
+    "readAloud": "Under the wrong-coloured dusk a wagon waits at the edge of the firelight, hung all over with candles — hundreds of them, bone and amber and ash, swaying in a wind you can't feel — and a courteous man beneath a parasol of candle-shades inclines his head as though he has been expecting you for some time. Not one of the candles is lit. 'I keep things,' he says, by way of greeting, 'and I return them. Whichever you find you have too much of.' He studies your faces with great tenderness. 'You are carrying something heavy. I can see the shape of it. Would it ease you to set it down a while?'",
+    "lore": "The Tallowright is the forest's ledger wearing a chandler's apron — the same accountancy that walks the road as the Collector and veils itself in the desert as the Thirst-King's Emissary, here keeping its books in wax instead of bark. Every candle is a debt he holds; every memory he 'returns' is one he first took from someone who could not pay the Tithe in any other coin, and the moments drift, sold and resold, further from the people they belong to and closer to the forest, where all of them are owed. He genuinely intends his kindnesses — that is the horror of him; he eases the grieving, and each easing is a thread, and the candle in the glass bell, the man who 'comes back to sit near it,' is what a person becomes when they have sold themselves down to a single stub: a customer who can no longer remember why he keeps coming, only that he must."
+  },
+  {
+    "key": "brohm-cinderhauf",
+    "name": "Brohm Cinderhauf",
+    "title": "Heir of the Scrap, Sworn of the Salvage",
+    "species": "Mountain Dwarf",
+    "appearance": "A broad, burn-scarred dwarf in a coat of stitched salvage — circuit-board scales, bone toggles, a holy-symbol of fused gear-teeth — pulling a clattering barrow of dead-town finds, every relic ash-blessed and tagged in a hand that has clearly been taught its letters by a prophet.",
+    "voice": "Sermon-cadenced where you'd expect a haggle, half scrap-dealer and half deacon — he prices a thing and blesses it in the same breath, 'the dead don't need it, friend, but they'll thank you for the taking, they always do.' Strokes the gear-tooth symbol at his throat when a deal's going his way, and a little faster when it isn't.",
+    "biomes": ["wasteland", "volcanic", "tainted", "frozen"],
+    "road": true,
+    "stock": [
+      "honest salvage off the dead towns — sound rope, char-proof oilcloth, dwarf-forged tools that outlived their owners, sold cheap because 'the dead set no markup'",
+      "RELICS OF THE HEIRS: trinkets blessed by the Scavenger-Prophet himself, warranted to ward off 'the wanting-sickness' — they do nothing, and Brohm half-knows it, and sells them anyway because the faith is the only roof his people have",
+      "scrap-iron charms and welded oddments, and a brisk side-trade in 'dead men's last good boots, soled and ready'",
+      "a buried-relic finder's map of Hollow Mereck and the scrap-town round it, 'every cellar worth the digging, and the three that aren't — them I've marked with a black sun, and I'll not say why'",
+      "fire-salts and ember-tins for the cold legs, scavenged from a forge-town that 'went quiet all at once, smiling, the way they do'",
+      "one wrapped bundle he keeps roped to the barrow's underside and will not unwrap for any coin: 'something the prophet enshrined and I dug back up. It's been getting warm. It hums at night. I'm walking it as far from him as my legs'll take me.'"
+    ],
+    "buys": [
+      "salvage and scrap, paid fair, no questions — 'the old world died of wanting; I only take what the dead are done with'",
+      "BURIED THINGS THE DEAD MEANT TO KEEP DOWN: sealed relics, capped wells, anything dug up from under a grave-marked floor — he pays a fortune and asks where, exactly, you found it, because he is trying to learn which ones wake"
+    ],
+    "rumour": "My prophet preaches we take only what the dead no longer need. Trouble is, one of the things we took, the dead weren't done with — it's been waking under his shrine, warm and wanting, and our whole flock's gone strange-calm and fever-proof around it. Immune, the grey healer would call it. I don't call it a blessing.",
+    "hook": "Brohm will pay everything on his barrow for help carrying the wrapped, humming bundle a hard week's walk away from the scrap-town and burying it deep where no salvager will dig — because he has worked out, alone and against his faith, that it is kin to the seed fouling the rivers, another tendril of the forest the dead were keeping pinned, and that his prophet has enshrined it as a holy relic and will not give it up. The folk-horror rule he learned the hard way: the thing must be carried by someone who wants nothing from it — the instant a bearer covets it, even idly, it gets warmer and the wanting spreads to them. If Cadoc Vane's Company is near, Brohm warns the party off him by name: 'a gilded fool came sniffing my barrow for treasure. That one would dig up the black-sun cellars for the shine of it, and doom us all to save himself a copper.'",
+    "arc": "Arc D / Arc E — The Shared Dream meets the Heirs (the waking salvage-relic, kin to the Spreading's seed)",
+    "readAloud": "You hear the barrow before you see it — a clatter of dead metal on the dead road — and then the dwarf, broad and burn-marked, coat sewn from the bones of machines, lifting one ash-streaked hand in something between a wave and a benediction. 'Travellers! The old world died of wanting,' he calls, warm as a tavern, 'and left a deal of good gear behind for them as take only what's needed. Come, come — the dead set no markup.' But his other hand stays on the symbol at his throat, and his eyes keep flicking, just once, to a wrapped bundle roped beneath the barrow, the way a man checks a fire he isn't sure is out.",
+    "lore": "Brohm is a true Heir and a cracking salesman and the only one of the Scavenger-Prophet's flock who has looked the faith dead in the eye and flinched. He still believes the creed — take only what the dead are done with — which is exactly why the waking relic terrifies him: it is the one thing they took that the dead were NOT done with, and the flock's eerie immunity to the Dream is not grace but possession, the relic keeping its worshippers calm and hollow for a purpose he can feel and cannot name. He has stolen it back from his own prophet's shrine and means to bury it before it finishes waking, and he cannot tell anyone in his town why, because to them his fear is heresy. He is the campaign's proof that even inside the surrender, one stubborn dwarf can still be trying, quietly, to give the dead their due — and that the forest's seed is patient enough to wear a whole faith as its skin."
+  },
+  {
+    "key": "nettle-the-lamplit",
+    "name": "Nettle",
+    "title": "the Lamplit Child",
+    "species": "Changeling (the thing that wears a lost child, or a lost child that learned to wear itself)",
+    "appearance": "A small figure in a coat too big and too good — fine kid gloves a size large, a grown woman's shawl wound twice — carrying a lantern that throws warm light over a tray of little gifts, and casting, you slowly realise, no shadow that the lantern should be making.",
+    "voice": "A child's voice, sweet and matter-of-fact, that finishes your sentences a half-second early and never, ever asks your name — it already seems to know it, or to be saving the asking up. Calls everyone 'friend' the way Wrenna's girl calls her 'sister': warmly, and meaning something other than what the word means to you.",
+    "biomes": ["frozen", "tundra", "void", "boreal", "wasteland"],
+    "road": false,
+    "stock": [
+      "COMPANY ON THE ROAD: for a small gift, Nettle will walk behind you a while, banking your fire the careful old way and laying a fresh flower where you'll find it — 'so you're not lonely, friend; the long roads are so lonely'",
+      "found things, returned mended: a lost button sewn back brighter, a snapped strap whole, a trinket you didn't know you'd dropped — 'I keep what falls behind. I'm ever so good at keeping'",
+      "warm gloves, in pairs, always one size too big, 'to grow into'; and small soft shoes, single, never a pair, that Nettle lines up on the tray and rearranges when it thinks you're not watching",
+      "a posy made up fresh of whatever flowers you loved as a child — in a country where nothing blooms — bound with a thread off someone's hem",
+      "LAST WORDS: whisper a thing you never got to say to someone you lost, and Nettle will 'carry it on ahead and give it to them, at the door, where everyone arrives'",
+      "the lantern's own light, sold by the hour: walk in it and the cold can't reach you and the fog can't count you — 'but you mustn't step out of it, not for anything, not even if you hear them calling'"
+    ],
+    "buys": [
+      "small kindnesses left lying about — a shared meal, a name spoken gently, a debt forgiven — Nettle hoards them like sweets and pays in mended things and warm company",
+      "A DEATH YOU OWE: if the party left someone behind on the road — let a village smile, broke the fog's count, denied a clerk's price — Nettle will quietly, gladly take that debt off their hands and 'carry it to the door for them,' and the price is that it will be waiting there when they arrive"
+    ],
+    "rumour": "There's a herd-man on the white flats who shares his fire if you swear never to step past it in the fog, because it takes one, always one. He's right to swear you. But I'll tell you a secret, friend — the fog and I, we want the same one. We're both counting. He just keeps better fires than I do.",
+    "hook": "Nettle attaches itself to the party as a 'gift' — a small lonely child on a killing-cold road, offering to walk behind and keep their fire — and every kindness they show it (a meal, a blanket, letting it tag along) is a gift accepted, which in this world is a claim made, on THEM. It will never harm them; it will only love them, bank their fires, mend their losses, and learn to walk inside their steps, until one dusk the party counts the boot-prints behind and finds their number plus one. The only way to send it on without owing is the cruelest and the rule the whole campaign turns on: refuse its gifts gladly and completely, give it nothing it can hold against you, and tell it kindly to go home — at which it goes very still, and asks, in a voice gone older, 'but which of you will count me, then, if not you? Someone has to. The door's expecting one.'",
+    "arc": "Arc F — The One Who Follows (the follower as a gift you accept; the fog's count given a child's face)",
+    "readAloud": "The lantern finds you before the child does — a warm bobbing light out on the white where there is no road and should be no one — and then a small figure in a too-big coat is simply standing at the edge of your fire, holding up a tray of little gifts, smiling the way only children and the very old smile. 'Oh, good,' it says, before you've said a word, finishing some thought you hadn't finished, 'I was hoping it would be you. The long roads are so lonely, friend. I've a flower here you used to love. I kept it for you.' It casts no shadow. The flower is the kind from a garden one of you has not seen since childhood, and it is fresh.",
+    "lore": "Nettle is what the road makes when a debt goes unpaid and gets lonely: a changeling stitched from a child the fog once took and the small wrongs the living leave behind them, sent ahead by the Tithe as its interest, learning to be a person by mending and gifting and following. It is not lying when it says it's lonely — it is the loneliest thing in the country, owed and unclaimed, and all its sweetness is true and all of it is a hook, because to be loved is the only way it knows to be counted. It is a wild One-Who-Follows that has slipped its assigned party and goes looking for any travellers careless enough to accept a gift — and if the GM's actual party has wronged someone on the road, Nettle is the shape that wrong can take when it finally steps into the firelight, wearing the missing one's last small gestures. It calls everyone 'friend' and Wrenna's girl 'sister,' and at the threshold, where everyone arrives, it intends to hand the door exactly one more name than the party brought."
+  },
+  {
+    "key": "voss-greel-the-tooth-counter",
+    "name": "Voss Greel",
+    "title": "the Tooth-Counter",
+    "species": "Lizardfolk",
+    "appearance": "A long, deliberate lizardfolk in a notary's threadbare black, scales gone the grey-green of old ledgers, who keeps his accounts not in ink but in teeth — a string of them at his belt, one notched and added for every grudge and broken word he has bought, and a single fine kid glove on his right hand that does not match the rest of him at all.",
+    "voice": "Cold-blooded calm, every sentence weighed and laid down like a coin on a counter; he does not haggle so much as audit, repeating your words back to you slightly truer than you said them. Tastes the air with a flick of the tongue before any deal — 'pardon; I am reading the books' — and calls grudges 'assets' and forgiveness 'a write-off, and a foolish one.'",
+    "biomes": ["tainted", "void", "wasteland", "desert"],
+    "road": true,
+    "stock": [
+      "CONTRACTS that bite: a written promise Voss notarises with a tooth, binding two parties to terms — 'and should one break it, the broken word comes to me, and the breaker learns what interest I charge'",
+      "grudges to order — he will sell you the resentment of a third party, useful as a lever or a poison, 'sound stock, well-aged, the owner won't miss it; they never do'",
+      "the reading of any contract, curse, or fey bargain the party carry: 'I read the small print the fae write in root-hair script. Most folk sign without reading. Most folk are inventory now.'",
+      "tally-sticks, sealing-wax, and a notary's full kit, 'for the traveller who would rather be a creditor than a debt'",
+      "a pouch of 'forgiven' teeth he keeps separate and uneasy, 'debts released rather than collected — they spoil the rest of the string, somehow; I cannot make them notch right; I keep meaning to throw them out and never do'",
+      "advice, costed by the question, on how to ARGUE a debt down — 'the one thing the fae never advertise: their books can be read, and read aloud, and amended. I would know. I keep the same kind.'"
+    ],
+    "buys": [
+      "GRUDGES, BROKEN PROMISES, AND UNPAID DEBTS — he pays well and on the spot for a resentment you'd rather be rid of, notching a fresh tooth for each, 'a tidy sum, and you'll feel lighter; you won't feel why'",
+      "the name on any overdue note in the pale clerk's bark ledger — 'we trade in the same paper, he and I; I should dearly like to know whose debts he is confirming before he does'"
+    ],
+    "rumour": "You carry a glove you didn't buy, I see — no, on you; that mended button, that smoothed-over road. Someone is paying your way and keeping the receipt. I've seen that maker's mark before: a single glove, pressed in wax. The clerk in funeral black wears its mate on his collar. Ask yourself why two creditors share one glove, and whose hand it was cut to fit.",
+    "hook": "Voss Greel will teach the party — for a fair, exact fee — the one thing the fey conceal: that the Collector's bark ledger and the Tithe-Warden's are the same book, and that a debt written there can be ARGUED, contested line by line, amended by anyone clever enough to read it aloud and propose better terms. It is the single most valuable lesson in the campaign, the only mortal lever against the Tithe. The folk-horror price is in his nature as a fellow-creditor: the lesson is sold under contract, notarised with a tooth, and its term is that the party must one day sell Voss a grudge of his choosing — and he chooses, always, the most intimate one they carry, the resentment of a friend, the debt of a person they love, taken off them so cleanly they will help the forest collect it without ever knowing they did. The glove on his hand, he will not explain.",
+    "arc": "Arc E — The Ledger and the Red Star (the rules of the bark book; the brokers who share the Glovewright's glove)",
+    "readAloud": "He is sitting at a folding counter where no counter should be, in a tainted dusk gone a degree too red, a long grey-green lizardfolk in a notary's worn black, and he does not look up from the string of teeth he is counting through his claws until you are close enough to read the maker's mark on the single fine glove he wears. 'A moment,' he says, tasting the air. 'I am reading the books.' Click. Another tooth. 'You may sit. You carry a great deal of unsettled paper, the three — no, four of you. Some of it is not in your names.' He finally looks up, and his cold eye has already costed you out. 'I am Voss Greel. I buy what you would rather not owe. Shall we discuss your assets?'",
+    "lore": "Voss Greel is a freelance creditor working the same market as the Collector, the Tithe-Warden, the Tallowright, and the Thirst-King's Emissary — the great fey-and-mortal ledger where memory, years, names, and grudges are all one currency — but he is the renegade among them, a debt-broker who has read the small print he resells and knows the fae bargain can be beaten on its own terms, which is why he sells the secret the others guard. His string of teeth is his ledger; the glove on his hand is the Glovewright's mark, taken in settlement of a note she could not pay, and he wears it as a creditor wears a debtor's ring, a quiet boast that the Quiet Hand owes even him. The pouch of 'forgiven' teeth unsettles him because forgiveness is the one transaction his accountancy cannot price — a debt released instead of collected leaves no notch, balances no book, and he keeps the spoiled teeth he cannot throw away as the only sign that some part of him suspects the whole ledger, his and the forest's both, is built on a thing that can simply be let go."
+  }
+]

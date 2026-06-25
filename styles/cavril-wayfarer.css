@@ -321,6 +321,15 @@
 .cwf-psum-chips i { opacity: .85; }
 .cwf-ptrek-bar { height: 5px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; margin: 9px 0 2px; }
 .cwf-ptrek-fill { height: 100%; background: var(--cwf-accent, #bda9e8); border-radius: 3px; transition: width .45s ease; }
+/* hand-crafted traveling-merchant card */
+.cwf-merch-read { font-size: 13px; line-height: 1.5; font-style: italic; color: #ece9f2; margin-bottom: 9px; }
+.cwf-merch-meta { font-size: 12px; margin: 3px 0; color: #cfc6e0; line-height: 1.45; }
+.cwf-merch-l { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--cwf-muted); font-weight: 700; margin-right: 5px; }
+.cwf-merch-sec { margin: 7px 0; }
+.cwf-merch-ul { margin: 4px 0 0; padding-left: 17px; font-size: 12px; line-height: 1.5; color: #ddd6ea; }
+.cwf-merch-ul li { margin: 3px 0; }
+.cwf-merch-hook { margin: 9px 0 4px; padding: 7px 10px; border-radius: 7px; background: color-mix(in srgb, var(--cwf-accent, #bda9e8) 14%, transparent); border-left: 3px solid var(--cwf-accent, #bda9e8); font-size: 12.5px; line-height: 1.5; }
+.cwf-merch-lore { margin: 6px 0 2px; padding: 6px 10px; border-radius: 7px; background: rgba(216,102,90,.12); border-left: 3px solid #d8665a; font-size: 12px; line-height: 1.45; }
 
 /* chat */
 .cwf-chat { line-height: 1.4; }
@@ -396,6 +405,10 @@
 .cwf-chip.chip-encounter:hover { border-color: #d8665a; }
 .cwf-chip.chip-explore i { color: #b07be0; }
 .cwf-chip.chip-explore:hover { border-color: #b07be0; }
+.cwf-chip.chip-scene i { color: #5dcaa5; }
+.cwf-chip.chip-scene:hover { border-color: #5dcaa5; }
+.cwf-chip.chip-map i { color: #4f9fe6; }
+.cwf-chip.chip-map:hover { border-color: #4f9fe6; }
 /* concise party supplies strip — totals + worst exhaustion at a glance; the per-character grid expands behind it */
 .cwf-supstrip { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
 .cwf-sup { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-variant-numeric: tabular-nums; }

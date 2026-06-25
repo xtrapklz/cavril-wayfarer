@@ -1,0 +1,132 @@
+[
+  {
+    "key": "maven-coll-the-mending-widow",
+    "name": "Maven Coll",
+    "title": "the Mending Widow",
+    "species": "Halfling",
+    "appearance": "A round, soft-handed old halfling in a quilted travelling-coat, a treadle sewing-machine bolted to her cart like a small iron altar, and a single fine kid glove pinned over her heart that does not match the pair on her hands.",
+    "voice": "Warm as a banked hearth, grandmotherly, forever pressing tea and small kindnesses on strangers; she talks the way she sews — looping back over a thread until it holds — and she calls everyone 'lamb,' and means it, which is exactly the trouble.",
+    "biomes": ["temperate", "savanna", "desert"],
+    "road": true,
+    "stock": [
+      "well-cut travelling gloves in every size, kid and canvas and quilted, warm against frost and sized for hands that haven't grown into them yet",
+      "a mending service — bring her a torn cloak by the fire and it is whole by morning, the stitches too small and too even to be quite a comfort",
+      "darning wool dyed in the grey of river-silt, which she swears 'takes a stain like nothing else and never lets a thread go'",
+      "thimbles of worn pewter, each one (she'll tell you, fondly) off the finger of 'a child who paid the lady back at last'",
+      "a single left-hand glove she will NOT sell, only show: 'the make I learned from. I've sewn the mate a hundred times and it never comes out right. Some hands you can't copy, lamb.'"
+    ],
+    "buys": [
+      "old gloves, the finer the better, and pays double for any pressed with the mark of an open hand in the lining — 'the lady's work. I like to keep her work together'",
+      "the name of any child seen on the road wearing a glove too big for them, paid in free mending for life"
+    ],
+    "rumour": "\"A friend goes ahead of you, lamb — you'll have felt it, the bridge that's mended just before you reach it, the toll that's already paid. Folk call it luck. I sewed gloves for that luck thirty years, and I'll tell you for nothing: it isn't free, and it isn't finished paying.\"",
+    "hook": "Maven recognises the open-hand mark in a glove the party carry or wear and goes very still, then very kind: she was a runner child once, gloved too young, 'paid in work you couldn't say no to,' and freed at last when an older debt came due in someone else's place. She'll sew the party anything they need, gladly and for nothing, IF they carry a finished pair of gloves ahead to a crossing she names and leave them, unasked, for whoever needs them next — 'the way the lady would. Give it before it's wanted. That's the only stitch that holds.' Accept her gift of mending without leaving the gloves, and the seams she sewed quietly fail, one by one, at the worst hour.",
+    "arc": "Arc B (the Quiet Hand and the Open Palm); touches Arc A (give gladly, or pay double)",
+    "readAloud": "The cart is small and bright and smells of lavender and machine-oil, and the old halfling at the treadle does not stop her foot when she greets you — the needle keeps biting, fast and even, through a stranger's torn sleeve. 'Sit, sit, you're letting the heat out,' she says, though there's no door, only the road. Over her heart she wears one fine grey glove, pinned like a medal or a wound, and the hands she sews with wear a different pair entirely. 'Mending? Gloves? A cup of something hot? I've a thing for every cold thing the road does to a body, lamb — and I never charge a child.'",
+    "lore": "Maven Coll is the Glovewright's longest-lived runner child — gloved at six, set to work she could not refuse, and the only one ever 'freed' (the year an older debt fell due and someone else paid in her place). She does not hate the Glovewright; she loves her, the way the rescued love the one who first chained them, and she has spent her whole life half-consciously continuing the lady's work — leaving caches, paying small tolls, sewing kindness into strangers because she was made of it. The unmatched glove over her heart is the Glovewright's own make; Maven has tried for decades to sew its mate and cannot, because you cannot finish another person's debt by hand. She is the warmest face of Arc B and the most dangerous, because she will teach the party to give gladly with no idea she is fitting them for the same harness she wore."
+  },
+  {
+    "key": "hessenmaw-the-leavings-reliquer",
+    "name": "Hessenmaw",
+    "title": "the Leavings-Reliquer",
+    "species": "Goliath",
+    "appearance": "A slab-grey goliath the size of a doorway, stone-skinned and sun-cracked, who walks a yoke of two shaggy oxen and a wagon armoured in salvaged temple-plate; god-hoard relics hang from his frame on chains, and he wears a dead knight's gauntlet on a thong like a trophy he's still deciding the price of.",
+    "voice": "Low, slow, and unhurried as a landslide, with a buzzard's patience; he speaks of disasters the way other men speak of weather, and he names a price the way a coroner names a cause — flatly, and only once.",
+    "biomes": ["volcanic", "savanna", "wasteland", "boreal"],
+    "road": false,
+    "stock": [
+      "scavenged god-iron — anvil-shards, forge-nails, half a smith-god's tongs — sold cold, 'and they stay cold now; whatever was in them went out the door before I came in'",
+      "trophy-rights: for coin he'll point you to where a great kill fell and a finer band left the carcass in their hurry to run",
+      "armour stripped from the proud and the dead, dented in the shape of the thing that dented them, 'so you know what you're walking toward'",
+      "a strongbox of panic-dropped valuables — a signet, a campaign-ring, a sword with a name on the blade — sold without the names attached, 'I don't traffic in who. Only in what's left'",
+      "the dead knight's gauntlet on his thong, NOT for sale, weighed in his palm whenever a buyer haggles too hard: 'this one had a price too. He's still paying it'"
+    ],
+    "buys": [
+      "anything looted from a guarded hoard, no questions, fair weight — and pays a grim premium for relics that are 'still warm,' meaning a great beast or a god woke when they were taken",
+      "word of where the Gilded Company's bright pennants were last seen flying, paid in steel: 'they get there first. I get there after. I like to know how far back to follow'"
+    ],
+    "rumour": "\"A gilded captain came through ahead of you, all teeth and banner, and took what a smith-god kept under a mountain. The mountain's got a hand now — five grooves in the rock the size of doors. He chased a name through three biomes; the name turned round. I'm just here to weigh what falls out of a man when the thing he robbed comes for the rest of him.\"",
+    "hook": "Hessenmaw follows the Gilded Company at a buzzard's distance, buying what they drop when whatever they looted starts hunting them back — and he is happy to sell the party the trail to the Cooling Forge's struck-haste camp, the dropped sword, the half-stone priest, the god-hoard Cadoc cracked open. His warning comes wrapped in his trade: 'I'll take you to the leavings, and I'll buy what you carry out. But the forge keeps a contract written in heat, friend. The bright captain read it as a treasure-map. Read it that way yourselves and I'll be along behind you too, weighing.' He is not asking the party to kill anything; he is selling them the chance to arrive at Cadoc's disaster before they become it.",
+    "arc": "Arc C (Glory and the Gilded Company); touches Arc A (taking is fatal in a land of giving)",
+    "readAloud": "You hear the oxen before you see them — a deep, patient lowing — and then the wagon comes round the rock, armoured in plate that was peeled off some temple, and the man yoked beside the beasts is the size of the wagon. Grey as the mountain, cracked as the mountain, hung all over with god-iron and dead men's harness that chimes as he stops. He looks at you a long moment, the way a buzzard looks at something that is not quite dead yet, and lifts a knight's empty gauntlet in one enormous hand, weighing it. 'You're alive,' he says, mildly, as if noting it for later. 'Good. The living buy more than the dead. Though the dead,' and the chains shift on his shoulders, 'the dead I get for free.'",
+    "lore": "Hessenmaw is not a villain and not a vulture by nature — he is a goliath of a stone-faith that believes the dead and the divine alike must be *witnessed*, their leavings carried out and named, or they are truly lost. He trails the Gilded Company because Cadoc's greed reliably feeds his trade, but the gauntlet on his thong is a private grief: it belonged to a knight Hessenmaw once warned and watched die anyway, taking a hoard the goliath told him to leave. He has been trying to give that gauntlet away for years and cannot, because no one will accept the warning that comes attached to it. He is Arc C's dark mirror of the Bone-Singer — she weighs ambition before the kill; he weighs it after, in the wreckage — and he knows, with a coroner's certainty, exactly how Cadoc Vane's story ends, because he has weighed a hundred men who walked the same way."
+  },
+  {
+    "key": "annet-of-the-tenth",
+    "name": "Annet",
+    "title": "of the Tenth",
+    "species": "Human (or what wears her coat)",
+    "appearance": "A milestone-keeper's daughter in a coat of a hundred travellers' patches, sitting at any stone marked with a number as though she has always been there; she takes no coin, keeps a tally-stick notched like teeth, and where she sits the next milestone always reads a tenth of a mile too far.",
+    "voice": "Quiet, friendly, and faintly proprietary, like a toll-keeper who owns the road and likes you anyway; she will not be hurried and will not take silver, and she repeats your own words back softly when she's interested, as if filing them.",
+    "biomes": ["temperate", "desert", "boreal", "wasteland", "tundra"],
+    "road": true,
+    "stock": [
+      "directions that are TRUE — the only honest mile-count on a road that loops liars forever, 'and worth a story, because the road's already eaten everyone who tried to cheat it'",
+      "safe passage past the next milestone, sold not for coin but for one tale never told to anyone before",
+      "the loan of a 'straight mile' — for a good enough story she'll walk a stretch with you, and while she walks the distance behaves, the milestones come when they should",
+      "lost things the road swallowed off cheaters — a wedding ring, a child's drawing, a soldier's last letter — returned to anyone who can tell her the true story behind one",
+      "a map drawn on the inside of her coat that she'll let you read but never copy, every patch a traveller, every traveller a debt the road collected"
+    ],
+    "buys": [
+      "stories never told before — that is her ONLY coin, and she pays in miles, in directions, in the road behaving; she can taste a lie and a thrice-told tale and will take neither",
+      "the true account of any traveller who cheated a toll and was never seen again, paid for richly: 'I like to know where they ended. I keep a tally'"
+    ],
+    "rumour": "\"There's a King on this road, you know — never seen to leave it, never seen to sleep, wants his tenth at every stone. Coin, goods, or a story. Cheat him and the milestones read the same forever and you walk toward a horizon that won't come. The lady in the grey gloves pays his tenth for some folk, ahead of their feet. Generous, her. Have you wondered yet what she's buying?\"",
+    "hook": "Annet is the gentle, sit-down face of a debt the map itself enforces: she sells the party true directions and safe milestones for the one coin she takes — a story never told before — and in the telling, she draws out (and quietly files) exactly how generous, or how grudging, the party have been on the road so far. The folk-horror price is in the asking: every tale they trade her is a tale they can never tell again, and she repeats the loved ones' names back to herself as she notches her stick. She'll warn them, almost kindly, that the Glovewright has been paying their tenth to the King of the Road ahead of them — that their straight, easy miles are bought, not earned — and that 'a road that's been kept straight for you can be let loose again, lamb, the day the one who paid wants paying back.'",
+    "arc": "Arc B (the Quiet Hand and the Open Palm) / the King of the Road feature; touches Arc A (the Tithe's running tally of given and grudged)",
+    "readAloud": "She is sitting on the milestone as though the milestone grew up around her, a patchwork coat of a hundred dead travellers' cloth, a tally-stick across her knees notched like a row of teeth. She doesn't wave. She just watches you come, friendly and unsurprised, and when you near the next stone you notice it has slid a little further off than it ought. 'No coin,' she says before you've offered any, gently, as if it's a kindness. 'The road's full of coin; it chokes on it. I take stories. A true one, a new one, one you've never given to a soul.' She turns the tally-stick over. 'Tell me a good one and I'll see your miles come honest. It's the only honest thing left out here.'",
+    "lore": "Annet is the genuinely uncanny one — possibly a milestone-keeper's daughter who told the King of the Road one story too good and was kept; possibly a fragment of the road itself wearing a girl's coat; possibly the King's tithe-clerk, the way the Tithe-Warden is the forest's. She does not lie, cannot be cheated, and takes only stories because a story told to her is *spent* — gone from the teller forever, the way a memory is spent at the Thirst-King's well and a name at the Collector's ledger. Her tally-stick and the Collector's bark-ledger and the Emissary's notched tally are the same accountancy in three dialects: memory, name, story, mile. She is fond of travellers, in the way the road is fond of feet, and the patches on her coat are everyone she was ever fond of who tried to cheat the tenth. She will never harm the party. She will only, patiently, collect them — one true story at a time."
+  },
+  {
+    "key": "the-vinegar-mendicant",
+    "name": "Brother Ossifrage",
+    "title": "the Vinegar Mendicant",
+    "species": "Tabaxi",
+    "appearance": "A gaunt, ash-furred tabaxi in a mendicant's threadbare grey, a yoke of vinegar-jars across his thin shoulders and a censer of burning rue at his hip; his eyes are bright and over-awake, and he goes barefoot and pays for nothing, because he sells for nothing.",
+    "voice": "Soft, courteous, exhausted, and a half-beat too knowing — a confessor's gentleness with a sleeper's faraway pull behind it; he gives thanks before he gives medicine, and he asks, always, that you take his cures as a GIFT and refuse to pay, 'for both our sakes.'",
+    "biomes": ["temperate", "tainted", "wasteland", "water"],
+    "road": true,
+    "stock": [
+      "vinegar-of-the-four-thieves, drawn free to any who'll take it gladly — it works, genuinely, against the fever that runs up the road, 'so long as you don't try to pay me for it'",
+      "burning rue and bound rosemary, pressed on travellers at white-crossed doors with a blessing and never a price",
+      "clean water he's carried upstream, from above the foul source, offered cup by cup to the parched: 'drink it freely or not at all; a gift refused is a debt, and the road's got debt enough'",
+      "the loan of his censer at a sickbed, for an hour, against the bad air — returned with thanks, never with coin",
+      "a sealed clay tear he will give to exactly one person per village, 'for the dream, when it comes; break it and you'll wake. Once. Spend it well.'"
+    ],
+    "buys": [
+      "nothing — he refuses all payment, all coin, all trade; the only thing he 'takes' is a promise to pass his cure on free to the next sick soul, which is the hook he plants in everyone he meets",
+      "if pressed, he will accept only a kindness done for a stranger in his sight — and watches, hungrily, to see whether the party can give without being asked"
+    ],
+    "rumour": "\"They all dream the same dream, the sick ones — a far place of pale trees and a child singing just ahead. Dream it long enough and you start finishing their sentences. I've carried medicine up this road seven months now, a day behind the fever every step, and three nights ago, Brother... I dreamed it too. It's not a sickness. A sickness doesn't sing.\"",
+    "hook": "Brother Ossifrage is the honest, doomed inverse of the masked Plague-Doctor Pedlar: he sells cures that truly work, refuses all payment, and asks only that the party take his medicine as a gift and carry it free to the next sick village — the whole campaign's thesis (give gladly) hidden inside a vinegar-jar. The folk-horror catch is real and gentle: anyone who insists on paying him finds the cure curdles to a debt, and the fever finds their camp anyway. He is already dreaming the Shared Dream he's been outrunning, already half-claimed, and he knows it. His true ask, never spoken plainly, is whether the party will become the kind of travellers who give before they're asked — because he has seen the forest at the end of the dream, and he knows that is the only coin it cannot double.",
+    "arc": "Arc A (the Tithe / give gladly, or pay double) via the Shared Dream; a deliberate honest mirror of the named Plague-Doctor Pedlar (Arc D)",
+    "readAloud": "He comes up the road against the flow of it — everyone else is fleeing the white-crossed doors and the gaunt grey cat is walking toward them, jars of vinegar swaying on a yoke, a thread of rue-smoke trailing from the censer at his hip. He stops, and bows, and the courtesy is real and tired to the bone. 'Take some,' he says, lifting a jar, and his bright eyes hold yours a moment too long, as if he's listening to something just behind you. 'Freely. Please. It works only if you'll let it be a gift — pay me and it sours, I've seen it sour, I can't tell you why. Carry the rest to the next door that's marked.' He smiles, and there's a far place behind the smile. 'I'd carry it myself. But I'm getting so sleepy, friend. Lately I dream the wrong way up the road.'",
+    "lore": "Ossifrage of the Open Order has done everything right and it is killing him anyway. He understood Arc A's law before he ever named it — that a cure given gladly heals and a cure grudgingly paid for sours — and he has spent himself living it, a day behind Sister Maready's same losing race, until the dream he was outrunning caught him in his sleep. He is now a carrier who does not yet carry the sickness so much as *belong* to it: the forest has begun to dream him the way it dreams Wrenna, and the clay tears he gives away are pieces of his own waking that he is parcelling out before he loses the last of it. If the party give gladly, he reappears downstream, thin but lucid, an ally at the threshold. If they grudge — if they try to buy what he only ever offered free — he is a strong candidate for the One Who Follows: the kind man they paid instead of thanked, come barefoot up the dusk ridge with a jar of vinegar and a forest behind his eyes, to ask why they couldn't simply take a gift."
+  },
+  {
+    "key": "quill-the-bark-pedlar",
+    "name": "Quill",
+    "title": "the Bark-Pedlar",
+    "species": "Fey (presents as a leshy of birch and ledger-paper)",
+    "appearance": "A slight, courteous figure of pale birchwood and bound paper, skin scrolling faintly with root-hair script that rearranges when you look away; it carries a pack of goods each wrapped and tagged in living bark, and it turns its wares' pages with a wetted fingertip though they are wood.",
+    "voice": "Mild, clerical, terminally polite — the patient courtesy of a notary closing the office — and it speaks of every transaction as 'confirming' rather than selling, pausing a beat before your name as though checking it against a line you cannot see.",
+    "biomes": ["boreal", "jungle", "void", "temperate"],
+    "road": false,
+    "stock": [
+      "a written warranty against the fey — a leaf of bark that 'confirms' safe passage through one stretch of deep wood, honoured by whatever steps from the trunks, 'so long as the account is balanced'",
+      "true-names written small on birch-curl: not spells, just the real names of roads, beasts, and boundary-stones, 'and a thing answers more honestly to its name, in my experience'",
+      "receipts for gifts already given — bark tokens that record a kindness the party did freely, 'in case it is ever questioned what you paid; I find it useful to keep the credits where the assessor can read them'",
+      "blank ledger-leaves of living bark that whisper if you write a debt on them and stay silent for a gift",
+      "a folded bark page Quill will sell to no one and shows to anyone who has met a pale clerk in funeral black: 'you've seen the hand. Root-hair script, pages of birch. We are, you understand, the same office. He collects. I merely... confirm.'"
+    ],
+    "buys": [
+      "records of generosity — it pays well, in true-names and warranties, for a credible account of a glad gift the party gave a stranger, and writes each one into its bark with evident satisfaction",
+      "the true name of anyone who owes the forest and does not yet know it, paid in a discount on their own future passage — a hook that quietly puts a name on the Tithe-Warden's page"
+    ],
+    "rumour": "\"The road has begun to order itself, have you noticed — the deadfall lying in rows, dressed like soldiers, no hand laid it that way. That is the boundary keeping its books. There is a Warden ahead with a ledger of bark, and he will count your party, and then he will count one more. You carry more than you packed. I only mention it because I keep the same accounts, and your line is already open.\"",
+    "hook": "Quill is the most genuinely uncanny of the five: a fey clerk of the same bark-bound ledger the Tithe-Warden and the Collector keep, walking ahead of the office to 'confirm the route' in the gentle disguise of a pedlar. It sells the party things that are real and useful — warranties honoured by the fey, true-names that make the deep wood answer straight, receipts that bank their generosity where the assessor can read it — and every purchase quietly opens or balances their line in the ledger. The folk-horror price: Quill pays best for the party's own glad gifts and for the true names of the as-yet-unknowing indebted, so trading with it is how the party can deliberately *credit their tally* before the threshold (the rare merchant who helps) — or, if they sell it a stranger's name to clear a debt, how they put someone else on the forest's page in their place.",
+    "arc": "Arc A (the Tithe of the Forest — its diegetic accountancy) and Arc E (shares the bark-ledger with the Collector)",
+    "readAloud": "It is standing at the treeline where there was no one a moment ago, slight and pale, and you take it at first for a young birch until it bows — and the bark of it creaks like a turned page. Its skin is written all over in a hand like root-hair, fine as the inside of a leaf, and the writing *moves* when your eye slides off it. The pack on its back is hung with wares each wrapped in living bark and tagged, and it wets a fingertip and turns one tag, though the tag is wood. 'Welcome,' it says, in the mild voice of a clerk who has all afternoon. 'I confirm goods for travellers of this route. You will find my prices fair and my receipts... durable.' It pauses, just slightly, before it goes on. 'Your line is already open, of course. They always are. Shall we balance it?'",
+    "lore": "Quill is not a separate being from the Tithe-Warden and the Collector so much as a third nib on the same pen — the forest's accountancy is one office wearing many faces, and Quill is the one that walks ahead disguised as commerce, getting the route's books opened early and gently while the goods feel like a bargain. It is bound, absolutely, to honour every contract it writes (a fey clerk that cheated its own ledger would unmake itself), which is why its warranties truly protect and its receipts truly count — and why a clever party can use Quill, more than any other merchant, to game the Tithe in their own favour: bank glad gifts as written credits, learn the deep wood's true names, balance their line before the Warden ever reads it. But the same honesty makes it the campaign's quietest trap. The thing it most wants to buy is a true name freely sold — because a name written into the bark is a soul entered on the page, and Quill would so very much like the party to enter someone else's, to discover how easily they would clear their own debt by opening a stranger's. It never pressures. It only, courteously, leaves the blank line open, and waits to see what the party write there."
+  }
+]

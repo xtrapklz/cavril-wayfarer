@@ -146,7 +146,44 @@
     autumn: ["autumn"],
     winter: ["snow", "frozen", "ice"],
   };
-  const WEIGHT = { biome: 3, overlay: 2, social: 2, season: 2, feature: 3 }; // tag-class weights for scoring
+  const WEIGHT = { biome: 3, overlay: 2, social: 2, season: 2, feature: 3, monster: 3 }; // tag-class weights for scoring
+  // What KIND of place suits these foes — creature type → battlemap tags (undead want a crypt, fey a grove, …). Layered
+  // ON TOP of the biome so a temperate undead fight prefers a temperate map that ALSO reads ruins/graveyard. v0.55.93.
+  const MONSTER_TAGS = {
+    undead: ["crypt", "graveyard", "tomb", "catacomb", "cemetery", "ruins", "mausoleum", "necropolis", "bones"],
+    fiend: ["demonic", "hell", "abyss", "ruins", "temple", "lava", "sacrifice", "infernal"],
+    celestial: ["temple", "shrine", "celestial", "cathedral", "holy"],
+    fey: ["grove", "fairy", "fey", "glade", "forest", "enchanted", "mushroom", "feywild"],
+    aberration: ["cavern", "underdark", "alien", "void", "weird", "tentacle", "abyss"],
+    dragon: ["lair", "cave", "cavern", "hoard", "mountain", "ruins"],
+    construct: ["ruins", "forge", "workshop", "clockwork", "temple", "factory"],
+    giant: ["mountain", "cave", "cavern", "hill", "ruins"],
+    monstrosity: ["lair", "nest", "cave", "cavern", "den"],
+    ooze: ["sewer", "cave", "dungeon", "cavern"],
+    plant: ["forest", "swamp", "overgrown", "grove", "jungle"],
+    elemental: ["elemental", "cave", "lava", "volcanic", "ruins"],
+  };
+  // Name keywords catch what the bare type misses (a "Giant Spider" is a beast — but it wants a web-cave).
+  const MONSTER_NAME_TAGS = [
+    [/spider|web/i, ["cave", "web", "nest", "lair"]], [/wolf|wolves|hound|jackal/i, ["forest", "den", "cave"]],
+    [/bandit|brigand|raider|thug|cutthroat|outlaw/i, ["camp", "road", "bandit", "hideout", "ruins"]],
+    [/cult|cultist|acolyte|priest/i, ["temple", "shrine", "ritual", "ruins", "cave"]],
+    [/goblin|kobold|orc|hobgoblin/i, ["cave", "camp", "warren", "ruins", "stockade"]],
+    [/pirate|sahuagin|merfolk|sailor/i, ["coast", "docks", "ship", "beach", "cove"]],
+    [/troll|ogre|ettin/i, ["cave", "mountain", "lair", "swamp"]], [/serpent|snake|naga|yuan/i, ["swamp", "ruins", "jungle", "temple"]],
+    [/drow|duergar|derro/i, ["underdark", "cavern", "cave"]], [/insect|beetle|scorpion|swarm/i, ["cave", "nest", "hive", "tunnel"]],
+  ];
+  function monsterTags(actors) {
+    const out = new Set();
+    if (!Array.isArray(actors) || !actors.length) return out;
+    const typeCount = {};
+    for (const a of actors) {
+      const t = String(a?.system?.details?.type?.value || "").toLowerCase(); if (MONSTER_TAGS[t]) typeCount[t] = (typeCount[t] || 0) + 1;
+      const nm = String(a?.name || ""); for (const [re, tags] of MONSTER_NAME_TAGS) if (re.test(nm)) tags.forEach(x => out.add(x));
+    }
+    for (const [t] of Object.entries(typeCount).sort((a, b) => b[1] - a[1]).slice(0, 2)) (MONSTER_TAGS[t] || []).forEach(x => out.add(x));
+    return out;
+  }
 
   // ===== CZEPEKU ADAPTER (proven calls) ====================================
   const sessionId = () => game.settings.get("czepeku", "sessionId");
@@ -336,11 +373,12 @@
   }
 
   // Candidate tags from a Wayfarer classification + encounter context.
-  function candidateTags(cls, { type = "combat", season = null } = {}) {
+  function candidateTags(cls, { type = "combat", season = null, foes = null } = {}) {
     const biome = effectiveBiome(cls);
     const set = new Map(); // tag → weight
     const add = (tags, w) => tags.forEach(t => set.set(t, Math.max(set.get(t) || 0, w)));
     add(BIOME_TAGS[biome] || BIOME_TAGS.unknown, WEIGHT.biome);
+    if (foes) for (const t of monsterTags(foes)) set.set(t, Math.max(set.get(t) || 0, WEIGHT.monster));   // the foes' KIND nudges the map: undead→crypt/ruins, fey→grove, spiders→web-cave
     add(ELEV_TAGS[cls?.elevation] || [], WEIGHT.overlay);
     if (cls?.vegetation === "high") add(["forest"], WEIGHT.overlay);
     if (cls?.river) add(["river", "water", "bridge", "docks", "lake", "stream"], WEIGHT.feature);
@@ -400,7 +438,7 @@
     const type = ctx.type || "combat";
     const dataKey = type === "social" ? "scenes" : "maps";
     const cat = await getCatalog();
-    const candTags = candidateTags(cls, { type, season: ctx.season });
+    const candTags = candidateTags(cls, { type, season: ctx.season, foes: ctx.foes });
     const genericBias = (CFG.preferGenericMaps ?? true) && type !== "social";   // social WANTS built places
     const vctx = { ...ctx, natural: genericBias && (CFG.naturalizeMaps ?? true) };   // combat → naturalized variant
     // Curated index: when built, restrict combat picks to THIS biome's stored generic pool (your reviewed
@@ -836,6 +874,22 @@
     const label = (tags[id] || []).find(x => String(x).toLowerCase().includes(t)) || it.name;
     log(`staging story map "${label}" → ${it.name}`);
     return await stageMapByKey(key, { activate, title: label });
+  }
+  // Stage the BEST-MATCH backdrop for the current hex with NO foes — a narrative SCENE (a built place: tavern, shrine,
+  // ruin) for a roleplay beat, or an empty BATTLE MAP for a hand-built fight. Uses the same tag scorer as combat staging
+  // (biome + season + features + the foes' kind if any), so the GM drops straight into a fitting setting. v0.55.93.
+  async function stageBackdrop({ battle = false, token = null, foes = null } = {}) {
+    if (!game.user.isGM) return warn("GM only");
+    const tok = token ?? canvas.tokens?.controlled?.[0] ?? globalThis.CavrilWayfarer?.Canvasry?.activeToken?.();
+    const cls = (() => { try { return globalThis.CavrilWayfarer?.Canvasry?.biomeForToken?.(tok) ?? null; } catch (e) { return null; } })() || { biome: "unknown" };
+    const type = battle ? "combat" : "social", what = battle ? "battle map" : "scene";
+    ui.notifications?.info(`Encounter Stage: matching a ${what} for ${cls?.label || "this hex"}…`);
+    let pick = null; try { pick = await pickMap(cls, { type, when: timeOfDay(), weather: liveWeather(), season: currentSeason(), foes }); } catch (e) { warn("backdrop pick failed", e); }
+    if (!pick?.variantKey) { ui.notifications?.warn(`Encounter Stage: no ${what} matched ${cls?.label || "this hex"}${pick ? " (not importable)" : ""}.`); return null; }
+    log(`backdrop: ${what} → ${describePick(pick)}`);
+    const scene = await stageMapByKey(pick.variantKey, { activate: CFG.activateScene, title: pick.item.name });
+    if (scene) ui.notifications?.info(`Encounter Stage: staged "${pick.item.name}" — ${what} for ${cls?.label || "this hex"}.`);
+    return scene;
   }
   // Editor for a map/scene's tag LIST — comma-separated, datalist-guided (the suggestions + every tag already in use).
   // Returns the new array, [] to clear, or null if cancelled. Tags drive the grid's filter/search and stageStoryMap().
@@ -2486,7 +2540,7 @@
     if (opts.map ?? true) {
       try {
         ui.notifications?.info(`Encounter Stage: matching a ${cls?.label || ebiome} battlemap…`);
-        pick = await pickMap(cls, { type, when, weather, season });
+        pick = await pickMap(cls, { type, when, weather, season, foes: actors });
         if (pick) {
           log(`map: ${describePick(pick)}`);
           ui.notifications?.info(`Encounter Stage: building "${pick.item.name}" in the background…`);
@@ -2848,6 +2902,10 @@
     stageEncounter,
     enterEncounter,
     encounterHere: (opts) => stageEncounter(opts),
+    // Best-MATCH backdrops (no foes): a narrative SCENE for a roleplay beat, or an empty BATTLE MAP for a hand-built fight.
+    stageScene: (opts = {}) => stageBackdrop({ ...opts, battle: false }),
+    stageBattlemap: (opts = {}) => stageBackdrop({ ...opts, battle: true }),
+    stageBackdrop, stageStoryMap,
     rollMonsters, dropTokens, playCombatMusic, currentSeason, timeOfDay, partyContext, diagnoseMonsters, diagnoseParty,
     BIOME_CREATURES, TYPE_MUSIC,
     // Per-biome diagnostics: which mapped tags actually exist + how many maps carry them.
