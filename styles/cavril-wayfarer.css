@@ -168,6 +168,8 @@
 .cwf-role { border: 1px solid var(--cwf-line); border-radius: 8px; padding: 6px 8px; background: var(--cwf-bg2); }
 .cwf-role-h { display: flex; align-items: center; gap: 6px; }
 .cwf-role-h i { color: var(--cwf-accent); }
+.cwf-role-dc { font-size: 9.5px; font-weight: 700; color: var(--cwf-gold); background: color-mix(in srgb, var(--cwf-gold) 13%, transparent); border-radius: 6px; padding: 1px 6px; letter-spacing: .02em; white-space: nowrap; margin-left: auto; }
+.cwf-role-dc i { font-size: 8px; color: var(--cwf-gold); opacity: .85; margin: 0 1px 0 4px; }
 .cwf-skill { color: var(--cwf-muted); font-size: 10px; margin-left: 2px; }
 .cwf-adv { margin-left: auto; color: #061; background: var(--cwf-easy); border-radius: 6px; padding: 0 6px; font-size: 9px; font-weight: 800; }
 .cwf-dis { margin-left: auto; color: #fff; background: var(--cwf-severe); border-radius: 6px; padding: 0 6px; font-size: 9px; font-weight: 800; }

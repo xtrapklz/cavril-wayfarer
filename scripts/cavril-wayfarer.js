@@ -493,6 +493,7 @@ const Store = (() => {
         // Movement penalties for rugged terrain (separate from the biome DC).
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "biomeForageJSON", { name: "Forage difficulty by biome (advanced)", hint: 'Optional JSON of per-biome forage DCs, e.g. {"desert":{"food":18,"water":20},"jungle":{"food":10,"water":11}}. Lower = easier to find. Blank uses the defaults (temperate easy, desert brutal; rivers/coast make water easy, forest eases food).', scope: "world", config: true, type: String, default: "" });
         // Cavril: Maestro biome → environment soundscape.
         g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Set this visually with the “Assign biome ambience…” button above (or right-click the ♪ on the travel HUD). Advanced: raw JSON of biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay"}. Blank = defaults; "" = silence for that biome.', scope: "world", config: true, type: String, default: "" });
@@ -1387,6 +1388,46 @@ const cwfNightNow = () => { try { return cwfTimeOfDay().key === "night"; } catch
 const cwfChallengeEff = () => Math.max(0, Math.min(5, cwfChallenge() + (cwfNightNow() ? 1 : 0)));
 // Route DC the travel roles check against: the worst biome's DC, +2 when travelling at NIGHT (everything's harder in the dark).
 const cwfRouteDc = (gov) => (gov?.dc ?? 10) + (cwfNightNow() ? 2 : 0);
+// Per-biome forage difficulty — how hard food / water are to FIND, decoupled from terrain ruggedness (a desert is flat and
+// easy to cross but brutal to forage; a jungle is hard to cross but lush). Lower = easier. Overridable via biomeForageJSON.
+const CWF_BIOME_FORAGE = {
+    temperate: { food: 11, water: 12 }, boreal: { food: 13, water: 12 }, jungle: { food: 10, water: 11 },
+    savanna:   { food: 13, water: 16 }, swamp:  { food: 12, water: 11 }, desert: { food: 18, water: 20 },
+    tundra:    { food: 17, water: 14 }, frozen: { food: 19, water: 15 }, volcanic: { food: 18, water: 18 },
+    wasteland: { food: 17, water: 18 }, tainted: { food: 19, water: 19 }, void: { food: 20, water: 20 },
+    water:     { food: 12, water: 8 }
+};
+function cwfBiomeForage(biome) {
+    let map = CWF_BIOME_FORAGE;
+    try { const raw = game.settings.get(MOD, "biomeForageJSON"); if (raw && String(raw).trim()) { const p = JSON.parse(raw); if (p && typeof p === "object") map = { ...CWF_BIOME_FORAGE, ...p }; } } catch (e) { /* keep defaults */ }
+    return map[biome] || map.temperate || { food: 13, water: 13 };
+}
+// Each travel role faces its OWN DC, shaped by the governing hex's biome: navigation by how legible the ground is, scouting
+// by how much cover blocks sightlines, foraging by how scarce food / water are. Returns { dc, food?, water? } — dc is the
+// success threshold (forage: the EASIER of food / water → you find SOMETHING), food/water the per-resource thresholds.
+function cwfRoleDc(role, gov) {
+    const night = cwfNightNow() ? 2 : 0;
+    const base = (gov?.dc ?? 10) + night;
+    const biome = gov?.biome || "temperate";
+    const dense = gov?.vegetation === "high" || biome === "jungle" || biome === "swamp";
+    const open = biome === "desert" || biome === "savanna" || biome === "tundra" || biome === "water" || biome === "void";
+    const road = !!gov?.infrastructure, nearWater = !!(gov?.river || gov?.coast);
+    if (role === "scout") { let d = base; if (dense) d += 3; else if (open) d -= 2; return { dc: Math.max(5, d) }; }
+    if (role === "forage") {
+        const f = cwfBiomeForage(biome);
+        let food = f.food + night, wat = f.water + night;
+        if (nearWater) wat -= 6;                       // a river or coast makes water easy
+        if (gov?.vegetation === "high") food -= 2;     // forest mast, berries, game
+        if (road) food += 2;                           // picked over near a road
+        food = Math.max(5, food); wat = Math.max(5, wat);
+        return { dc: Math.min(food, wat), food, water: wat };
+    }
+    let d = base;                                      // navigate (and any default)
+    if (open || dense) d += 2;                         // no landmarks / no sightlines → easy to drift
+    if (road) d -= 3;                                  // a road navigates itself
+    else if (nearWater) d -= 1;                        // follow the watercourse
+    return { dc: Math.max(5, d) };
+}
 // HOURS SINCE LAST LONG REST — the "running on no sleep" clock. Reset on a long rest (cwfMarkRested), seeded on the first
 // travel turn. Past `restThresholdHours` (default 24) each travel leg adds +1 exhaustion until the party beds down.
 const cwfLastRest = () => { try { const v = Number(game.settings.get(MOD, "lastRestTime")); return Number.isFinite(v) && v > 0 ? v : null; } catch (e) { return null; } };
@@ -4648,9 +4689,9 @@ const Turn = (() => {
         WayfarerPanel.render();
     }
 
-    function outcomeFor(s) {
+    function outcomeFor(s, roleKey) {
         if (s.total == null) return null;
-        const dc = cwfRouteDc(governing);
+        const dc = roleKey ? cwfRoleDc(roleKey, governing).dc : cwfRouteDc(governing);   // per-role biome DC; helpers (no role) use the route baseline
         if (s.nat === 20) return "crit";
         if (s.nat === 1) return "critfail";           // a fumble is a natural 1 — not just a low total
         if (s.total >= dc + 10) return "crit";
@@ -4695,7 +4736,7 @@ const Turn = (() => {
         let navEffect = "arrive";
         let forageMishap = null;   // a botched forage's victim — resolved (sickness or a surprise fight) after the role loop
         for (const [k, v] of claimedRoles()) {
-            const tier = outcomeFor(v) || "fail";
+            const tier = outcomeFor(v, k) || "fail";
             v.outcome = tier;
             const drawn = await Tables.draw(k, tier);
             v.result = drawn.text;
@@ -4725,7 +4766,7 @@ const Turn = (() => {
                         <span class="cwf-rr-sub"><span class="cwf-rr-who">${v.actorName || "—"}</span>${v.helpedBy ? ` <span class="cwf-rr-help" title="A helper's higher roll of the same skill stepped in">↗ ${v.helpedBy}</span>` : ""} · <span class="cwf-rr-sk">${sk}</span></span>
                     </span>
                     <span class="cwf-rr-out">
-                        <span class="cwf-rr-roll"><span class="cwf-rr-total">${v.total}</span><span class="cwf-rr-dc">vs ${dc}</span></span>
+                        <span class="cwf-rr-roll"><span class="cwf-rr-total">${v.total}</span><span class="cwf-rr-dc">vs ${cwfRoleDc(k, governing).dc}</span></span>
                         <span class="cwf-tier-badge cwf-tier-${v.outcome}">${TIER_LABEL[v.outcome]}</span>
                     </span>
                 </div>
@@ -4805,6 +4846,7 @@ const Turn = (() => {
 
     return {
         begin, claim, setSkill, roll, enter, adjust, resolve, end, ingestRoll, partyMembers, outcomeFor, rollState, rollWhy,
+        roleDc: (k) => cwfRoleDc(k, governing),
         claimedRoles, allRolled,
         addHelper, setHelper, dropHelper, rollHelper, enterHelper, claimedHelpers,
         get active() { return active; }, get step() { return step; }, get roles() { return roles; }, get helpers() { return helpers; },
@@ -5302,7 +5344,11 @@ const WayfarerPanel = (() => {
             // Tiny "why" icons: each pace/weather source of advantage or disadvantage, so the GM sees the CAUSE at a glance
             // (a Slow-pace gauge, a fog cloud) — and when two sources cancel, both show even though the net tag is blank.
             const whyIcons = Turn.rollWhy(k).map(w => `<i class="fa-solid ${w.icon} cwf-why cwf-why-${w.kind}" title="${w.kind === "adv" ? "Advantage" : "Disadvantage"}: ${esc(w.label)}"></i>`).join("");
-            const tier = Turn.outcomeFor(s);
+            const tier = Turn.outcomeFor(s, k);
+            const rdc = Turn.roleDc(k);
+            const dcHint = k === "forage"
+                ? `<span class="cwf-role-dc" title="Forage — food DC ${rdc.food} · water DC ${rdc.water}, scaled to the biome (rivers/coast ease water, forest eases food)"><i class="fa-solid fa-drumstick-bite"></i>${rdc.food} <i class="fa-solid fa-bottle-water"></i>${rdc.water}</span>`
+                : `<span class="cwf-role-dc" title="${ROLE_LABEL[k]} DC for this terrain (biome-shaped)">DC ${rdc.dc}</span>`;
             const badge = s.total != null ? `<span class="cwf-tier cwf-${tier}">${s.total} · ${TIER_LABEL[tier]}</span>` : "";
             const rollRow = s.actorId ? `
                 <div class="cwf-roll-row">
@@ -5312,7 +5358,7 @@ const WayfarerPanel = (() => {
                 </div>` : "";
             return `
                 <div class="cwf-role ${s.actorId ? "claimed" : ""}">
-                    <div class="cwf-role-h"><i class="fa-solid ${ROLE_ICON[k]}"></i> <b>${ROLE_LABEL[k]}</b> ${advTag}${whyIcons}</div>
+                    <div class="cwf-role-h"><i class="fa-solid ${ROLE_ICON[k]}"></i> <b>${ROLE_LABEL[k]}</b> ${dcHint} ${advTag}${whyIcons}</div>
                     <div class="cwf-claim">
                         <select class="cwf-sel" data-action="turn-claim" data-role="${k}" ${dis} title="Who is claiming this role?">${memberOpts(s.actorId)}</select>
                         <select class="cwf-sel" data-action="turn-skill" data-role="${k}" ${dis} title="Skill for this role this turn">${skillOpts(k, s.skillId)}</select>
@@ -5889,7 +5935,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "autoTravelOnResolve", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
             ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "foodGraceDays", "carryBase", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
-            ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
+            ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeForageJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
         ];
