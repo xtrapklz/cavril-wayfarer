@@ -5496,12 +5496,16 @@ for (const h of ["createItem", "updateItem", "deleteItem"]) Hooks.on(h, () => Wa
 // a staged battlemap, or any nested scene). Replaces the old floating button, which collided
 // with crlngn-ui / Mini Calendar HUDs.
 // The scene to go BACK to from here, most-specific first: this scene's recorded origin flag → the last overworld we
-// recorded (EncounterStage stamps it on every stage; canvasReady also records any non-staged scene we visit). Returns
-// null if there's no target or it's the scene we're already on. Drives BOTH the toolbar button's visibility and the jump.
+// recorded → the previously-viewed scene. EncounterStage stamps originScene on every stage; canvasReady records both
+// the overworld and the prior scene. So from a sub-scene the button returns to the overworld, and from the overworld it
+// returns to the scene you were just on — it's ALWAYS present (after the first scene switch). Null only if it'd be a no-op.
+let _curScene = null, _prevScene = null;   // scene history for the Return button (module-life; repopulates after one switch)
 function returnTarget() {
+    const here = canvas?.scene?.id || null;
     let id = canvas?.scene?.getFlag?.(MOD, "originScene") || null;
     if (!id) { try { id = game.settings.get(MOD, "lastOverworld") || null; } catch { /* noop */ } }
-    if (!id || id === canvas?.scene?.id) return null;
+    if (!id || id === here) id = _prevScene;   // already on the overworld (or none recorded) → the scene we came from
+    if (!id || id === here) return null;
     return game.scenes?.get(id) || null;
 }
 async function returnToOrigin(explicitId = null) {
@@ -5548,6 +5552,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
 Hooks.on("canvasReady", () => {
     try {
         const sc = canvas?.scene;
+        if (sc && sc.id !== _curScene) { _prevScene = _curScene; _curScene = sc.id; }   // remember where we came from → the Return button's fallback target
         if (game.user?.isGM && sc && !sc.getFlag?.(MOD, "originScene")) {
             try { if (game.settings.get(MOD, "lastOverworld") !== sc.id) game.settings.set(MOD, "lastOverworld", sc.id); } catch { /* noop */ }
         }
