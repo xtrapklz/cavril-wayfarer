@@ -1068,11 +1068,33 @@ const Party = (() => {
         })));
         for (let i = 0; i < shorts.length; i++) {
             const s = shorts[i], donorId = decisions?.[i]?.donorId;
-            if (!donorId) continue;   // go without → the toll lands at the survival check
+            if (!donorId) continue;   // go without → the toll lands immediately at the meal
             const donor = rows.find(r => r.m.id === donorId); if (!donor) continue;
             const pulled = await take(donor.m, s.re, s.amt);
             if (s.kind === "rations") s.row.foodGot += pulled; else s.row.waterGot += pulled;
         }
+    }
+    // ONE meal (a Dawn/Day/Dusk beat): each member eats 1 ration + 1 water from their OWN pack, shares for shortfalls, and
+    // anyone who STILL goes without takes the toll right here (+1 exhaustion, capped at 2/day via the mealTollToday flag —
+    // reset at dawn). Returns a per-character outcome for the meal card. v0.55.129.
+    async function eatMeal() {
+        const mem = members();
+        if (!game.user.isGM || !mem.length) return { perMember: [] };
+        const rows = mem.map(m => ({ m, id: m.id, name: m.name, ownFood: 0, ownWater: 0, foodGot: 0, waterGot: 0 }));
+        for (const r of rows) { r.ownFood = r.foodGot = await take(r.m, RATION_RE, 1); r.ownWater = r.waterGot = await take(r.m, WATER_RE, 1); }
+        if (game.settings.get(MOD, "shareProvisions")) { try { await shareProvisions(rows, 1); } catch (e) { warn("meal sharing failed", e); } }
+        const starve = !!game.settings.get(MOD, "starveExhaustion");
+        const perMember = [];
+        for (const r of rows) {
+            const fed = r.foodGot >= 1, watered = r.waterGot >= 1, aided = (r.foodGot > r.ownFood) || (r.waterGot > r.ownWater);
+            let tolled = false;
+            if (starve && (!fed || !watered)) {
+                const a = r.m, day = Number(a.getFlag?.(MOD, "mealTollToday")) || 0;
+                if (day < 2) { const lvl = a.system?.attributes?.exhaustion ?? 0; try { await a.update({ "system.attributes.exhaustion": Math.min(6, lvl + 1) }); await a.setFlag?.(MOD, "mealTollToday", day + 1); tolled = true; } catch (e) { /* noop */ } }
+            }
+            perMember.push({ id: r.id, name: r.name, fed, watered, aided, tolled });
+        }
+        return { perMember };
     }
     // Add `k` units to an item, USES-aware (the mirror of takeFromItem). A Waterskin tracks supply as
     // limited uses, not quantity — so refill spent uses first (then expand capacity); a Ration tracks
@@ -1159,7 +1181,7 @@ const Party = (() => {
         if (delta > 0) await addItem(a, re, type === "water" ? "Waterskin" : "Rations", delta);
         else if (delta < 0) await take(a, re, -delta);
     }
-    return { groupActor, members, size, supplies, breakdown, capacity, countItems, consume, addSupplies, refillWater, adjustStash, setMemberSupply, RATION_RE, WATER_RE };
+    return { groupActor, members, size, supplies, breakdown, capacity, countItems, consume, eatMeal, addSupplies, refillWater, adjustStash, setMemberSupply, RATION_RE, WATER_RE };
 })();
 
 /* =========================================================================
@@ -1867,6 +1889,9 @@ async function cwfAdvanceHex(auto) {
         Cinematic.broadcast({ icon, title: bits[0] || "The road turns", subtitle: bits.slice(1).join(" · ") || `${biome} · ${t.pace} pace`, tone: todChanged ? tod.tone : "weather" });
         t.lines.push(`<div class="cwf-night-h cwf-ln-turn"><i class="fa-solid ${icon}"></i> ${cwfEsc(bits.join(" · "))}.</div>`);
     }
+    // Crossing INTO a day phase that carries a meal (Dawn breakfast / Day midday / Dusk supper) → the party eats one portion
+    // here, sharing for anyone short, and takes the toll on the spot. The meal card posts to chat. v0.55.129.
+    if (todChanged && tod.meal) { try { await cwfMealBeat(tod); } catch (e) { warn("meal beat failed", e); } }
     if (encounter) {
         if (ev.hours) await Store.advanceWorldTime(ev.hours);
         t.lines.push(cwfHexLineHTML(off, t.idx, biome, weatherLabel, `<i class="fa-solid ${ev.icon}"></i> <b>${ev.label}</b>${ev.tag || ""} · +${ev.hours}h<br>${ev.line}`, true));
@@ -2154,7 +2179,8 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
         const chip = (icon, text, tone) => chips.push(`<span class="cwf-sv-chip ${tone}"><i class="fa-solid ${icon}"></i> ${text}</span>`);
         let survExh = 0, waterDry = false;
         // Provisions deprivation is ONE level of exhaustion (food OR water — it doesn't double); the watch toll stacks on top.
-        if (starve) {
+        // Skipped entirely when no meal was consumed AT camp — meals (and their toll) now happen at Dawn/Day/Dusk; camp = watch + rest.
+        if (starve && consumeResult) {
             // FOOD — grace-buffered hunger: a skipped meal is fine, a near-empty day (≤⅓) accrues toward starvation.
             let days = Number(a.getFlag?.(MOD, "daysNoFood")) || 0;
             if (fed) days = 0;
@@ -2326,6 +2352,22 @@ async function cwfForageCritFail(actorId, cls) {
     if (sick) return cwfForageSickness(actorId);
     try { Cinematic.broadcast({ icon: "fa-paw", title: "Territorial Wildlife", subtitle: "the forage roused something — ambush!", tone: "danger" }); } catch (e) { /* noop */ }
     try { await cwfCombatBeat(cls, cls?.biome, { surprised: true }); } catch (e) { warn("forage wildlife encounter failed", e); }
+}
+// A MEAL BEAT at a day phase (Dawn breakfast / Day midday / Dusk supper): the party eats one portion (own → shared → go
+// without), anyone short takes the immediate toll, and a per-character chip card announces it to the table. v0.55.129.
+async function cwfMealBeat(tod) {
+    if (!game.user?.isGM) return;
+    let res; try { res = await Party.eatMeal(); } catch (e) { warn("meal beat failed", e); return; }
+    const pm = res?.perMember || []; if (!pm.length) return;
+    const rows = pm.map(p => {
+        const chips = [];
+        chips.push(p.fed ? `<span class="cwf-sv-chip ok"><i class="fa-solid fa-drumstick-bite"></i> fed</span>` : `<span class="cwf-sv-chip bad"><i class="fa-solid fa-drumstick-bite"></i> no food</span>`);
+        chips.push(p.watered ? `<span class="cwf-sv-chip ok"><i class="fa-solid fa-bottle-water"></i> watered</span>` : `<span class="cwf-sv-chip bad"><i class="fa-solid fa-bottle-water"></i> no water</span>`);
+        if (p.aided) chips.push(`<span class="cwf-sv-chip warn"><i class="fa-solid fa-hands-holding"></i> shared</span>`);
+        const tag = p.tolled ? `<span class="cwf-sv-exh up">▲ +1</span>` : `<span class="cwf-sv-exh ok">ok</span>`;
+        return `<div class="cwf-sv-row ${p.tolled ? "hit" : ""}"><span class="cwf-sv-name">${cwfEsc(p.name)}</span><span class="cwf-sv-chips">${chips.join("")}</span>${tag}</div>`;
+    }).join("");
+    try { ChatMessage.create({ content: cwfCardShell(tod.icon || "fa-utensils", `${tod.label} · ${tod.meal || "Meal"}`, `<div class="cwf-sv-list">${rows}</div>`, { sub: cwfClockLabel() }) }); } catch (e) { /* noop */ }
 }
 // The role-play prompt when the party can't all feed themselves at camp: who shares from their own pack? Returns a decision
 // per shortfall ({ donorId }) — null = go without (the toll lands at the survival check). v0.55.127.
@@ -5265,6 +5307,7 @@ const Camp = (() => {
         if (survival?.html) body += `<div class="cwf-night-sec">Rest &amp; provisions${survival.label ? ` · ${survival.label}` : ""}</div>${survival.html}`;
         const prev = Store.sceneState().day || 1, nextDay = prev + 1;
         await Store.setSceneState({ day: nextDay, foraged: false, shortRest: false });
+        for (const m of Party.members()) { try { await m.unsetFlag?.(MOD, "mealTollToday"); } catch (e) { /* a new day → the per-day meal-toll cap resets */ } }
 
         if (encounters > 0) {
             // HOSTILE NIGHT ENCOUNTER → INTERCEPT: do not roll on to dawn. Raise combat
@@ -5534,15 +5577,11 @@ const WayfarerPanel = (() => {
     async function makeCamp() {
         try { globalThis.CavrilAdvance?.clear?.("cwf-travel-on"); } catch (e) { /* bedding down → drop the "travel on" nudge */ }
         if (Turn.active) Turn.end();   // close out a resolved travel turn before bedding down
-        // Eat the day's meals: up to mealsPerDay rations + that many waterskin charges per member from their own packs
-        // (waterskins lose charges, not the whole item), then bed down. A successful forage already PUT food/water into
-        // the packs during the day, so camp always consumes normally — a good forage nets flat-or-up, a poor one eats reserves.
-        const consumeResult = await Party.consume();
-        const c = consumeResult, sup = Party.supplies();
-        const note = `Ate ${c.rations}🍖 / ${c.water}💧${c.rationsShort || c.waterShort ? ` (⚠ ${c.rationsShort}🍖/${c.waterShort}💧 short)` : ""} · ${sup.rations}🍖 / ${sup.water}💧 left`;
-        // The meal is eaten now, but hunger/thirst/recovery resolve at dawn in
-        // resolveNight — once the watch order (which sets rest quality) is known.
-        Camp.begin(note, consumeResult, false);
+        // Meals are eaten DURING the day at Dawn / Day / Dusk now (each a meal beat with its own toll) — camp is just the
+        // night's rest + the watch. No food or water is consumed here; the survival card resolves the WATCH toll at dawn.
+        const sup = Party.supplies();
+        const note = `Bedded down · ${sup.rations}🍖 / ${sup.water}💧 in the packs`;
+        Camp.begin(note, null, false);
     }
 
     async function enterSite() {
