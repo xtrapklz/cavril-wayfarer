@@ -495,6 +495,8 @@ const Store = (() => {
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "biomeForageJSON", { name: "Forage difficulty by biome (advanced)", hint: 'Optional JSON of per-biome forage DCs, e.g. {"desert":{"food":18,"water":20},"jungle":{"food":10,"water":11}}. Lower = easier to find. Blank uses the defaults (temperate easy, desert brutal; rivers/coast make water easy, forest eases food).', scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "gatherIngredients", { name: "Forage gathers crafting ingredients", hint: "On a HIGH forage roll (a crit, or well over the DC) also draw a craftable INGREDIENT from this biome's gather table (your Gatherer / world RollTable) and add it to the Forager's pack. Separate from rations & water — never touches the supply counts. Default on.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "biomeGatherJSON", { name: "Biome → gather table (advanced)", hint: 'Optional JSON mapping a biome to a RollTable name or id, e.g. {"jungle":"Jungle Gathering","desert":"Desert Foraging"}. Blank auto-matches any world RollTable whose name contains the biome word.', scope: "world", config: true, type: String, default: "" });
         // Cavril: Maestro biome → environment soundscape.
         g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Set this visually with the “Assign biome ambience…” button above (or right-click the ♪ on the travel HUD). Advanced: raw JSON of biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay"}. Blank = defaults; "" = silence for that biome.', scope: "world", config: true, type: String, default: "" });
@@ -2136,6 +2138,41 @@ function cwfRestSummary(type, rows) {
 // Rest the whole party. Long rest restores HP/slots/hit dice (NOT exhaustion).
 // Short rest auto-spends hit dice (Foundry-rolled for now; DDB-sourced is the next step).
 // A crit-SUCCESS forage turns up a medicinal find that eases the WEARIEST member by one exhaustion. Returns a note (or "").
+// Find the gather RollTable for a biome: an explicit biomeGatherJSON mapping (table name or id) first, else auto-match any
+// world RollTable whose name contains the biome word (a table named "Jungle Gathering" serves the jungle).
+function cwfFindGatherTable(biome) {
+    if (!game.tables) return null;
+    let map = {};
+    try { const raw = game.settings.get(MOD, "biomeGatherJSON"); if (raw && String(raw).trim()) { const p = JSON.parse(raw); if (p && typeof p === "object") map = p; } } catch (e) { /* ignore bad JSON */ }
+    const ref = map[biome];
+    if (ref) { const t = game.tables.get(ref) || game.tables.getName?.(ref); if (t) return t; }
+    const want = String(biome || "").toLowerCase();
+    return want ? (game.tables.find(t => String(t.name || "").toLowerCase().includes(want)) || null) : null;
+}
+// A HIGH forage also gathers a craftable INGREDIENT from the biome's gather table (Gatherer / a world RollTable) onto the
+// Forager's sheet — toObject() preserves the item's flags so Gatherer & Mastercrafted still recognise it. Wholly separate
+// from rations/water (never touches the supply counts). Returns a note for the result line, or "" if nothing was gathered.
+async function cwfForageGather(actorId, gov, { crit = false } = {}) {
+    if (!game.user.isGM || !game.settings.get(MOD, "gatherIngredients")) return "";
+    const table = cwfFindGatherTable(gov?.biome || "temperate");
+    if (!table) return "";
+    const actor = game.actors.get(actorId);
+    const found = [];
+    for (let i = 0; i < (crit ? 2 : 1); i++) {   // a crit forage turns up more
+        let res; try { res = await table.draw({ displayChat: false }); } catch (e) { warn("gather draw failed", e); break; }
+        for (const r of (res?.results || [])) {
+            try {
+                let doc = null;
+                const cand = [r.documentUuid, (r.documentCollection && r.documentId) ? `${r.documentCollection}.${r.documentId}` : null, (r.documentCollection && r.documentId) ? `Compendium.${r.documentCollection}.${r.documentId}` : null].filter(Boolean);
+                for (const u of cand) { try { doc = await fromUuid(u); if (doc) break; } catch (e) { /* try next uuid form */ } }
+                if (doc && doc.documentName === "Item" && actor) { await actor.createEmbeddedDocuments("Item", [doc.toObject()]); found.push(doc.name); }
+                else { const txt = r.text || doc?.name; if (txt) found.push(txt); }
+            } catch (e) { warn("gather award failed", e); }
+        }
+    }
+    if (!found.length) return "";
+    return `gathered <b>${found.map(cwfEsc).join("</b>, <b>")}</b>${actor ? ` → ${cwfEsc(actor.name)}'s pack` : ""}`;
+}
 async function cwfForageMedicinal() {
     if (!game.user.isGM) return "";
     let worst = null, worstE = 0;
@@ -4771,6 +4808,8 @@ const Turn = (() => {
                     if (got.rations) bits.push(`+${got.rations}🍖`);
                     if (got.water) bits.push(`+${got.water}💧`);
                     v.result += bits.length ? ` <em>— foraged ${bits.join(" / ")} into the party's packs.</em>` : ` <em>— but every pack is already full.</em>`;
+                    // A HIGH forage (a crit, or well clear of the DC) also turns up a craftable ingredient from the biome's gather table.
+                    if (crit || v.total >= rdc.dc + 8) { const g = await cwfForageGather(v.actorId, governing, { crit }); if (g) v.result += ` <em>· ${g}</em>`; }
                     if (crit) { const eased = await cwfForageMedicinal(); if (eased) v.result += ` <em>${eased}</em>`; }
                 } else if (tier === "critfail") {
                     forageMishap = v.actorId;   // tainted flora or a roused beast → sickness OR a surprise wildlife fight
@@ -5765,6 +5804,10 @@ Hooks.once("ready", () => {
         createTables: () => Tables.ensureAll(),
         reseedTables: () => Tables.reseed(),
         resetJourney: () => Tables.resetJourney(),
+        // Which world RollTable each biome's forage-gather will draw from (auto-match by name + your biomeGatherJSON override).
+        gatherTables: () => { const out = {}; for (const b of ["temperate", "boreal", "jungle", "savanna", "swamp", "desert", "tundra", "frozen", "volcanic", "wasteland", "tainted", "void", "water"]) out[b] = cwfFindGatherTable(b)?.name || "(none found)"; return out; },
+        forageGather: (actorId, biome = "temperate", crit = false) => cwfForageGather(actorId, { biome }, { crit }),   // manual test: draws + awards an ingredient
+        roleDc: (biome, role = "forage", extra = {}) => cwfRoleDc(role, { biome, dc: 13, ...extra }),
         wanted: (d) => (d == null ? cwfWanted() : cwfWantedAdjust(d)),   // .wanted() reads · .wanted(1)/.wanted(-1) adjusts the Heat/Wanted score
         setWanted: (n) => cwfSetWanted(n),                                // .setWanted(3) sets it directly (0-5)
         merchant: (opts) => MerchantEconomy.roll(opts),
@@ -5954,7 +5997,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "autoTravelOnResolve", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
             ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "mealsPerDay", "foodGraceDays", "carryBase", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
-            ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeForageJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
+            ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeForageJSON", "gatherIngredients", "biomeGatherJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
         ];
