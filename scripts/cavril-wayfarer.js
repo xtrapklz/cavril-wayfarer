@@ -1667,6 +1667,7 @@ async function cwfAdvanceHex(auto) {
             cwfMoving = true;
             cwfPanAll(c.x, c.y, dur);   // the whole table's camera glides WITH the token; the transition then lands on the new hex
             await tok.document.update({ x: c.x - tok.w / 2, y: c.y - tok.h / 2 }, { animate: true, animation: { duration: dur } });
+            await cwfAwaitMove(tok);    // WAIT for the glide to fully LAND before doing anything else — the document update resolves when the anim is QUEUED, not finished, so without this the next hex's move starts mid-glide (the jitter)
         } catch (e) { warn("step move failed", e); }
         finally { cwfMoving = false; }
     }
@@ -1698,7 +1699,7 @@ async function cwfAdvanceHex(auto) {
     }
     // SIGNAL (or a manual Step) → flush the leg, ONE combined transition cinematic, the hex line.
     cwfFlushLeg();
-    if (tok) { try { await cwfAwaitMove(tok); cwfRefreshVision(); } catch (e) { /* noop */ } }   // let the glide FULLY land (fog sweeps the path) before any cinematic curtain — fixes the jump + the unexplored gap between hexes
+    if (tok) { try { cwfRefreshVision(); } catch (e) { /* noop */ } }   // the glide already landed in the move above — just sweep the fog before any cinematic curtain
     if (biomeChanged || weatherChanged || todChanged) {
         await new Promise(res => setTimeout(res, 180));   // let the glide settle on the new hex for a beat before the transition curtain covers it
         const bits = []; if (biomeChanged) bits.push(biome); if (todChanged) bits.push(tod.label); if (weatherChanged && weatherLabel) bits.push(weatherLabel);
@@ -1746,7 +1747,7 @@ async function cwfMontage() {
             const r = await cwfAdvanceHex(true);
             await cwfTrekRefresh();
             if (r.signal) break;   // biome/weather/time change or encounter → pause for the table
-            await new Promise(res => setTimeout(res, Math.max(200, Number(game.settings.get(MOD, "moveAnimMs")) || 900)));   // let the glide land
+            await new Promise(res => setTimeout(res, 150));   // the glide is already fully awaited in cwfAdvanceHex — this is just a small breath between hexes
         }
     } catch (e) { warn("montage failed", e); }
     t.running = false;
@@ -4612,7 +4613,7 @@ const Turn = (() => {
             // cinematics) so you can read the resolution instead of clicking Step. It pauses itself at the next signal —
             // a biome/weather/time change or an encounter. Skipped when the party got lost (navEffect "dead", no path).
             if (path.length && navEffect !== "dead" && game.settings.get(MOD, "autoTravelOnResolve")) {
-                setTimeout(() => { try { cwfMontage(); } catch (e) { warn("auto-travel on resolve failed", e); } }, 600);   // let the resolution + trek cards land first
+                setTimeout(() => { try { cwfMontage(); } catch (e) { warn("auto-travel on resolve failed", e); } }, 2800);   // let the GROUP-REVEAL cinematic play its FULL beat before the first glide starts (was 600ms — the move landed behind the cinematic)
             }
         }
 
@@ -5184,7 +5185,7 @@ const WayfarerPanel = (() => {
             ? `<div class="cwf-helpers">
                     <div class="cwf-role-h cwf-helpers-h"><i class="fa-solid fa-hands-holding-circle"></i> <b>Helpers</b> <span class="cwf-muted2">roll a role's skill — better roll wins</span></div>
                     ${helperRows}
-                    ${Turn.step !== "resolved" ? `<button class="cwf-btn cwf-help-add" data-action="turn-add-helper" ${dis}><i class="fa-solid fa-plus"></i> Add helper</button>` : ""}
+                    ${Turn.step !== "resolved" ? `<button class="cwf-btn cwf-help-add" data-action="turn-add-helper" ${dis} title="A 5th/6th player — or a 4th doubling up — rolls a role's skill; at resolve the better roll wins. Add one, pick who + which skill, and they roll alongside the roles."><i class="fa-solid fa-hand-holding-hand"></i> ${helperRows ? "Add another helper" : "Add a Helper (back up a role)"}</button>` : ""}
                </div>`
             : "";
 
