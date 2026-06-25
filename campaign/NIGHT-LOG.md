@@ -11,6 +11,7 @@ You asked for the road to feel **authored**, with generous focus on each story. 
 | **Wayfarer 0.55.94** | **15 hand‑crafted road‑encounter NPCs** + a new **"people" travel beat** |
 | **Wayfarer 0.55.95** | **"Stage a scene"** button on every merchant/NPC card · **`buildAllTables()`** |
 | **Wayfarer 0.55.96** | Trek log **names the merchant/NPC met** · settings: updated merchant hint, new road‑NPC toggle, a **"Trade & Road Encounters"** section |
+| **Wayfarer 0.55.97** | **"Meet" chip** — deliberately drop a road‑cast member (merchant or NPC) on demand, the narrative counterpart to the Encounter chip |
 
 Every release passed the 37‑test preflight + `node --check`. All additive — nothing existing should have broken. City merchants stay procedural (this only changed the *roadside* ones).
 
@@ -51,6 +52,7 @@ Encounter staging now factors the **foes' creature types** into the battlemap pi
 - **Editable RollTables** (so you can curate/add): `CavrilWayfarer.buildAllTables()` — seeds biome flavour/site/trade, named locations, **Cavril Traveling Merchants**, and **Cavril Road Encounters (NPCs)** into the *Cavril* folder.
 - **Settings → Trade & Road Encounters**: toggle the merchant cards and the road‑NPC cards (both default on). Travel a stretch — roughly 1 in 6 quiet beats now surfaces a written merchant or face, whispered to you with read‑aloud + hook + twist.
 - Scene/Map: the **Scene** and **Map** chips on the hex strip, or `CavrilEncounterStage.stageScene()` / `.stageBattlemap()`.
+- **Meet someone on demand**: the gold **Meet** chip drops a biome‑fitting merchant or road NPC (the narrative counterpart to **Encounter**), or `CavrilWayfarer.meetSomeone()` (`{merchant:true}` to force a merchant).
 
 ## 📋 Ready when you can test it (deliberately NOT shipped overnight)
 - **Core roadmap #1 — per‑part damage saves.** A save‑for‑half should halve only the *save‑gated* damage part (the poison), not the piercing too. It's a combat‑mechanics change best verified at the table, so I left it for a session you can test. See `modules/ddb-roll-cards/ABILITY-AUTOMATION.md` — say the word and I'll wire it behind a setting.

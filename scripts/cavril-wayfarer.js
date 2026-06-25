@@ -5495,25 +5495,28 @@ for (const h of ["createItem", "updateItem", "deleteItem"]) Hooks.on(h, () => Wa
 // Return to the scene that generated THIS one (the originScene flag EncounterStage sets on
 // a staged battlemap, or any nested scene). Replaces the old floating button, which collided
 // with crlngn-ui / Mini Calendar HUDs.
-async function returnToOrigin(explicitId = null) {
-    // Resolve the overworld to return to from the most specific source down: an explicit id (chat button)
-    // → this scene's recorded origin flag → the last overworld we left (a world setting EncounterStage
-    // stamps on every stage). Robust even when the per-scene flag is missing or the toolbar is flaky.
-    let id = (typeof explicitId === "string" && explicitId) ? explicitId : null;
-    id = id || canvas?.scene?.getFlag?.(MOD, "originScene") || null;
+// The scene to go BACK to from here, most-specific first: this scene's recorded origin flag → the last overworld we
+// recorded (EncounterStage stamps it on every stage; canvasReady also records any non-staged scene we visit). Returns
+// null if there's no target or it's the scene we're already on. Drives BOTH the toolbar button's visibility and the jump.
+function returnTarget() {
+    let id = canvas?.scene?.getFlag?.(MOD, "originScene") || null;
     if (!id) { try { id = game.settings.get(MOD, "lastOverworld") || null; } catch { /* noop */ } }
-    const s = id && game.scenes?.get(id);
-    if (!s) { ui.notifications?.warn(`${TITLE}: no overworld scene recorded to return to.`); return; }
+    if (!id || id === canvas?.scene?.id) return null;
+    return game.scenes?.get(id) || null;
+}
+async function returnToOrigin(explicitId = null) {
+    const s = (typeof explicitId === "string" && explicitId && game.scenes?.get(explicitId)) || returnTarget();
+    if (!s) { ui.notifications?.warn(`${TITLE}: no scene to return to yet — stage an encounter, or visit your overworld once so I can remember it.`); return; }
     if (s.id === canvas?.scene?.id) { ui.notifications?.info(`${TITLE}: already on “${s.name}”.`); return; }
-    try { if (game.user.isGM) await s.activate(); else s.view(); log(`returned to overworld “${s.name}”.`); }
+    try { if (game.user.isGM) await s.activate(); else s.view(); log(`returned to “${s.name}”.`); }
     catch (e) { warn("return-to-origin failed", e); ui.notifications?.error(`${TITLE}: couldn't return — ${e.message}`); }
 }
 function returnTool() {
-    const has = !!canvas?.scene?.getFlag?.(MOD, "originScene");
+    const tgt = returnTarget();
     return {
-        name: "wayfarer-return", title: "Return to the scene that generated this one",
+        name: "wayfarer-return", title: tgt ? `Return to “${tgt.name}”` : "Return to the overworld",
         icon: "fa-solid fa-circle-left", button: true, order: 98,
-        visible: has, isVisible: () => has,
+        visible: !!tgt, isVisible: () => !!returnTarget(),
         onClick: () => returnToOrigin(), onChange: () => returnToOrigin(),
     };
 }
@@ -5530,13 +5533,24 @@ Hooks.on("getSceneControlButtons", (controls) => {
         if (game.user?.isGM) addTool(tokenGrp, { name: "cwf-token-picker", title: `${TITLE} — token picker (CZEPEKU)`, icon: "fa-solid fa-masks-theater", button: true, order: 98, onClick: () => globalThis.CavrilEncounterStage?.openTokenPicker?.("") });
         // Map curation grid — GM-only Lightroom panel to tag/approve maps per biome (also CavrilEncounterStage.openMapGrid()).
         if (game.user?.isGM && globalThis.CavrilEncounterStage?.openMapGrid) addTool(tokenGrp, { name: "cwf-map-grid", title: `${TITLE} — map & scene curation`, icon: "fa-solid fa-images", button: true, order: 97, onClick: () => globalThis.CavrilEncounterStage?.openMapGrid?.() });
-        // Return-to-overworld: on a staged scene, put it in EVERY tool group so it never
-        // vanishes when you switch to walls / lighting / drawings / the Augur set, etc.
-        if (canvas?.scene?.getFlag?.(MOD, "originScene")) {
+        // Return-to-overworld: whenever there's a scene to go back to (this scene's origin, or the last overworld we
+        // recorded), put it in EVERY tool group so it's ALWAYS reachable and never vanishes when you switch to walls /
+        // lighting / drawings / the Augur set, etc. Hidden only when you're already on the overworld.
+        if (returnTarget()) {
             const { isVisible: _v, ...rt } = returnTool();
             for (const grp of groupList) addTool(grp, { ...rt });
         }
     } catch (e) { warn("could not add toolbar button", e); }
 });
-// Refresh the controls when the scene changes so the Return tool appears/disappears.
-Hooks.on("canvasReady", () => { try { ui.controls?.render?.(true); } catch { /* noop */ } });
+// Refresh the controls when the scene changes so the Return tool appears/disappears — and REMEMBER the overworld:
+// any scene that isn't a staged encounter (no originScene flag) becomes the Return target, so the button works even
+// after manual navigation, not just off scenes EncounterStage staged. GM-only write; never overwrites with a sub-scene.
+Hooks.on("canvasReady", () => {
+    try {
+        const sc = canvas?.scene;
+        if (game.user?.isGM && sc && !sc.getFlag?.(MOD, "originScene")) {
+            try { if (game.settings.get(MOD, "lastOverworld") !== sc.id) game.settings.set(MOD, "lastOverworld", sc.id); } catch { /* noop */ }
+        }
+    } catch { /* noop */ }
+    try { ui.controls?.render?.(true); } catch { /* noop */ }
+});

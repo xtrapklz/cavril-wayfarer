@@ -78,12 +78,12 @@
   // none are dead weight. Dead tags removed: grass/plains/pine/dune/ruins/ice/winter/glacier/sea/
   // shipwreck/lake/reef/coast/void → remapped to real tags (meadow/tree/ruin/frozen/snow/shore/…).
   const BIOME_TAGS = {
-    temperate: ["forest", "clearing", "autumn", "green", "garden", "hill", "river", "meadow", "tree"],
+    temperate: ["forest", "clearing", "autumn", "green", "garden", "hill", "meadow", "tree"],
     savanna:   ["drought", "clearing", "farm", "desert", "sand"],
     boreal:    ["forest", "fog", "autumn", "clearing", "frozen", "snow"],
     desert:    ["desert", "sand", "drought", "canyon", "crater", "oasis"],
     wasteland: ["ash", "destruction", "abandoned", "drought", "bones", "corpse", "ruin", "crater", "wasteland"],
-    jungle:    ["jungle", "fungi", "bioluminescent", "coral", "fey", "clearing", "swamp"],
+    jungle:    ["jungle", "fungi", "bioluminescent", "fey", "clearing", "swamp"],
     tainted:   ["infested", "blood", "corpse", "eldritch", "fungi", "infernal", "darkness", "graveyard"],
     tundra:    ["frozen", "snow", "fog", "clearing"],
     frozen:    ["frozen", "snow", "crystal", "aurora", "cavern"],
@@ -146,7 +146,16 @@
     autumn: ["autumn"],
     winter: ["snow", "frozen", "ice"],
   };
-  const WEIGHT = { biome: 3, overlay: 2, social: 2, season: 2, feature: 3, monster: 3 }; // tag-class weights for scoring
+  const WEIGHT = { biome: 3, overlay: 2, social: 2, season: 2, feature: 3, monster: 3, mismatch: 4 }; // tag-class weights for scoring
+  // Tags that betray WATER/COAST this hex doesn't have — SUBTRACTED so a dry, landlocked hex never pulls a river/swamp/
+  // boats map. (The biome match alone used to let "a forest by a river" outscore plain forest.) Strong enough that a
+  // water-DOMINANT map (river + swamp + boats) goes negative and is dropped, while a map that's mostly the right biome
+  // with one incidental water tag survives. Skipped entirely when the hex IS wet (cls.river/coast) or the biome is
+  // aquatic — see mismatchTags(). v0.55.98, the "I'm landlocked, why a swamp?" fix.
+  const WET_MISMATCH = ["river", "lake", "stream", "pond", "water", "ocean", "sea", "beach", "shore", "coast", "coastal",
+    "tidal", "bay", "cove", "harbor", "harbour", "wharf", "pier", "jetty", "dock", "docks", "boat", "boats", "ship",
+    "ships", "canoe", "raft", "sail", "fishing", "swamp", "marsh", "bog", "wetland", "flood", "waterfall", "underwater",
+    "island", "coral", "lighthouse", "shipwreck", "port", "waterside", "riverside", "lakeside", "reef", "lagoon"];
   // What KIND of place suits these foes — creature type → battlemap tags (undead want a crypt, fey a grove, …). Layered
   // ON TOP of the biome so a temperate undead fight prefers a temperate map that ALSO reads ruins/graveyard. v0.55.93.
   const MONSTER_TAGS = {
@@ -390,14 +399,29 @@
   }
 
   // Score an item by its best variant's weighted tag overlap with the candidate set.
-  function scoreItem(item, candTags) {
+  // Score an item by its BEST variant: + candidate-tag weight, − mismatch-tag weight (water a landlocked hex lacks).
+  // A variant that's net-negative (water-dominant when dry) can't lift `best` above 0, so the > 0 filter drops the map —
+  // unless it ALSO has a drier variant (e.g. a "Natural" cut without the river), which then wins and gets staged.
+  function scoreItem(item, candTags, missTags = null) {
     let best = 0;
     for (const v of item.variants) {
       let s = 0;
-      for (const t of v.tags) { const w = candTags.get(t); if (w) s += w; }
+      for (const t of v.tags) {
+        const tl = String(t).toLowerCase();
+        const w = candTags.get(tl); if (w) s += w;
+        if (missTags) { const m = missTags.get(tl); if (m) s -= m; }
+      }
       if (s > best) best = s;
     }
     return best;
+  }
+  // Tags to SUBTRACT for this hex: water/coast it doesn't have. Empty (no penalty) when the hex is genuinely wet or the
+  // biome is aquatic — so river hexes, coasts and the water biome still match their boats and docks. See WET_MISMATCH.
+  function mismatchTags(cls) {
+    const out = new Map();
+    if (cls?.river || cls?.coast || effectiveBiome(cls) === "water") return out;
+    for (const t of WET_MISMATCH) out.set(t, WEIGHT.mismatch);
+    return out;
   }
 
   // Pick the best variant within an item for the current day/night + weather. When `natural` is set
@@ -439,6 +463,7 @@
     const dataKey = type === "social" ? "scenes" : "maps";
     const cat = await getCatalog();
     const candTags = candidateTags(cls, { type, season: ctx.season, foes: ctx.foes });
+    const missTags = mismatchTags(cls);   // water/coast this hex lacks → subtracted, so a landlocked hex never lands on a river/swamp/boats map
     const genericBias = (CFG.preferGenericMaps ?? true) && type !== "social";   // social WANTS built places
     const vctx = { ...ctx, natural: genericBias && (CFG.naturalizeMaps ?? true) };   // combat → naturalized variant
     // Curated index: when built, restrict combat picks to THIS biome's stored generic pool (your reviewed
@@ -451,7 +476,7 @@
     const scoreCat = (restrict) => cat.items
       .filter(it => it.dataKey === dataKey && it.genre === "fantasy" && (!restrict || restrict.has(it.id)))
       .map(it => {
-        const base = scoreItem(it, candTags);
+        const base = scoreItem(it, candTags, missTags);
         let score = base;
         // On the combat path: BOOST open wilderness maps and SINK "specific location" maps
         // (villages/ruins/temples) — so random encounters land on generic terrain. Specific maps
@@ -2922,6 +2947,41 @@
       }
       console.table(rows);
       log(`catalog has ${cat.allTags.size} tags. Missing tags above are candidates to remap.`);
+      return rows;
+    },
+    // Full catalog audit → a downloaded JSON of EVERY map/scene with its name, all variant tags, and how the scorer reads
+    // it (wilderness / structure / water / which biome pools it lands in). The cross-reference of names↔tags you asked
+    // for — share the file back and I'll curate the per-biome pools. CavrilEncounterStage.dumpCatalog().
+    async dumpCatalog({ download = true } = {}) {
+      const cat = await getCatalog();
+      const rows = (cat.items || []).map(it => {
+        const tags = Array.from(new Set((it.variants || []).flatMap(v => (v.tags || []).map(t => String(t).toLowerCase())))).sort();
+        const biomes = Object.keys(BIOME_TAGS).filter(b => scoreItem(it, candidateTags({ biome: b }, { type: it.dataKey === "scenes" ? "social" : "combat" })) > 0);
+        return { id: it.id, name: it.name, kind: it.dataKey, genre: it.genre, wilderness: isWilderness(it), structure: hasStructure(it), water: tags.some(t => WET_MISMATCH.includes(t)), biomes, variants: (it.variants || []).map(v => v.name), tags };
+      }).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      const out = { world: game.world?.id, count: rows.length, items: rows };
+      if (download) { try { (foundry.utils?.saveDataToFile || globalThis.saveDataToFile)(JSON.stringify(out, null, 2), "application/json", `cavril-catalog-${rows.length}.json`); } catch (e) { warn("dumpCatalog: download failed — the object is still returned", e); } }
+      console.log(`%c[EncounterStage] catalog dumped: ${rows.length} items (downloaded as JSON — share it back to curate matches)`, CSS);
+      console.table(rows.map(r => ({ name: r.name, kind: r.kind, biomes: r.biomes.join("/"), water: r.water, struct: r.structure, tags: r.tags.slice(0, 10).join(",") })));
+      return out;
+    },
+    // Verify the picker for a SCENARIO without staging anything: the top maps it would consider for a biome + features.
+    // Water maps should be ABSENT when dry. CavrilEncounterStage.previewMatch("temperate", { river:false, coast:false }).
+    async previewMatch(biome = "temperate", { river = false, coast = false, type = "combat", n = 20 } = {}) {
+      const cls = { biome, river, coast };
+      const cat = await getCatalog();
+      const dataKey = type === "social" ? "scenes" : "maps";
+      const candTags = candidateTags(cls, { type });
+      const missTags = mismatchTags(cls);
+      const rows = (cat.items || []).filter(it => it.dataKey === dataKey && it.genre === "fantasy").map(it => {
+        const base = scoreItem(it, candTags, missTags);
+        let score = base;
+        if (type !== "social") { if (isWilderness(it)) score += (CFG.wildernessBoost ?? 4); if (hasStructure(it)) score = Math.max(0.5, score - (CFG.structurePenalty ?? 10)); }
+        return { name: it.name, base, score: Math.round(score * 10) / 10, water: (it.variants || []).some(v => (v.tags || []).some(t => WET_MISMATCH.includes(String(t).toLowerCase()))), wild: isWilderness(it), struct: hasStructure(it) };
+      }).filter(x => x.base > 0).sort((a, b) => b.score - a.score).slice(0, n);
+      const wet = rows.filter(r => r.water).length;
+      console.log(`%c[EncounterStage] top ${rows.length} ${type} maps · ${biome}${river ? " +river" : ""}${coast ? " +coast" : ""} — ${wet} water map(s) in list (want 0 when dry)`, CSS);
+      console.table(rows);
       return rows;
     },
     uninstall() { Hooks.off("cavril-wayfarer.encounter", hookIds.encounter); Hooks.off("createCombat", hookIds.combat); Hooks.off("canvasReady", hookIds.canvas); Hooks.off("combatStart", hookIds.cStart); Hooks.off("updateCombatant", hookIds.combatant); Hooks.off("deleteCombat", hookIds.cEnd); Hooks.off("updateCombat", hookIds.advTurn); Hooks.off("preCreateScene", hookIds.preScene); Hooks.off("updateCombat", hookIds.tgtTurn); Hooks.off("updateToken", hookIds.tgtMove); Hooks.off("controlToken", hookIds.tgtCtrl); Hooks.off("targetToken", hookIds.tgtTgt); Hooks.off("canvasReady", hookIds.tgtCanvas); Hooks.off("deleteCombat", hookIds.tgtEnd); _returnBtn?.remove(); _returnBtn = null; try { CavrilAdvance.destroy(); } catch (e) {} try { TargetHelper.destroy(); } catch (e) {} delete globalThis.CavrilAdvance; delete globalThis.CavrilTargeting; delete globalThis.CavrilEncounterStage; log("uninstalled"); },
