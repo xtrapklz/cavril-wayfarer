@@ -495,7 +495,7 @@ const Store = (() => {
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "biomeForageJSON", { name: "Forage difficulty by biome (advanced)", hint: 'Optional JSON of per-biome forage DCs, e.g. {"desert":{"food":18,"water":20},"jungle":{"food":10,"water":11}}. Lower = easier to find. Blank uses the defaults (temperate easy, desert brutal; rivers/coast make water easy, forest eases food).', scope: "world", config: true, type: String, default: "" });
-        g.register(MOD, "gatherIngredients", { name: "Forage gathers crafting ingredients", hint: "On a HIGH forage roll (a crit, or well over the DC) also draw a craftable INGREDIENT from this biome's gather table (your Gatherer / world RollTable) and add it to the Forager's pack. Separate from rations & water — never touches the supply counts. Default on.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "gatherIngredients", { name: "Forage gathers crafting ingredients", hint: "On a HIGH forage roll (a crit, or well over the DC) also draw a craftable INGREDIENT from this biome's gather table and deposit it in the shared party GROUP inventory (or the Forager's own pack if there's no group actor). Separate from rations & water — never touches the supply counts. Default on.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "biomeGatherJSON", { name: "Biome → gather table (advanced)", hint: 'Optional JSON to remap a biome to a specific RollTable name or id, e.g. {"jungle":"Gathering: Swamp"}. Blank uses the built-in map to Potion-Crafting-&-Gathering\'s "Gathering: <Environment>" tables (searched in world AND compendiums): temperate→Grasslands, boreal/jungle→Forests, savanna→Savannahs, swamp→Swamp, desert→Desert, tundra/frozen→Arctic, volcanic→Volcanos, wasteland/tainted→Blightshore, void→Underground, water & coast→Coast, high elevation→Mountains.', scope: "world", config: true, type: String, default: "" });
         // Cavril: Maestro biome → environment soundscape.
         g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
@@ -2187,6 +2187,9 @@ async function cwfForageGather(actorId, gov, { crit = false } = {}) {
     const table = await cwfFindGatherTable(gov);
     if (!table) return "";
     const actor = game.actors.get(actorId);
+    const group = Party.groupActor();
+    const holder = group || actor;   // crafting mats POOL in the shared party group inventory (separate from per-character food/water); fall back to the forager's pack if there's no group actor
+    if (!holder) return "";
     const found = [];
     for (let i = 0; i < (crit ? 2 : 1); i++) {   // a crit forage turns up more
         // roll() doesn't persist a "drawn" flag — safe on a read-only compendium table (draw() would try to write the pack)
@@ -2196,13 +2199,13 @@ async function cwfForageGather(actorId, gov, { crit = false } = {}) {
                 let doc = null;
                 const cand = [r.documentUuid, (r.documentCollection && r.documentId) ? `${r.documentCollection}.${r.documentId}` : null, (r.documentCollection && r.documentId) ? `Compendium.${r.documentCollection}.${r.documentId}` : null].filter(Boolean);
                 for (const u of cand) { try { doc = await fromUuid(u); if (doc) break; } catch (e) { /* try next uuid form */ } }
-                if (doc && doc.documentName === "Item" && actor) { await actor.createEmbeddedDocuments("Item", [doc.toObject()]); found.push(doc.name); }
+                if (doc && doc.documentName === "Item") { await holder.createEmbeddedDocuments("Item", [doc.toObject()]); found.push(doc.name); }
                 else { const txt = r.text || doc?.name; if (txt) found.push(txt); }
             } catch (e) { warn("gather award failed", e); }
         }
     }
     if (!found.length) return "";
-    return `gathered <b>${found.map(cwfEsc).join("</b>, <b>")}</b>${actor ? ` → ${cwfEsc(actor.name)}'s pack` : ""}`;
+    return `gathered <b>${found.map(cwfEsc).join("</b>, <b>")}</b> → ${cwfEsc(holder.name)}${group ? " (shared)" : "'s pack"}`;
 }
 async function cwfForageMedicinal() {
     if (!game.user.isGM) return "";
