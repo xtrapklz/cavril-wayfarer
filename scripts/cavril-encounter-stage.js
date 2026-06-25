@@ -1602,6 +1602,22 @@
       t2: { pool: ["Reef Shark", "Hunter Shark"], lurker: ["Giant Octopus", "Water Elemental"], apex: ["Giant Shark", "Water Elemental"] },
       t3: { pool: ["Hunter Shark", "Water Elemental"], lurker: ["Water Elemental"], apex: ["Giant Shark", "Killer Whale"] },
       t4: { pool: ["Water Elemental"], lurker: ["Water Elemental"], apex: ["Kraken", "Giant Shark"] }
+    },
+    // UPLAND / peaks / cliffs (elevation:high) — fliers, climbers, and things that nest in the heights. Layered OVER the
+    // biome so a highland temperate ridge fields eagles + a manticore where a lowland one wouldn't. Makes altitude bite.
+    high: {
+      t1: { pool: ["Giant Eagle", "Harpy", "Swarm of Bats", "Giant Goat", "Stirge"], lurker: ["Harpy", "Gargoyle"], apex: ["Griffon", "Manticore"] },
+      t2: { pool: ["Griffon", "Hippogriff", "Harpy", "Peryton"], lurker: ["Manticore", "Gargoyle"], apex: ["Wyvern", "Chimera"] },
+      t3: { pool: ["Wyvern", "Peryton", "Manticore"], lurker: ["Wyvern", "Chimera"], apex: ["Roc", "Young Red Dragon", "Chimera"] },
+      t4: { pool: ["Wyvern", "Chimera"], lurker: ["Roc"], apex: ["Roc", "Adult Red Dragon"] }
+    },
+    // THICK forest / jungle undergrowth (vegetation:high) — ambushers, plant horrors, and big beasts that wait in cover.
+    // A dense hex adds spiders + blights + a treant where open terrain wouldn't, so a forested hex feels like one.
+    dense: {
+      t1: { pool: ["Giant Spider", "Swarm of Insects", "Boar", "Wolf", "Twig Blight", "Giant Wasp"], lurker: ["Giant Spider", "Ankheg"], apex: ["Giant Boar", "Awakened Tree"] },
+      t2: { pool: ["Giant Spider", "Dire Wolf", "Giant Boar", "Needle Blight", "Ankheg"], lurker: ["Phase Spider", "Green Hag"], apex: ["Awakened Tree", "Phase Spider"] },
+      t3: { pool: ["Phase Spider", "Giant Boar", "Ankheg"], lurker: ["Phase Spider", "Green Hag"], apex: ["Treant", "Phase Spider"] },
+      t4: { pool: ["Phase Spider", "Ankheg"], lurker: ["Treant"], apex: ["Treant"] }
     }
   };
   // Encounter COMPOSITIONS — how foes are shaped. `danger` = the scene-danger range this shape
@@ -1625,6 +1641,8 @@
       out[r] = [...(base[r] || []), ...(lore[r] || [])];
       if (feats.water) out[r].push(...((FEATURE_BANDS.water[band] || FEATURE_ROSTER.water)[r] || []));   // features banded too → level-appropriate waylayers/aquatics
       if (feats.road) out[r].push(...((FEATURE_BANDS.road[band] || FEATURE_ROSTER.road)[r] || []));
+      if (feats.high) out[r].push(...((FEATURE_BANDS.high[band] || FEATURE_BANDS.high.t2)[r] || []));    // upland → fliers, climbers, aeries
+      if (feats.dense) out[r].push(...((FEATURE_BANDS.dense[band] || FEATURE_BANDS.dense.t2)[r] || []));  // thick cover → ambushers, plants, big beasts
     }
     return out;
   }
@@ -1660,7 +1678,7 @@
   // reaches the danger-scaled target. Hex features add aquatic/road foes. Returns {chosen,comp} | null.
   function composeEncounter(cls, index, level, size, danger) {
     const biome = effectiveBiome(cls);
-    const feats = { water: !!(cls?.river || cls?.coast), road: !!cls?.infrastructure };
+    const feats = { water: !!(cls?.river || cls?.coast), road: !!cls?.infrastructure, high: cls?.elevation === "high", dense: cls?.vegetation === "high" };
     const roster = mergedRoster(biome, feats, level);   // APL-banded — the roster itself is now level-appropriate
     // Resolve roster names → index entries. The band roster controls level-appropriateness, so we only apply a SOFT CR
     // ceiling (≤ level + 6) to stop a mis-tiered giant from busting a low-level fight; no lower bound — minions are fine.
