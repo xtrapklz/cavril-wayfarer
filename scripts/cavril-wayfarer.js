@@ -1190,6 +1190,14 @@ let cwfBusy = false;
 // Wayfarer move from a manual drag.
 let cwfMoving = false;
 const cwfEsc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
+// Evaluate a d20 formula AND show the Dice So Nice animation (awaited, so the dice land before the result is read). Used by
+// the survival saves — a save the party can see roll, like every other check. DSN is optional, so a failure is swallowed.
+async function cwfRollD20(formula) {
+    const r = new Roll(formula);
+    await r.evaluate();
+    try { if (game.dice3d) await game.dice3d.showForRoll(r, game.user, true); } catch (e) { /* DSN optional */ }
+    return r.total;
+}
 // The writers'-room agents often wrote a descriptive "species" ("Drowned — the Ferryman's other half…", "Human (or what
 // wears her coat)"). Trim it to its leading clause for a tidy card SUB; the full line still shows as a body "Nature" row.
 const cwfShortSpecies = (s) => { const w = String(s || "").split(/\s*[—–(,;:]\s*/)[0].trim(); return w.length > 30 ? w.slice(0, 28).trim() + "…" : w; };
@@ -1964,7 +1972,7 @@ async function cwfForcedMarch(pace) {
         const con = a.system?.abilities?.con || {};
         const bonus = Number.isFinite(con.save) ? con.save : (con.mod ?? 0);
         const f = `1d20 ${bonus >= 0 ? "+" : "-"} ${Math.abs(bonus)}`;
-        let total = 0; try { total = (await new Roll(f).evaluate()).total; } catch { total = Math.ceil(Math.random() * 20) + bonus; }
+        let total = 0; try { total = await cwfRollD20(f); } catch { total = Math.ceil(Math.random() * 20) + bonus; }
         const failed = total < dc;
         let lvl = a.system?.attributes?.exhaustion ?? 0;
         if (failed) { lvl = Math.min(6, lvl + 1); try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { warn("apply exhaustion failed", e); } }
@@ -2072,7 +2080,7 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
             if (waterGot >= need) { /* hydrated */ }
             else if (waterGot > 0) {
                 const conSave = a.system?.abilities?.con?.save ?? a.system?.abilities?.con?.mod ?? 0;
-                let roll; try { roll = (await new Roll(`1d20 + ${conSave}`).evaluate()).total; } catch { roll = 10 + conSave; }
+                let roll; try { roll = await cwfRollD20(`1d20 + ${conSave}`); } catch { roll = 10 + conSave; }
                 if (roll < 15) { survExh = 1; note += `💧 rationing — CON ${roll} vs 15 ✗ `; }
                 else note += `💧 rationing — CON ${roll} vs 15 ✓ `;
             } else { survExh = 1; waterDry = true; note += `💧 no water `; }
@@ -2182,8 +2190,8 @@ async function cwfFindGatherTable(gov) {
 // A HIGH forage also gathers a craftable INGREDIENT from the biome's gather table (Gatherer / a world RollTable) onto the
 // Forager's sheet — toObject() preserves the item's flags so Gatherer & Mastercrafted still recognise it. Wholly separate
 // from rations/water (never touches the supply counts). Returns a note for the result line, or "" if nothing was gathered.
-async function cwfForageGather(actorId, gov, { crit = false } = {}) {
-    if (!game.user.isGM || !game.settings.get(MOD, "gatherIngredients")) return "";
+async function cwfForageGather(actorId, gov, { count = 1 } = {}) {
+    if (!game.user.isGM || !game.settings.get(MOD, "gatherIngredients") || count < 1) return "";
     const table = await cwfFindGatherTable(gov);
     if (!table) return "";
     const actor = game.actors.get(actorId);
@@ -2191,7 +2199,7 @@ async function cwfForageGather(actorId, gov, { crit = false } = {}) {
     const holder = group || actor;   // crafting mats POOL in the shared party group inventory (separate from per-character food/water); fall back to the forager's pack if there's no group actor
     if (!holder) return "";
     const found = [];
-    for (let i = 0; i < (crit ? 2 : 1); i++) {   // a crit forage turns up more
+    for (let i = 0; i < count; i++) {   // one draw per herbal find (margin / 4, doubled on a crit)
         // roll() doesn't persist a "drawn" flag — safe on a read-only compendium table (draw() would try to write the pack)
         let res; try { res = await table.roll(); } catch (e) { try { res = await table.draw({ displayChat: false }); } catch (e2) { warn("gather roll failed", e2); break; } }
         for (const r of (res?.results || [])) {
@@ -4843,7 +4851,10 @@ const Turn = (() => {
                     if (got.water) bits.push(`+${got.water}💧`);
                     v.result += bits.length ? ` <em>— foraged ${bits.join(" / ")} into the party's packs.</em>` : ` <em>— but every pack is already full.</em>`;
                     // A HIGH forage (a crit, or well clear of the DC) also turns up a craftable ingredient from the biome's gather table.
-                    if (crit || v.total >= rdc.dc + 8) { const g = await cwfForageGather(v.actorId, governing, { crit }); if (g) v.result += ` <em>· ${g}</em>`; }
+                    // Herbal finds scale with the MARGIN over the forage DC — one per 4 points clear — and a crit DOUBLES the haul.
+                    let herbs = Math.floor(Math.max(0, v.total - rdc.dc) / 4);
+                    if (crit) herbs = Math.max(1, herbs) * 2;
+                    if (herbs > 0) { const g = await cwfForageGather(v.actorId, governing, { count: herbs }); if (g) v.result += ` <em>· ${g}</em>`; }
                     if (crit) { const eased = await cwfForageMedicinal(); if (eased) v.result += ` <em>${eased}</em>`; }
                 } else if (tier === "critfail") {
                     forageMishap = v.actorId;   // tainted flora or a roused beast → sickness OR a surprise wildlife fight
@@ -5840,7 +5851,7 @@ Hooks.once("ready", () => {
         resetJourney: () => Tables.resetJourney(),
         // Which RollTable (world or compendium) each biome's forage-gather resolves to — mapped env + biomeGatherJSON override.
         gatherTables: async () => { const out = {}; for (const b of ["temperate", "boreal", "jungle", "savanna", "swamp", "desert", "tundra", "frozen", "volcanic", "wasteland", "tainted", "void", "water"]) { const t = await cwfFindGatherTable({ biome: b }); out[b] = `${cwfGatherEnv({ biome: b })} → ${t ? t.name : "(none found)"}`; } return out; },
-        forageGather: (actorId, biome = "temperate", crit = false) => cwfForageGather(actorId, { biome }, { crit }),   // manual test: draws + awards an ingredient
+        forageGather: (actorId, biome = "temperate", count = 1) => cwfForageGather(actorId, { biome }, { count }),   // manual test: draws + awards `count` ingredients
         roleDc: (biome, role = "forage", extra = {}) => cwfRoleDc(role, { biome, dc: 13, ...extra }),
         wanted: (d) => (d == null ? cwfWanted() : cwfWantedAdjust(d)),   // .wanted() reads · .wanted(1)/.wanted(-1) adjusts the Heat/Wanted score
         setWanted: (n) => cwfSetWanted(n),                                // .setWanted(3) sets it directly (0-5)
