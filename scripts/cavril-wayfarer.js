@@ -1709,10 +1709,10 @@ function cwfClockLabel() {
 // Coarse time-of-day phase (for the "every time change gets a cinematic" rule).
 function cwfTimeOfDay() {
     const h = (Math.floor((game.time?.worldTime ?? 0) / 3600) % 24 + 24) % 24;
-    if (h >= 5 && h < 12) return { key: "morning", label: "Morning", icon: "fa-sun", tone: "dawn" };
-    if (h >= 12 && h < 17) return { key: "afternoon", label: "Afternoon", icon: "fa-sun", tone: "weather" };
-    if (h >= 17 && h < 21) return { key: "evening", label: "Evening", icon: "fa-cloud-sun", tone: "dusk" };
-    return { key: "night", label: "Night", icon: "fa-moon", tone: "night" };
+    if (h >= 5 && h < 12) return { key: "morning", label: "Dawn", meal: "Breakfast", icon: "fa-sun-haze", tone: "dawn" };
+    if (h >= 12 && h < 17) return { key: "afternoon", label: "Day", meal: "Midday meal", icon: "fa-sun", tone: "weather" };
+    if (h >= 17 && h < 21) return { key: "evening", label: "Dusk", meal: "Supper", icon: "fa-cloud-sun", tone: "dusk" };
+    return { key: "night", label: "Night", meal: "", icon: "fa-moon", tone: "night" };
 }
 // A travel-log line that links back to its hex — click pings/pans the map there so the
 // GM can retrace the party's steps. Records biome · weather · time at that hex.
@@ -1768,7 +1768,7 @@ function cwfTrekCardHTML() {
     let foot;
     if (t.done) foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-flag-checkered"></i> ${t.halted ? "Halted" : "Arrived"} · ${cwfClockLabel()}</span>${(t.halted && !cwfAutoStage()) ? cwfStageBtn(!t.scoutGood) : ""}<button class="cwf-cardbtn cwf-primary" data-cwf="camp"><i class="fa-solid fa-campground"></i> Make camp</button></div>`;
     else if (t.running) foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-person-walking-arrow-right"></i> Travelling… · ${cwfClockLabel()}</span><button class="cwf-cardbtn cwf-primary" data-cwf="pause"><i class="fa-solid fa-pause"></i> Pause</button></div>`;
-    else foot = `<div class="cwf-cardbtns">${clock}<button class="cwf-cardbtn cwf-primary" data-cwf="auto" title="Travel until something happens (biome / weather / time change or an encounter)"><i class="fa-solid fa-play"></i> Travel</button><button class="cwf-cardbtn" data-cwf="step" title="Advance one hex"><i class="fa-solid fa-shoe-prints"></i> Step</button><button class="cwf-cardbtn" data-cwf="stop" title="Stop here for the day"><i class="fa-solid fa-flag-checkered"></i> Stop</button></div>`;
+    else foot = `<div class="cwf-cardbtns">${clock}<button class="cwf-cardbtn cwf-primary" data-cwf="step" title="Advance one hex (the clock + weather + any beat resolve as you arrive)"><i class="fa-solid fa-shoe-prints"></i> Advance one hex</button><button class="cwf-cardbtn" data-cwf="camp" title="Make camp here for the night"><i class="fa-solid fa-campground"></i> Make camp</button></div>`;
     return cwfCardShell(t.icon, t.title, (t.header || "") + cwfTrekTimeStrip(t) + log + march, { sub: t.sub, footerHTML: foot });
 }
 async function cwfTrekRefresh() {
@@ -1861,7 +1861,7 @@ async function cwfAdvanceHex(auto) {
     cwfFlushLeg();
     if (tok) { try { cwfRefreshVision(); } catch (e) { /* noop */ } }   // the glide already landed in the move above — just sweep the fog before any cinematic curtain
     if (biomeChanged || weatherChanged || todChanged) {
-        await new Promise(res => setTimeout(res, 180));   // let the glide settle on the new hex for a beat before the transition curtain covers it
+        await new Promise(res => setTimeout(res, 2 * (Number(game.settings.get(MOD, "moveAnimMs")) || 900)));   // wait TWICE the move-animation time so the token fully settles on the new hex before the transition cinematic (the time-of-day shift) covers it
         const bits = []; if (biomeChanged) bits.push(biome); if (todChanged) bits.push(tod.label); if (weatherChanged && weatherLabel) bits.push(weatherLabel);
         const icon = todChanged ? tod.icon : weatherChanged ? (Domain.WEATHER[wxAfter]?.icon || "fa-cloud") : (cls?.icon || "fa-mountain-sun");
         Cinematic.broadcast({ icon, title: bits[0] || "The road turns", subtitle: bits.slice(1).join(" · ") || `${biome} · ${t.pace} pace`, tone: todChanged ? tod.tone : "weather" });
