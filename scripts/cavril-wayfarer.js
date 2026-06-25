@@ -4717,11 +4717,17 @@ const Turn = (() => {
         let body = "";
         for (const [k, v] of claimedRoles()) {
             const sk = CONFIG.DND5E?.skills?.[v.skillId]?.label || v.skillId;
-            body += `<div class="cwf-rr">
-                <div class="cwf-rr-top">
-                    <span class="cwf-rr-role"><i class="fa-solid ${ROLE_ICON[k]}"></i> ${ROLE_LABEL[k]}</span>
-                    <span class="cwf-rr-sub"><span class="cwf-rr-who">${v.actorName || "—"}</span>${v.helpedBy ? ` <span class="cwf-rr-help" title="A helper's higher roll of the same skill stepped in">↗ ${v.helpedBy}</span>` : ""} · <span class="cwf-rr-sk">${sk}</span></span>
-                    <span class="cwf-tier-badge cwf-tier-${v.outcome}">${v.total} · ${TIER_LABEL[v.outcome]}</span>
+            body += `<div class="cwf-rr cwf-rr-${v.outcome}">
+                <div class="cwf-rr-head">
+                    <span class="cwf-rr-icon"><i class="fa-solid ${ROLE_ICON[k]}"></i></span>
+                    <span class="cwf-rr-id">
+                        <span class="cwf-rr-role">${ROLE_LABEL[k]}</span>
+                        <span class="cwf-rr-sub"><span class="cwf-rr-who">${v.actorName || "—"}</span>${v.helpedBy ? ` <span class="cwf-rr-help" title="A helper's higher roll of the same skill stepped in">↗ ${v.helpedBy}</span>` : ""} · <span class="cwf-rr-sk">${sk}</span></span>
+                    </span>
+                    <span class="cwf-rr-out">
+                        <span class="cwf-rr-roll"><span class="cwf-rr-total">${v.total}</span><span class="cwf-rr-dc">vs ${dc}</span></span>
+                        <span class="cwf-tier-badge cwf-tier-${v.outcome}">${TIER_LABEL[v.outcome]}</span>
+                    </span>
                 </div>
                 <div class="cwf-rr-b">${v.result}</div>
             </div>`;
