@@ -1508,7 +1508,7 @@ async function cwfTravelHealthCheck({ toLines = null, applyExhaustion = false } 
 const cwfPaceMod = (pace) => ((Domain.PACE?.[pace]?.spaces ?? 2) - 2);   // slow −1 · normal 0 · fast +1
 // Auto-stage encounters in the background the moment they fire (so the map preloads while you narrate), then one
 // "Roll for initiative / Ambush" button drops you in. OFF = the manual "Build encounter" button + lead-in cinematic.
-const cwfAutoStage = () => { try { return !!game.settings.get(MOD, "esAutoStage"); } catch { return false; } };
+const cwfAutoStage = () => true;   // ALWAYS pre-stage a combat encounter in the BACKGROUND so the GM exposition card appears while the scene loads — the party is never auto-pulled; you Enter manually (esAutoStage retired)
 // Wanted / Heat (engine v2). `esWanted` = the GM-set notoriety score (0-5): the GM raises it manually for notorious
 // acts; it decays −1 per long rest. cwfHeat folds in the hex — roads EXPOSE (+2), rivers expose (+1), dangerous biomes
 // HIDE you (−biomeMod) — so the optimal fugitive move (flee the road into the deadly wilds) falls out of the math.

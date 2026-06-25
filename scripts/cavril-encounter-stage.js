@@ -2573,7 +2573,7 @@
 
     // 1) Try to stage a CZEPEKU battlemap. If CZEPEKU isn't connected (or nothing matches),
     //    DON'T abort — fall back to the current scene so the SRD foes still get built.
-    const autoEnter = opts.autoEnter ?? CFG.autoEnter ?? false;   // OFF = stage in background, enter manually
+    const autoEnter = false;   // the party is NEVER auto-pulled (the esAutoEnter setting is retired): always stage in the background + enter via the manual button
     // Roll the FOES up front — they depend only on the hex, not the staged map — so the GM gets a "what's coming" prompt to
     // narrate from WHILE the battlemap loads, long before the enter button lights up. Tokens drop later, once the scene exists.
     let actors = [], foeTokens = [];
@@ -2582,7 +2582,7 @@
     if ((opts.dropMonsters ?? CFG.dropMonsters) && type === "combat") { try { actors = await rollMonsters(cls); } catch (e) { warn("roll foes failed", e); } }
     const hook = encounterHook(cls, actors);
     const foeList = actors.map(a => esc(a.name)).join(", ") || "—";
-    if (!autoEnter && actors.length) { try { _stagingMsg = await ChatMessage.create({ content: cwfEnterCard(null, "", "", foeList, hook, !!opts.surprised, true), whisper: gmIds }); ui.notifications?.info(`Encounter incoming — ${actors.length} foe${actors.length === 1 ? "" : "s"}. Read the whispered prompt while the map loads.`); } catch (e) {} }
+    if (!autoEnter && actors.length) { try { _stagingMsg = await ChatMessage.create({ content: cwfEnterCard(null, "", "", foeList, hook, !!opts.surprised, true), whisper: gmIds }); ui.notifications?.info(`Encounter incoming — ${actors.length} foe${actors.length === 1 ? "" : "s"}. Read the whispered prompt while the map loads.`); } catch (e) {} shiftTension(); }   // music slides tense AS the scene loads — the players' only cue; the initiative cinematic waits for the manual Enter
     let scene = null, pick = null, onFallback = false;
     if (opts.map ?? true) {
       try {
@@ -2672,10 +2672,18 @@
 
   // The dramatic reveal as you move into the fight: tension music + alert SFX + the Ambush
   // cinematic, then a beat later the "Roll for Initiative!" cinematic (its own tone/SFX).
+  // PRE-STAGE cue: the players' SOLE signal is the music sliding to its tense variant — no cinematic, no card. The GM reads
+  // the whispered exposition card while the scene loads; the table just feels the air change. v0.55.123.
+  function shiftTension() {
+    if (!(CFG.tensionOnStage ?? true)) return;
+    try { globalThis.Maestro?.tension?.(); } catch (e) { warn("tension shift failed", e); }
+  }
+  // On manual ENTER: reaffirm tension, fire the alert SFX, and play the Roll-for-Initiative (or Ambush) cinematic OVER the
+  // scene transition — the one moment the whole table sees the cut to the fight.
   function revealEncounter(biomeLabel, surprised = false) {
     if (!(CFG.tensionOnStage ?? true)) return;
     const Cine = globalThis.CavrilWayfarer?.Cinematic;
-    try { globalThis.Maestro?.tension?.(); } catch (e) { warn("tension shift failed", e); }
+    shiftTension();
     const sfx = cwfRef(game.settings.get(MOD, "esEncounterSfx"));
     if (sfx) { try { globalThis.Maestro?.triggerRef?.(sfx); } catch (e) { warn("encounter sfx failed", e); } }
     // Only call it an AMBUSH when the party was actually surprised (Scout failed / no watch). Otherwise go straight to
