@@ -469,18 +469,42 @@ const Store = (() => {
         // between a transition resolving and the next one. "A couple of seconds."
         g.register(MOD, "universalDelay", { name: "Cinematic hold (seconds)", hint: "How long phase cinematics stay up, and the pause the module sits in a beat before moving on. Higher = more time to read/narrate. Default 2.5.", scope: "world", config: true, type: Number, default: 2.5, range: { min: 0.5, max: 8, step: 0.5 } });
         g.register(MOD, "dangerCinematic", { name: "Pulse on danger change", hint: "When region danger rises or falls, flash a wordless colour pulse + tone to the whole table — they feel the shift without ever seeing the level.", scope: "world", config: true, type: Boolean, default: true });
-        g.register(MOD, "sfxDangerUp", { name: "Danger-rising cue (Maestro)", hint: "Optional Cavril: Maestro cue for when danger RISES — a reference like sfx:path/to/sound.ogg, music:<id>, preset:<tag>, or a pasted @Maestro[…] link. Maestro plays it to the whole table. Blank = a built-in low rising tone.", scope: "world", config: true, type: String, default: "" });
-        g.register(MOD, "sfxDangerDown", { name: "Danger-easing cue (Maestro)", hint: "Optional Cavril: Maestro cue for when danger FALLS (same reference format as above). Blank = a built-in low falling tone.", scope: "world", config: true, type: String, default: "" });
+        try {
+            const FA = foundry.appv1?.api?.FormApplication ?? globalThis.FormApplication;
+            if (FA && g.registerMenu) {
+                const SoundsApp = class extends FA {
+                    static get defaultOptions() { return foundry.utils.mergeObject(super.defaultOptions, { id: "cavril-sounds-config", title: "🎵 Cavril Sounds", width: 600, height: "auto", closeOnSubmit: true }); }
+                    async _renderInner() {
+                        const cues = cwfSoundCues();
+                        const optsFor = (cur) => `<option value="">— none —</option>` + cues.map(c => `<option value="${cwfEsc(c.ref)}"${c.ref === cur ? " selected" : ""}>[${cwfEsc(c.kind)}] ${cwfEsc(c.label)}</option>`).join("") + (cur && !cues.some(c => c.ref === cur) ? `<option value="${cwfEsc(cur)}" selected>(current) ${cwfEsc(cur)}</option>` : "");
+                        const rows = CWF_SOUND_SETTINGS.map(s => `<div class="form-group" style="align-items:center"><label style="flex:0 0 150px">${s.label}</label><select name="${s.key}" style="flex:1.2">${optsFor(game.settings.get(MOD, s.key) || "")}</select><input type="text" name="${s.key}__raw" placeholder="or paste a ref / @Maestro[…]" style="flex:1;margin:0 6px" value=""><button type="button" class="cwf-snd-test" data-key="${s.key}" title="Preview"><i class="fa-solid fa-play"></i></button></div>`).join("");
+                        const note = cues.length ? `Pick from your <b>${cues.length}</b> Cavril: Maestro favourites / named cues, or paste a raw ref (<code>preset:storm</code>, <code>sfx:thunder</code>, <code>amb:forest</code>).` : `Favourite or name cues in Cavril: Maestro to list them here, or paste a ref (e.g. <code>preset:storm</code>).`;
+                        return $(`<form autocomplete="off"><p class="notes" style="margin:.2em 0 .7em">${note}</p>${rows}<footer style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px"><button type="submit"><i class="fa-solid fa-floppy-disk"></i> Save cues</button></footer></form>`);
+                    }
+                    activateListeners(html) {
+                        super.activateListeners(html);
+                        html.on("click", ".cwf-snd-test", (e) => { e.preventDefault(); const k = e.currentTarget.dataset.key; const raw = String(html.find(`input[name="${k}__raw"]`).val() || "").trim(); const sel = String(html.find(`select[name="${k}"]`).val() || "").trim(); const ref = (raw || sel).replace(/^@Maestro\[(.+)\]$/i, "$1"); if (!ref) return ui.notifications?.info("No cue set in that slot."); try { (game.modules.get("cavril-maestro")?.api || globalThis.Maestro)?.triggerRef?.(ref); } catch (er) { warn("preview failed", er); } });
+                    }
+                    async _updateObject(event, formData) {
+                        for (const s of CWF_SOUND_SETTINGS) { const raw = String(formData[`${s.key}__raw`] || "").trim().replace(/^@Maestro\[(.+)\]$/i, "$1"); const val = raw || String(formData[s.key] || "").trim(); try { await game.settings.set(MOD, s.key, val); } catch (e) { warn("sound setting save failed", s.key, e); } }
+                        ui.notifications?.info(`${TITLE}: sound cues saved.`);
+                    }
+                };
+                g.registerMenu(MOD, "cavrilSoundsMenu", { name: "Sound cues", label: "🎵 Pick sound cues…", hint: "Every Wayfarer cinematic, danger, and travel sound in ONE place — pick each from your Cavril: Maestro library (presets · atmospheres · SFX) or paste a ref, and preview it. (The individual sound fields are now folded into this menu.)", icon: "fa-solid fa-music", type: SoundsApp, restricted: true });
+            }
+        } catch (e) { warn("sound menu register failed", e); }
+        g.register(MOD, "sfxDangerUp", { name: "Danger-rising cue (Maestro)", hint: "Optional Cavril: Maestro cue for when danger RISES — a reference like sfx:path/to/sound.ogg, music:<id>, preset:<tag>, or a pasted @Maestro[…] link. Maestro plays it to the whole table. Blank = a built-in low rising tone.", scope: "world", config: false, type: String, default: "" });
+        g.register(MOD, "sfxDangerDown", { name: "Danger-easing cue (Maestro)", hint: "Optional Cavril: Maestro cue for when danger FALLS (same reference format as above). Blank = a built-in low falling tone.", scope: "world", config: false, type: String, default: "" });
         // A sound per cinematic BEAT. A Maestro reference, or a wildcard FOLDER ending in "/"
         // (a random cue plays from it). Blank = silent. The GM triggers it; Maestro plays it to all.
         const cineSfxHint = "Maestro cue or a wildcard folder ending in / (random cue). Blank = silent.";
-        g.register(MOD, "sfxCineEncounter", { name: "Cinematic sound — Encounter / Ambush", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
-        g.register(MOD, "sfxCineInitiative", { name: "Cinematic sound — Roll for Initiative", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
-        g.register(MOD, "sfxCineDusk",      { name: "Cinematic sound — Make Camp (dusk)", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
-        g.register(MOD, "sfxCineNight",     { name: "Cinematic sound — Night Watch", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
-        g.register(MOD, "sfxCineDawn",      { name: "Cinematic sound — Dawn", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
-        g.register(MOD, "sfxCineWeather",   { name: "Cinematic sound — Weather change", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
-        g.register(MOD, "sfxCineTravel",    { name: "Cinematic sound — Biome / road turn", hint: cineSfxHint, scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxCineEncounter", { name: "Cinematic sound — Encounter / Ambush", hint: cineSfxHint, scope: "world", config: false, type: String, default: "" });
+        g.register(MOD, "sfxCineInitiative", { name: "Cinematic sound — Roll for Initiative", hint: cineSfxHint, scope: "world", config: false, type: String, default: "" });
+        g.register(MOD, "sfxCineDusk",      { name: "Cinematic sound — Make Camp (dusk)", hint: cineSfxHint, scope: "world", config: false, type: String, default: "" });
+        g.register(MOD, "sfxCineNight",     { name: "Cinematic sound — Night Watch", hint: cineSfxHint, scope: "world", config: false, type: String, default: "" });
+        g.register(MOD, "sfxCineDawn",      { name: "Cinematic sound — Dawn", hint: cineSfxHint, scope: "world", config: false, type: String, default: "" });
+        g.register(MOD, "sfxCineWeather",   { name: "Cinematic sound — Weather change", hint: cineSfxHint, scope: "world", config: false, type: String, default: "" });
+        g.register(MOD, "sfxCineTravel",    { name: "Cinematic sound — Biome / road turn", hint: cineSfxHint, scope: "world", config: false, type: String, default: "" });
         g.register(MOD, "autoResolveTurn", { name: "Auto-resolve travel turn", hint: "When every claimed role has rolled (in Foundry or from D&D Beyond), resolve the Travel Turn automatically — the players' rolls are the trigger, no Resolve click.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "autoTravelOnResolve", { name: "Auto-travel on resolve", hint: "After a travel turn resolves, automatically glide the party along the route — the token moves and the clock + weather update with their cinematics BEHIND the chat, so you can keep reading. It pauses on its own at anything notable (a biome/weather/time change or an encounter). Off = step hex-by-hex by hand.", scope: "world", config: true, type: Boolean, default: true });
         // Token movement.
@@ -488,9 +512,9 @@ const Store = (() => {
         g.register(MOD, "lockToken", { name: "Lock the party token", hint: "Prevent the party token from being dragged manually — only Wayfarer (travel/encounter moves) can reposition it. GM can still hold it; players are blocked.", scope: "world", config: true, type: Boolean, default: false });
         // Travel SFX — one-shot sound as the token enters each hex, by how it's moving.
         g.register(MOD, "travelSfx", { name: "Travel movement sounds", hint: "Play a one-shot sound (via Maestro) as the party crosses each hex — footsteps, cart, or boat depending on the route. Set the sound paths below.", scope: "world", config: true, type: Boolean, default: false });
-        g.register(MOD, "sfxFoot", { name: "Footsteps sound", hint: "Sound file (or a Maestro soundboard folder ending in /) for travel on foot. Blank = silent.", scope: "world", config: true, type: String, default: "" });
-        g.register(MOD, "sfxCart", { name: "Cart sound", hint: "Sound for a cart on a road (Boat/Cart on + road). Blank = silent.", scope: "world", config: true, type: String, default: "" });
-        g.register(MOD, "sfxBoat", { name: "Boat sound", hint: "Sound for a boat on a river (Boat/Cart on + river). Blank = silent.", scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "sfxFoot", { name: "Footsteps sound", hint: "Sound file (or a Maestro soundboard folder ending in /) for travel on foot. Blank = silent.", scope: "world", config: false, type: String, default: "" });
+        g.register(MOD, "sfxCart", { name: "Cart sound", hint: "Sound for a cart on a road (Boat/Cart on + road). Blank = silent.", scope: "world", config: false, type: String, default: "" });
+        g.register(MOD, "sfxBoat", { name: "Boat sound", hint: "Sound for a boat on a river (Boat/Cart on + river). Blank = silent.", scope: "world", config: false, type: String, default: "" });
         // Movement penalties for rugged terrain (separate from the biome DC).
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
@@ -1193,6 +1217,28 @@ const MiniCal = (() => {
  * ========================================================================= */
 // Universal delay (ms): cinematic hold + the "sit in the beat" pauses. One knob.
 function cwfDelayMs() { const v = Number(game.settings.get(MOD, "universalDelay")); return (Number.isFinite(v) ? v : 2.5) * 1000; }
+
+/* ---- Unified sound-cue picker: every Wayfarer cue in ONE submenu, pickable from the Maestro library ---- */
+const CWF_SOUND_SETTINGS = [
+    { key: "sfxCineEncounter", label: "Encounter / Ambush" }, { key: "sfxCineInitiative", label: "Roll for Initiative" },
+    { key: "sfxCineDusk", label: "Make Camp (dusk)" }, { key: "sfxCineNight", label: "Night Watch" }, { key: "sfxCineDawn", label: "Dawn" },
+    { key: "sfxCineWeather", label: "Weather change" }, { key: "sfxCineTravel", label: "Biome / road turn" },
+    { key: "sfxDangerUp", label: "Danger rising" }, { key: "sfxDangerDown", label: "Danger easing" },
+    { key: "sfxFoot", label: "Footsteps (on foot)" }, { key: "sfxCart", label: "Cart (road)" }, { key: "sfxBoat", label: "Boat (river)" }
+];
+// The Maestro cues we can offer in the dropdown: the GM's favourited + custom-named cues (kind:id → label), e.g. preset:storm.
+function cwfSoundCues() {
+    const out = [], M = "cavril-maestro";
+    try {
+        const fav = game.settings.get(M, "favorites") || {}, names = game.settings.get(M, "customNames") || {};
+        const add = (ref) => { if (!ref || out.some(c => c.ref === ref)) return; const ci = ref.indexOf(":"); out.push({ ref, kind: ci >= 0 ? ref.slice(0, ci) : "cue", label: names[ref] || (ci >= 0 ? ref.slice(ci + 1) : ref) }); };
+        for (const ref of Object.keys(fav)) if (fav[ref]) add(ref);
+        for (const ref of Object.keys(names)) add(ref);
+    } catch (e) { /* Maestro absent */ }
+    out.sort((a, b) => (a.kind + a.label).localeCompare(b.kind + b.label));
+    return out;
+}
+// (The picker app class is defined INLINE in the settings block — FA-resolved via foundry.appv1 so it's safe on V14.)
 
 // While a travel sequence runs we advance the clock per hex; suppress the per-hex
 // weather/panel re-render thrash and refresh ONCE when it ends (covered by a cinematic).
