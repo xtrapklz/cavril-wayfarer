@@ -6338,6 +6338,8 @@ Hooks.on("getSceneControlButtons", (controls) => {
         if (game.user?.isGM) addTool(tokenGrp, { name: "cwf-token-picker", title: `${TITLE} — token picker (CZEPEKU)`, icon: "fa-solid fa-masks-theater", button: true, order: 98, onClick: () => globalThis.CavrilEncounterStage?.openTokenPicker?.("") });
         // Map curation grid — GM-only Lightroom panel to tag/approve maps per biome (also CavrilEncounterStage.openMapGrid()).
         if (game.user?.isGM && globalThis.CavrilEncounterStage?.openMapGrid) addTool(tokenGrp, { name: "cwf-map-grid", title: `${TITLE} — map & scene curation`, icon: "fa-solid fa-images", button: true, order: 97, onClick: () => globalThis.CavrilEncounterStage?.openMapGrid?.() });
+        // Swap THIS scene's battlemap — GM-only; opens the browser in pick mode, replaces the art/walls/lights/tiles, keeps every token (also CavrilEncounterStage.swapMap()).
+        if (game.user?.isGM && globalThis.CavrilEncounterStage?.swapMap) addTool(tokenGrp, { name: "cwf-swap-map", title: `${TITLE} — swap this scene's map (keep tokens)`, icon: "fa-solid fa-right-left", button: true, order: 96, onClick: () => globalThis.CavrilEncounterStage?.swapMap?.() });
         // Return-to-overworld: whenever there's a scene to go back to (this scene's origin, or the last overworld we
         // recorded), put it in EVERY tool group so it's ALWAYS reachable and never vanishes when you switch to walls /
         // lighting / drawings / the Augur set, etc. Hidden only when you're already on the overworld.

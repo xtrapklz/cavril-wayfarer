@@ -286,7 +286,10 @@
 
   // Build a real Scene from a sceneForVariantKey payload (mirrors CzepekuVariantPicker,
   // including the V14 levels-background migration). Returns the created Scene.
-  async function createAuthoredScene(resp, { activate } = {}) {
+  // Resolve a CZEPEKU scene PAYLOAD (sceneData + its downloaded dependencies) into a ready `sd`: background wired to local
+  // files, tiles/lights normalised across core versions, grid forced to our style. Shared by createAuthoredScene (which
+  // Scene.creates it) and swapSceneMap (which applies it onto an EXISTING scene, keeping that scene's tokens).
+  async function buildSceneData(resp) {
     const filePaths = await downloadDependencies(resp.dependencies ?? { file: [], database: [] });
     const sd = foundry.utils.deepClone(resp.sceneData);
     const gMaj = parseInt(game.version.split(".")[0], 10);
@@ -308,9 +311,13 @@
     for (const t of (sd.tiles || [])) { const s = t.flags?.czepeku?.source; if (s && filePaths[s]) { t.texture = t.texture || {}; t.texture.src = filePaths[s]; } }
     // CZEPEKU bakes a coloration technique that reads badly; force "Natural Light" (10) on every light.
     if (CFG.lightColoration != null) for (const l of (sd.lights || [])) { l.config = l.config || {}; l.config.coloration = CFG.lightColoration; }
-    sd.active = false; sd.navigation = false; sd.tokens = [];
     sd.grid = { ...(sd.grid || {}), type: CFG.gridType };                   // force our preferred grid style on the staged map
     if (CFG.hideGrid ?? true) sd.grid.alpha = 0;                            // CZEPEKU art has a baked grid — hide Foundry's overlay
+    return { sd, filePaths, v14, gMaj };
+  }
+  async function createAuthoredScene(resp, { activate } = {}) {
+    const { sd } = await buildSceneData(resp);
+    sd.active = false; sd.navigation = false; sd.tokens = [];
     sd.flags = foundry.utils.mergeObject(sd.flags || {}, { "cavril-wayfarer": { esGenerated: true, esStagedAt: Date.now() } });   // mark as encounter-generated — the cleanup command targets ONLY these
     const scene = await Scene.create(sd);
     if (!scene) throw new Error("Scene.create returned null");
@@ -320,6 +327,66 @@
     if (activate === "create") { /* background — no activate, no view */ }
     else if (activate ?? CFG.activateScene) await scene.activate(); else scene.view?.();
     return scene;
+  }
+
+  // ── SWAP MAP ─────────────────────────────────────────────────────────────
+  // Re-skin an EXISTING scene with a different CZEPEKU battlemap: replace its background + walls + lights + tiles +
+  // sounds with the new map's, but KEEP every token where it stands (re-scaled if the new map's dimensions differ). The
+  // scene's id, journal links, and navigation slot all survive — only the art-and-geometry documents change. v0.55.132.
+  const _variantScore = (v) => { const n = (v?.name || "").toLowerCase(); let s = 0; if (/\b(day|natural|empty|clear)\b/.test(n)) s += 3; if (CFG.excludeVariantWords?.some(w => n.includes(w))) s -= 5; return s; };
+  async function resolveSwapResp(item) {
+    const vs = (item?.variants || []).slice().sort((a, b) => _variantScore(b) - _variantScore(a));   // prefer a clean lit/natural variant
+    for (const v of vs) {
+      for (const k of [v.key, ...((v.animated || []).map(a => a.key))].filter(Boolean)) {
+        try { const resp = await scenePayload(k); if (resp?.sceneData) return { resp, variant: v, variantKey: k }; } catch (e) { /* try the next variant */ }
+      }
+    }
+    return null;
+  }
+  async function swapSceneMap(scene, item) {
+    if (!scene) { ui.notifications?.warn("Cavril: no scene to swap."); return null; }
+    if (!item?.variants?.length) { ui.notifications?.warn("Cavril: that map has no importable variants."); return null; }
+    ui.notifications?.info(`Cavril: fetching "${item.name}"…`);
+    const found = await resolveSwapResp(item);
+    if (!found) { ui.notifications?.warn(`Cavril: couldn't fetch an authored scene for "${item.name}".`); return null; }
+    const { sd } = await buildSceneData(found.resp);
+    const oldW = scene.width || sd.width, oldH = scene.height || sd.height;
+    // 1 · strip the OLD map's geometry/art docs — but NEVER the tokens
+    for (const cls of ["Drawing", "Note", "AmbientSound", "Tile", "AmbientLight", "Wall", "Region"]) {
+      try { const ids = (scene.getEmbeddedCollection(cls) || []).map(d => d.id); if (ids.length) await scene.deleteEmbeddedDocuments(cls, ids); } catch (e) { /* that collection may not exist on this core */ }
+    }
+    // 2 · re-point the scene's own fields (background, dimensions, grid, padding, initial view)
+    const upd = { width: sd.width, height: sd.height };
+    if (sd.padding != null) upd.padding = sd.padding;
+    if (sd.grid) upd.grid = sd.grid;
+    if (sd.initial !== undefined) upd.initial = sd.initial;
+    if (sd.background) upd.background = sd.background;
+    if (sd.levels) upd.levels = sd.levels;
+    upd.flags = foundry.utils.mergeObject(foundry.utils.deepClone(scene.flags || {}), { "cavril-wayfarer": { esGenerated: true, esSwappedAt: Date.now() }, czepeku: sd.flags?.czepeku || {} });
+    await scene.update(upd);
+    // 3 · lay down the NEW map's geometry/art docs
+    for (const [cls, arr] of [["Wall", sd.walls], ["AmbientLight", sd.lights], ["Tile", sd.tiles], ["AmbientSound", sd.sounds], ["Note", sd.notes], ["Drawing", sd.drawings]]) {
+      if (arr?.length) { try { await scene.createEmbeddedDocuments(cls, foundry.utils.deepClone(arr)); } catch (e) { warn(`swap: ${cls} create failed`, e); } }
+    }
+    // 4 · keep every token in the SAME relative spot (re-scaled if the new map's dimensions differ)
+    if (oldW && oldH && (sd.width !== oldW || sd.height !== oldH)) {
+      const sx = sd.width / oldW, sy = sd.height / oldH;
+      try { const tUpd = (scene.tokens || []).map(t => ({ _id: t.id, x: Math.round((t.x ?? 0) * sx), y: Math.round((t.y ?? 0) * sy) })); if (tUpd.length) await scene.updateEmbeddedDocuments("Token", tUpd); } catch (e) { /* noop */ }
+    }
+    try { const th = await scene.createThumbnail(); const td = typeof th === "string" ? th : th?.thumb; if (td) await scene.update({ thumb: td }); } catch (e) {}
+    if (canvas?.scene?.id === scene.id) { try { await scene.view(); } catch (e) {} }   // force a redraw if we're looking at it
+    ui.notifications?.info(`Cavril: swapped "${scene.name}" → ${item.name}${found.variant?.name ? ` · ${found.variant.name}` : ""} (tokens kept).`);
+    return scene;
+  }
+  // Public entry: confirm, then open the map browser in PICK mode for the current (or given) scene, then swap to the pick.
+  async function swapMap(scene = null) {
+    if (!game.user?.isGM) return;
+    const target = scene || canvas?.scene;
+    if (!target) { ui.notifications?.warn("Cavril: open the scene you want to re-skin first."); return; }
+    const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
+    const go = await foundry.applications.api.DialogV2.confirm({ window: { title: "Cavril — Swap Map" }, content: `<p>Pick a new battlemap for <b>${esc(target.name)}</b>.</p><p style="color:#9aa6b2;font-size:12px">Its walls, lights, tiles &amp; background are replaced — <b>every token stays where it is</b> (re-scaled if the new map is a different size).</p>` }).catch(() => false);
+    if (!go) return;
+    await openMapGrid({ onPick: async (id, item) => { try { await swapSceneMap(target, item); } catch (e) { warn("swapMap failed", e); ui.notifications?.error("Cavril: map swap failed — see console (F12)."); } } });
   }
 
   // Fallback: no authored scene → download the raw map image and build a basic,
@@ -713,7 +780,7 @@
   // LIGHTROOM-STYLE CURATION GRID: large map thumbnails grouped by biome. Click a thumb to toggle it IN/OUT of that biome's
   // generic random-encounter pool; right-click to exclude entirely. Persists to esBiomeOverrides (same as the text review
   // panel) so pickMap honours it immediately. CavrilEncounterStage.openMapGrid(). v0.55.72.
-  async function openMapGrid() {
+  async function openMapGrid({ onPick = null } = {}) {
     if (!game.user.isGM) return;
     const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
     let mapRows = biomeIndexRows("maps");
@@ -772,19 +839,19 @@
     const sceneSections = sceneRows ? (sectionsFor(sceneRows) || "<p style='padding:12px;color:#9aa6b2'>No scenes classified.</p>")
       : "<p style='padding:12px;color:#9aa6b2'>No interior scenes indexed yet — click <b>Rebuild index</b> to scan them, then reopen.</p>";
     // NOTE: DialogV2 strips <style> tags out of the `content` string, so we inject the stylesheet as a real DOM node AFTER render.
-    const cmgCss = `.cmg{max-height:74vh;overflow:auto;padding-right:4px}.cmg details{border:1px solid #ffffff1f;border-radius:8px;margin:8px 0;padding:6px 10px;background:#ffffff08}.cmg summary{cursor:pointer;padding:5px 2px;font-size:15px;font-weight:600;letter-spacing:.02em;text-transform:capitalize}.cmg-c{color:#9aa6b2;margin-left:8px;font-size:12px;font-weight:400}.cmg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;padding:10px 2px}.cmg-card{position:relative;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid transparent;background:#0006;opacity:.45;transition:opacity .12s,border-color .12s,transform .08s,box-shadow .12s}.cmg-card:hover{transform:translateY(-2px);box-shadow:0 4px 14px #000a}.cmg-card.on{opacity:1;border-color:#8fd98f}.cmg-card.ex{opacity:.32;border-color:#d65a5a}.cmg-thumb{height:124px;background:repeating-linear-gradient(45deg,#2c2c34,#2c2c34 9px,#24242b 9px,#24242b 18px)}.cmg-img{width:100%;height:100%;object-fit:cover;display:block}.cmg-nm{font-size:11.5px;padding:5px 28px 5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#000b;font-weight:500}.cmg-badge,.cmg-x{position:absolute;top:7px;width:24px;height:24px;border-radius:50%;display:none;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px #000b}.cmg-badge{right:7px;background:#8fd98f;color:#0a0a0a}.cmg-x{left:7px;background:#d65a5a;color:#fff}.cmg-card.on .cmg-badge{display:flex}.cmg-card.ex .cmg-x{display:flex}.cmg-hint{font-size:11px;color:#9aa6b2;padding:2px 2px 8px;line-height:1.5}.cmg-top{position:sticky;top:0;z-index:4;background:#1c1c24;padding:2px 0 6px}.cmg-tabs{display:flex;gap:6px;margin-bottom:4px}.cmg-tab{padding:4px 16px;border-radius:14px;border:1px solid #ffffff24;background:#ffffff10;color:#cdd;cursor:pointer;font-size:13px;font-weight:600}.cmg-tab.on{background:#8fd98f;color:#0a0a0a;border-color:#8fd98f}.cmg-hidden{display:none}.cmg-off{display:none}.cmg-tag{position:absolute;bottom:4px;right:5px;width:22px;height:22px;border-radius:6px;border:none;background:#000a;color:#e9c46a;display:flex;align-items:center;justify-content:center;font-size:10px;cursor:pointer;z-index:3;opacity:.85}.cmg-tag:hover{background:#e9c46a;color:#0a0a0a;opacity:1}.cmg-card.tagged .cmg-tag{background:#e9c46a;color:#0a0a0a;opacity:1}.cmg-ribbon{position:absolute;left:0;right:0;bottom:26px;background:#e9c46aee;color:#1a1208;font-size:10px;font-weight:700;padding:2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none}.cmg-card.tagged .cmg-ribbon{display:block}.cmg-filter{padding:4px 0 8px}.cmg-frow{display:flex;align-items:center;gap:8px;margin-bottom:6px}.cmg-search{flex:1;min-width:120px;background:#0006;border:1px solid #ffffff24;border-radius:8px;color:#dde;padding:5px 10px;font-size:12px}.cmg-count{font-size:11px;color:#9aa6b2;white-space:nowrap}.cmg-fclear{font-size:11px;color:#9aa6b2;background:none;border:none;cursor:pointer;text-decoration:underline}.cmg-chips{display:flex;flex-wrap:wrap;gap:4px;max-height:96px;overflow:auto}.cmg-fchip{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:11px;border:1px solid #ffffff20;background:#ffffff0d;color:#ccd;cursor:pointer;font-size:11px}.cmg-fchip:hover{background:#ffffff1a}.cmg-fchip.on{background:#6aa9e0;color:#08121e;border-color:#6aa9e0;font-weight:700}.cmg-fn{font-size:9.5px;opacity:.65}`;
-    const content = `<div class="cmg">`
+    const cmgCss = `.cmg{max-height:74vh;overflow:auto;padding-right:4px}.cmg details{border:1px solid #ffffff1f;border-radius:8px;margin:8px 0;padding:6px 10px;background:#ffffff08}.cmg summary{cursor:pointer;padding:5px 2px;font-size:15px;font-weight:600;letter-spacing:.02em;text-transform:capitalize}.cmg-c{color:#9aa6b2;margin-left:8px;font-size:12px;font-weight:400}.cmg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;padding:10px 2px}.cmg-card{position:relative;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid transparent;background:#0006;opacity:.45;transition:opacity .12s,border-color .12s,transform .08s,box-shadow .12s}.cmg-card:hover{transform:translateY(-2px);box-shadow:0 4px 14px #000a}.cmg-card.on{opacity:1;border-color:#8fd98f}.cmg-card.ex{opacity:.32;border-color:#d65a5a}.cmg-thumb{height:124px;background:repeating-linear-gradient(45deg,#2c2c34,#2c2c34 9px,#24242b 9px,#24242b 18px)}.cmg-img{width:100%;height:100%;object-fit:cover;display:block}.cmg-nm{font-size:11.5px;padding:5px 28px 5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#000b;font-weight:500}.cmg-badge,.cmg-x{position:absolute;top:7px;width:24px;height:24px;border-radius:50%;display:none;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px #000b}.cmg-badge{right:7px;background:#8fd98f;color:#0a0a0a}.cmg-x{left:7px;background:#d65a5a;color:#fff}.cmg-card.on .cmg-badge{display:flex}.cmg-card.ex .cmg-x{display:flex}.cmg-hint{font-size:11px;color:#9aa6b2;padding:2px 2px 8px;line-height:1.5}.cmg-top{position:sticky;top:0;z-index:4;background:#1c1c24;padding:2px 0 6px}.cmg-tabs{display:flex;gap:6px;margin-bottom:4px}.cmg-tab{padding:4px 16px;border-radius:14px;border:1px solid #ffffff24;background:#ffffff10;color:#cdd;cursor:pointer;font-size:13px;font-weight:600}.cmg-tab.on{background:#8fd98f;color:#0a0a0a;border-color:#8fd98f}.cmg-hidden{display:none}.cmg-off{display:none}.cmg-tag{position:absolute;bottom:4px;right:5px;width:22px;height:22px;border-radius:6px;border:none;background:#000a;color:#e9c46a;display:flex;align-items:center;justify-content:center;font-size:10px;cursor:pointer;z-index:3;opacity:.85}.cmg-tag:hover{background:#e9c46a;color:#0a0a0a;opacity:1}.cmg-card.tagged .cmg-tag{background:#e9c46a;color:#0a0a0a;opacity:1}.cmg-ribbon{position:absolute;left:0;right:0;bottom:26px;background:#e9c46aee;color:#1a1208;font-size:10px;font-weight:700;padding:2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none}.cmg-card.tagged .cmg-ribbon{display:block}.cmg-filter{padding:4px 0 8px}.cmg-frow{display:flex;align-items:center;gap:8px;margin-bottom:6px}.cmg-search{flex:1;min-width:120px;background:#0006;border:1px solid #ffffff24;border-radius:8px;color:#dde;padding:5px 10px;font-size:12px}.cmg-count{font-size:11px;color:#9aa6b2;white-space:nowrap}.cmg-fclear{font-size:11px;color:#9aa6b2;background:none;border:none;cursor:pointer;text-decoration:underline}.cmg-chips{display:flex;flex-wrap:wrap;gap:4px;max-height:96px;overflow:auto}.cmg-fchip{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:11px;border:1px solid #ffffff20;background:#ffffff0d;color:#ccd;cursor:pointer;font-size:11px}.cmg-fchip:hover{background:#ffffff1a}.cmg-fchip.on{background:#6aa9e0;color:#08121e;border-color:#6aa9e0;font-weight:700}.cmg-fn{font-size:9.5px;opacity:.65}.cmg.pick .cmg-card{opacity:.92;cursor:pointer}.cmg.pick .cmg-card:hover{opacity:1;border-color:#6aa9e0;box-shadow:0 4px 16px #000c;transform:translateY(-2px)}.cmg.pick .cmg-badge,.cmg.pick .cmg-x,.cmg.pick .cmg-tag{display:none!important}`;
+    const content = `<div class="cmg${onPick ? " pick" : ""}">`
       + `<div class="cmg-top"><div class="cmg-tabs"><button class="cmg-tab on" data-kind="maps">Maps · ${mapRows.length}</button><button class="cmg-tab" data-kind="scenes">Scenes${sceneRows ? ` · ${sceneRows.length}` : ""}</button></div>`
-      + `<div class="cmg-hint">Click a tile = toggle into the generic random pool · right-click = exclude · <i class="fa-solid fa-tag"></i> = edit tags · click tag chips / type to filter · Save to apply.</div></div>`
+      + `<div class="cmg-hint">${onPick ? "Click a map to <b>swap this scene to it</b> — every token stays where it is. Filter by tag or search to narrow the catalog." : "Click a tile = toggle into the generic random pool · right-click = exclude · <i class=\"fa-solid fa-tag\"></i> = edit tags · click tag chips / type to filter · Save to apply."}</div></div>`
       + `<div class="cmg-kind" data-kind="maps">${filterBar(mapRows)}${mapSections}</div>`
       + `<div class="cmg-kind cmg-hidden" data-kind="scenes">${sceneRows ? filterBar(sceneRows) : ""}${sceneSections}</div>`
       + `</div>`;
     const ov = foundry.utils.deepClone(game.settings.get(MOD, "esBiomeOverrides") || {});
     const setOv = (id, patch) => { const b0 = base[id] || {}; const cur = { biome: b0.biome, generic: b0.generic, exclude: false, ...(ov[id] || {}), ...patch }; const o = {}; if (cur.biome !== b0.biome) o.biome = cur.biome; if (cur.generic !== b0.generic) o.generic = cur.generic; if (cur.exclude) o.exclude = true; if (Object.keys(o).length) ov[id] = o; else delete ov[id]; return cur; };
     const dlg = new foundry.applications.api.DialogV2({
-      window: { title: "Cavril — Map & Scene Curation · biomes · tags · filter", resizable: true },
+      window: { title: onPick ? "Cavril — Pick a Map to Swap In · filter by tag" : "Cavril — Map & Scene Curation · biomes · tags · filter", resizable: true },
       position: { width: 940, height: 760 }, content,
-      buttons: [
+      buttons: onPick ? [{ action: "close", label: "Cancel", icon: "fa-solid fa-xmark" }] : [
         { action: "save", label: "Save", icon: "fa-solid fa-floppy-disk", default: true, callback: () => { try { game.settings.set(MOD, "esBiomeOverrides", ov); game.settings.set(MOD, "esTags", tags); game.settings.set(MOD, "esStoryTags", {}); } catch (e) {} ui.notifications?.info("Cavril: saved — encounters use your map choices + tags immediately."); } },   // clear the legacy single-tag store: it's now fully migrated into esTags (so a removed legacy tag stays removed)
         { action: "rebuild", label: "Rebuild index", icon: "fa-solid fa-arrows-rotate", callback: async () => { await buildBiomeIndex(); ui.notifications?.info("Cavril: rebuilt (maps + scenes) — reopen the grid."); } },
         { action: "dump", label: "Copy for Claude", icon: "fa-solid fa-clipboard", callback: async () => { await dumpCatalog(); } },
@@ -842,6 +909,10 @@
     }
     for (const cardEl of dlg.element.querySelectorAll(".cmg-card")) {
       const id = cardEl.dataset.id;
+      if (onPick) {   // PICK MODE (swap-map): a click chooses this map + closes, instead of toggling the curation pool
+        cardEl.addEventListener("click", () => { try { dlg.close(); } catch (e) {} onPick(id, byId[id]); });
+        continue;
+      }
       cardEl.addEventListener("click", () => { const cur = setOv(id, { generic: !cardEl.classList.contains("on"), exclude: false }); cardEl.classList.toggle("on", !!cur.generic && !cur.exclude); cardEl.classList.remove("ex"); });
       cardEl.addEventListener("contextmenu", (ev) => { ev.preventDefault(); const ex = !cardEl.classList.contains("ex"); setOv(id, { exclude: ex }); cardEl.classList.toggle("ex", ex); if (ex) cardEl.classList.remove("on"); });
     }
@@ -2910,7 +2981,7 @@
     CFG, BIOME_TAGS, ELEV_TAGS, SOCIAL_TAGS, syncCfg,
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, mismatchTags, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS, WET_MISMATCH },
-    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, openMapGrid, mapPreviewProbe, storyMaps, storyTags, stageStoryMap, dumpCatalog, applyCuration, previewMap, czepekuProbe,
+    getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, openMapGrid, swapMap, swapSceneMap, mapPreviewProbe, storyMaps, storyTags, stageStoryMap, dumpCatalog, applyCuration, previewMap, czepekuProbe,
     tokenCatalog, tokenProbe, tokenPacks, tokenSubjects, tokenSample, tokenFor, tokenUrl,   // CZEPEKU NPC art: tokenSubjects() lists the character vocab, tokenFor(keywords) matches a face
     tokenArtFor, saveExternalImage, stageInterior, sceneImage,   // durable art (download → local path) + keyword-matched enterable interior scenes for storefronts
     tokenRank, tokenPick, openTokenPicker, closeTokenPicker,     // CZEPEKU token picker: scored search (tokenRank), best/wildcard single pick (tokenPick), GM dialog (openTokenPicker)
