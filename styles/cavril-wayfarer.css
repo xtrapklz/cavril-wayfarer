@@ -162,6 +162,8 @@
 /* keep every button/chip label inside its own bounds — shrink in flex rows + clip rather than spill over */
 .cwf-btn, .cwf-seg, .cwf-toggle, .cwf-wx, .cwf-cardbtn { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cwf-btn > i, .cwf-seg > i, .cwf-toggle > i, .cwf-wx > i, .cwf-cardbtn > i, .cwf-pill > i, .cwf-route-seg > i { flex: 0 0 auto; }
+/* Chat-CARD buttons size to their LABEL and wrap to the next row rather than truncating the text (a card has room to grow). */
+.cwf-cardbtns > .cwf-cardbtn, .cwf-actions > .cwf-cardbtn { flex: 0 0 auto; overflow: visible; text-overflow: clip; height: auto; min-height: 28px; padding: 4px 11px; white-space: normal; line-height: 1.25; }
 
 /* role cards */
 .cwf-roles { display: flex; flex-direction: column; gap: 5px; }
@@ -518,6 +520,24 @@ button.cwf-cap:hover .cwf-cap-track, button.cwf-cap:hover .cwf-exh-track { box-s
 .cwf-exh-seg.lo { background: var(--cwf-gold); }
 .cwf-exh-seg.hi { background: var(--cwf-hard); }
 .cwf-exh-seg.crit { background: var(--cwf-severe); }
+
+/* Camp survival results — one clean row per character: name · status chips · exhaustion outcome (was a run-on text line) */
+.cwf-sv-list { display: flex; flex-direction: column; gap: 4px; }
+.cwf-sv-row { display: grid; grid-template-columns: minmax(56px, .85fr) 1fr auto; align-items: center; gap: 9px; padding: 5px 9px; border-radius: 8px; border: 1px solid var(--cwf-line); background: rgba(255,255,255,.03); }
+.cwf-sv-row.hit { border-color: color-mix(in srgb, var(--cwf-severe) 50%, transparent); background: color-mix(in srgb, var(--cwf-severe) 8%, transparent); }
+.cwf-sv-name { font-weight: 700; font-size: 12px; color: var(--cwf-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cwf-sv-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.cwf-sv-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 9px; white-space: nowrap; }
+.cwf-sv-chip i { font-size: 9px; }
+.cwf-sv-chip.ok { background: color-mix(in srgb, var(--cwf-easy) 16%, transparent); color: var(--cwf-easy); }
+.cwf-sv-chip.warn { background: color-mix(in srgb, var(--cwf-gold) 16%, transparent); color: var(--cwf-gold); }
+.cwf-sv-chip.bad { background: color-mix(in srgb, var(--cwf-severe) 18%, transparent); color: var(--cwf-severe); }
+.cwf-sv-chip.muted { background: color-mix(in srgb, var(--cwf-line) 55%, transparent); color: var(--cwf-muted); }
+.cwf-sv-exh { font-weight: 800; font-size: 11px; font-variant-numeric: tabular-nums; min-width: 46px; text-align: right; white-space: nowrap; }
+.cwf-sv-exh.up { color: var(--cwf-severe); }
+.cwf-sv-exh.down { color: var(--cwf-easy); }
+.cwf-sv-exh.hold { color: var(--cwf-gold); }
+.cwf-sv-exh.ok { color: var(--cwf-muted); font-weight: 600; }
 
 /* compact +/- stepper (shared stash) */
 .cwf-stepper { display: inline-flex; align-items: center; gap: 5px; }

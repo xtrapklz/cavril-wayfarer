@@ -2081,30 +2081,32 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
         const grace = Math.max(0, graceBase);   // flat reserve days for HUNGER — no CON math
         let lvl = a.system?.attributes?.exhaustion ?? 0;
         const before = lvl;
-        let note = "", survExh = 0, waterDry = false;
+        const chips = [];
+        const chip = (icon, text, tone) => chips.push(`<span class="cwf-sv-chip ${tone}"><i class="fa-solid ${icon}"></i> ${text}</span>`);
+        let survExh = 0, waterDry = false;
         // Provisions deprivation is ONE level of exhaustion (food OR water — it doesn't double); the watch toll stacks on top.
         if (starve) {
             // FOOD — grace-buffered hunger: a skipped meal is fine, a near-empty day (≤⅓) accrues toward starvation.
             let days = Number(a.getFlag?.(MOD, "daysNoFood")) || 0;
             if (fed) days = 0;
-            else { days += 1; if (days > grace) { survExh = 1; note += `🍖 hunger (${days}d) `; } else note += `🍖 lean ${days}/${grace}d `; }
+            else { days += 1; if (days > grace) { survExh = 1; chip("fa-drumstick-bite", `hungry · ${days}d`, "bad"); } else chip("fa-drumstick-bite", `lean · ${days}/${grace}d`, "warn"); }
             try { await a.setFlag?.(MOD, "daysNoFood", days); } catch { /* noop */ }
             // WATER — RAW (PHB): a full day's water is fine; partial (rationing) is a DC 15 CON save or +1; none is automatic.
             if (waterGot >= need) { /* hydrated */ }
             else if (waterGot > 0) {
                 const conSave = a.system?.abilities?.con?.save ?? a.system?.abilities?.con?.mod ?? 0;
                 let roll; try { roll = await cwfRollD20(`1d20 + ${conSave}`); } catch { roll = 10 + conSave; }
-                if (roll < 15) { survExh = 1; note += `💧 rationing — CON ${roll} vs 15 ✗ `; }
-                else note += `💧 rationing — CON ${roll} vs 15 ✓ `;
-            } else { survExh = 1; waterDry = true; note += `💧 no water `; }
+                if (roll < 15) { survExh = 1; chip("fa-bottle-water", `rationing · CON ${roll}✗`, "bad"); }
+                else chip("fa-bottle-water", `rationing · CON ${roll}✓`, "warn");
+            } else { survExh = 1; waterDry = true; chip("fa-bottle-water", "no water", "bad"); }
         }
         const isWatcher = watchSet.has(a.id);
         const watchExh = (isWatcher && watchLevels > 0) ? watchLevels : 0;
-        if (watchExh) note += `🛡 watch (~${shiftH}h) `;
+        if (isWatcher) chip("fa-shield-halved", `watch · ${shiftH}h`, watchExh ? "warn" : "muted");
         // CAP the night's total exhaustion at +2, so one rough night can't spike a character toward death. The dawn rest
-        // gives 1 back (unless they went without — see below), so a struggling party degrades ~1/night, recoverable.
+        // gives 1 back (unless they went without), so a struggling party degrades ~1/night, recoverable.
         const gain = Math.min(2, survExh + watchExh);
-        if (gain) { lvl = Math.min(6, before + gain); note += `· +${gain} exhaustion `; }
+        if (gain) lvl = Math.min(6, before + gain);
         if (lvl !== before) { try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { warn("apply exhaustion failed", e); } }
         // BLOCK the dawn rest's exhaustion recovery for anyone who went hungry or fully dry (a passed/failed ration save
         // still drank SOMETHING — it costs exhaustion-on-fail but doesn't also bar recovery).
@@ -2113,11 +2115,15 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
             if (blocked) await a.setFlag?.(MOD, "blockRest", true);
             else if (a.getFlag?.(MOD, "blockRest")) await a.unsetFlag?.(MOD, "blockRest");
         } catch { /* noop */ }
-        if (blocked) note += `🚱 went without — no rest recovery `;
-        if (note) rows.push(`<div class="cwf-night-h ${(blocked || (isWatcher && watchLevels > 1)) ? "hit" : ""}">${esc(a.name)} · ${note.trim()} · exh ${lvl}</div>`);
+        if (blocked) chip("fa-bed-pulse", "no recovery", "bad");
+        const delta = lvl - before;
+        const exhTxt = delta > 0 ? `<span class="cwf-sv-exh up" title="Exhaustion rose to level ${lvl}">▲ ${lvl}</span>`
+            : delta < 0 ? `<span class="cwf-sv-exh down" title="Exhaustion eased to level ${lvl}">▼ ${lvl}</span>`
+            : `<span class="cwf-sv-exh ${lvl > 0 ? "hold" : "ok"}" title="Exhaustion level ${lvl}">${lvl > 0 ? `lvl ${lvl}` : "rested"}</span>`;
+        rows.push(`<div class="cwf-sv-row ${blocked ? "hit" : ""}"><span class="cwf-sv-name">${esc(a.name)}</span><span class="cwf-sv-chips">${chips.join("") || `<span class="cwf-sv-chip ok"><i class="fa-solid fa-circle-check"></i> fed &amp; watered</span>`}</span>${exhTxt}</div>`);
     }
     // Return the rows so the caller can fold them into the Night Watch card (one card).
-    return { html: rows.length ? `<div class="cwf-night">${rows.join("")}</div>` : "", label: cwfWatchRestLabel(n) };
+    return { html: rows.length ? `<div class="cwf-sv-list">${rows.join("")}</div>` : "", label: cwfWatchRestLabel(n) };
 }
 
 // ---- rest (HP / spell slots / hit dice) — dnd5e does the recovery; Wayfarer keeps
