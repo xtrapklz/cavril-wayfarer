@@ -449,8 +449,9 @@ const Store = (() => {
         // Starvation & thirst → exhaustion, resolved at camp. DETERMINISTIC (no saves): hunger past a flat reserve of
         // days, thirst the moment you go dry. Wayfarer only APPLIES exhaustion; the native dnd5e long rest recovers it.
         g.register(MOD, "starveExhaustion", { name: "Starvation & thirst exhaustion", hint: "Going without food or water at camp exhausts the members who went short, and blocks their long-rest exhaustion recovery. No dice — it just applies.", scope: "world", config: true, type: Boolean, default: true });
-        g.register(MOD, "foodGraceDays", { name: "Food reserve (days before hunger)", hint: "How many consecutive days a member can go unfed before the next dry day adds +1 exhaustion — a flat reserve, no CON math. Water has NO reserve: any night without water is +1 exhaustion immediately. Default 1.", scope: "world", config: true, type: Number, default: 1 });
-        g.register(MOD, "carryBase", { name: "Carry base (rations / water capacity)", hint: "Each character carries up to this many rations AND this many waterskin charges, PLUS their Strength modifier. The party's totals are just the sum of what everyone holds — no shared stockpile. The HUD shows per-character bars filled to this capacity. Default 6 (STR 14 → 8, STR 8 → 5).", scope: "world", config: true, type: Number, default: 6 });
+        g.register(MOD, "mealsPerDay", { name: "Meals & drinks per day", hint: "How many rations AND waterskin charges each character needs per travel day (breakfast / lunch / dinner). At camp the party eats this many of each from their packs. Default 3.", scope: "world", config: true, type: Number, default: 3 });
+        g.register(MOD, "foodGraceDays", { name: "Food reserve (days before hunger)", hint: "How many consecutive HUNGRY days (a character ate ≤⅓ of the day's meals) a member can stack before the next adds +1 exhaustion — a flat reserve, no CON math. Eating ≥⅔ of the day's meals keeps you fed. Default 1.", scope: "world", config: true, type: Number, default: 1 });
+        g.register(MOD, "carryBase", { name: "Carry base (rations / water capacity)", hint: "Each character carries up to this many rations AND this many waterskin charges, PLUS their Strength modifier. The party's totals are just the sum of what everyone holds — no shared stockpile. At 3 meals/day this is ~days of autonomy. Default 9 (STR 14 → 11 ≈ 3½ days, STR 8 → 8).", scope: "world", config: true, type: Number, default: 9 });
         g.register(MOD, "restThresholdHours", { name: "Hours awake before exhaustion", hint: "How long the party can go since its last LONG REST before fatigue sets in. Past this, each travel leg adds +1 exhaustion to everyone until they bed down. The HUD shows the hours-awake clock. Default 24.", scope: "world", config: true, type: Number, default: 24 });
         g.register(MOD, "lastRestTime", { scope: "world", config: false, type: Number, default: 0 });   // worldTime of the party's last long rest — drives the hours-awake clock
         // Watch ↔ rest: a long watch shift BLOCKS that member's long-rest exhaustion
@@ -1004,23 +1005,25 @@ const Party = (() => {
         return { members: rows };
     }
 
-    // Consume 1 ration + 1 waterskin-use per member. Per member the source order is
-    // the shared GROUP stash first, then their own pack — so we know exactly WHO ate
-    // and drank (drives the survival/exhaustion model). Returns aggregate totals plus
-    // a perMember [{ id, name, food, water }] breakdown.
+    // A day's meals: each member eats up to `mealsPerDay` rations and drinks that many waterskin charges from their OWN
+    // pack (no shared pool). Tracks how many each actually got — food "fed" if they ate most of the day (≥⅔), water full
+    // only at the complete count — which drives the survival/dehydration model at camp. Returns aggregate totals +
+    // a perMember [{ id, name, foodGot, waterGot, need, food, water }] breakdown.
     async function consume() {
-        if (!game.user.isGM) return { rations: 0, water: 0, rationsShort: 0, waterShort: 0, perMember: [] };
+        const need = Math.max(1, Number(game.settings.get(MOD, "mealsPerDay")) || 3);
+        if (!game.user.isGM) return { rations: 0, water: 0, need, rationsShort: 0, waterShort: 0, perMember: [] };
         const mem = members();
-        let rations = 0, water = 0, rationsShort = 0, waterShort = 0;
+        const fedThreshold = Math.max(1, Math.ceil(need * 0.6));   // ate ≥⅔ of the day's meals → not hungry (a skipped meal is fine)
+        let rations = 0, water = 0;
         const perMember = [];
         for (const m of mem) {
-            const food = (await take(m, RATION_RE, 1)) > 0;   // each member eats from their OWN pack — no shared pool
-            const wat  = (await take(m, WATER_RE, 1)) > 0;
-            food ? rations++ : rationsShort++;
-            wat ? water++ : waterShort++;
-            perMember.push({ id: m.id, name: m.name, food, water });
+            const foodGot = await take(m, RATION_RE, need);   // up to `need` rations from this member's own pack
+            const waterGot = await take(m, WATER_RE, need);   // up to `need` waterskin charges
+            rations += foodGot; water += waterGot;
+            perMember.push({ id: m.id, name: m.name, foodGot, waterGot, need, food: foodGot >= fedThreshold, water: waterGot >= need });
         }
-        return { rations, water, rationsShort, waterShort, perMember };
+        const want = mem.length * need;
+        return { rations, water, need, rationsShort: Math.max(0, want - rations), waterShort: Math.max(0, want - water), perMember };
     }
     // Add `k` units to an item, USES-aware (the mirror of takeFromItem). A Waterskin tracks supply as
     // limited uses, not quantity — so refill spent uses first (then expand capacity); a Ration tracks
@@ -2049,20 +2052,28 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
     const rows = [];
     for (const a of mem) {
         const pm = byId.get(a.id);
-        const fed = foraged || !!pm?.food, watered = foraged || !!pm?.water;
-        const grace = Math.max(0, graceBase);   // flat reserve days — no CON-mod, no saves: deterministic + simpler
+        const need = pm?.need || Math.max(1, Number(game.settings.get(MOD, "mealsPerDay")) || 3);
+        const waterGot = foraged ? need : (pm?.waterGot ?? 0);
+        const fed = foraged || !!pm?.food;   // ate ≥⅔ of the day's meals
+        const grace = Math.max(0, graceBase);   // flat reserve days for HUNGER — no CON math
         let lvl = a.system?.attributes?.exhaustion ?? 0;
         const before = lvl;
-        let note = "";
-        // EXPOSURE (DETERMINISTIC — no rolls). Going without provisions is ONE level of exhaustion, food OR water (deprivation
-        // is deprivation — it doesn't double). Hunger has a flat `grace`-day reserve; thirst bites the moment you go dry.
-        let survExh = 0;
+        let note = "", survExh = 0, waterDry = false;
+        // Provisions deprivation is ONE level of exhaustion (food OR water — it doesn't double); the watch toll stacks on top.
         if (starve) {
+            // FOOD — grace-buffered hunger: a skipped meal is fine, a near-empty day (≤⅓) accrues toward starvation.
             let days = Number(a.getFlag?.(MOD, "daysNoFood")) || 0;
             if (fed) days = 0;
-            else { days += 1; if (days > grace) { survExh = 1; note += `🍖 hunger (${days}d) `; } else note += `🍖 hungry ${days}/${grace}d `; }
+            else { days += 1; if (days > grace) { survExh = 1; note += `🍖 hunger (${days}d) `; } else note += `🍖 lean ${days}/${grace}d `; }
             try { await a.setFlag?.(MOD, "daysNoFood", days); } catch { /* noop */ }
-            if (!watered) { survExh = 1; note += `💧 no water `; }   // thirst is immediate — your body can't bank water like food
+            // WATER — RAW (PHB): a full day's water is fine; partial (rationing) is a DC 15 CON save or +1; none is automatic.
+            if (waterGot >= need) { /* hydrated */ }
+            else if (waterGot > 0) {
+                const conSave = a.system?.abilities?.con?.save ?? a.system?.abilities?.con?.mod ?? 0;
+                let roll; try { roll = (await new Roll(`1d20 + ${conSave}`).evaluate()).total; } catch { roll = 10 + conSave; }
+                if (roll < 15) { survExh = 1; note += `💧 rationing — CON ${roll} vs 15 ✗ `; }
+                else note += `💧 rationing — CON ${roll} vs 15 ✓ `;
+            } else { survExh = 1; waterDry = true; note += `💧 no water `; }
         }
         const isWatcher = watchSet.has(a.id);
         const watchExh = (isWatcher && watchLevels > 0) ? watchLevels : 0;
@@ -2072,8 +2083,9 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
         const gain = Math.min(2, survExh + watchExh);
         if (gain) { lvl = Math.min(6, before + gain); note += `· +${gain} exhaustion `; }
         if (lvl !== before) { try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { warn("apply exhaustion failed", e); } }
-        // BLOCK the dawn rest's exhaustion recovery for anyone who went without food/water.
-        const blocked = !fed || !watered;
+        // BLOCK the dawn rest's exhaustion recovery for anyone who went hungry or fully dry (a passed/failed ration save
+        // still drank SOMETHING — it costs exhaustion-on-fail but doesn't also bar recovery).
+        const blocked = !fed || waterDry;
         try {
             if (blocked) await a.setFlag?.(MOD, "blockRest", true);
             else if (a.getFlag?.(MOD, "blockRest")) await a.unsetFlag?.(MOD, "blockRest");
@@ -5271,9 +5283,9 @@ const WayfarerPanel = (() => {
         try { globalThis.CavrilAdvance?.clear?.("cwf-travel-on"); } catch (e) { /* bedding down → drop the "travel on" nudge */ }
         if (Turn.active) Turn.end();   // close out a resolved travel turn before bedding down
         const st = Store.sceneState();
-        // Consume 1 ration + 1 waterskin-use per member (group stash first, then one
-        // per individual; waterskins lose a use, not the whole item), then bed down
-        // into the night/watch flow.
+        // Eat the day's meals: up to mealsPerDay rations + that many waterskin charges per member from their own packs
+        // (waterskins lose charges, not the whole item), then bed down into the night/watch flow. A successful forage
+        // covered the whole day, so nothing is consumed.
         let note = "The Forager fed the party — nothing consumed.";
         let consumeResult = null;
         if (!st.foraged) {
@@ -5934,7 +5946,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
         const SECTIONS = [
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "autoTravelOnResolve", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
-            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "foodGraceDays", "carryBase", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
+            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "mealsPerDay", "foodGraceDays", "carryBase", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
             ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeForageJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
