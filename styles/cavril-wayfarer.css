@@ -363,6 +363,35 @@
 .cwf-night-h.cwf-ln-warn i { margin-right: 5px; opacity: .85; }
 .cwf-night-h.hit { color: #fff; border-left-color: var(--cwf-hard, #e0554d); background: color-mix(in srgb, var(--cwf-severe) 52%, transparent); font-weight: 600; }       /* encounters */
 .cwf-night-sec { margin: 7px 0 3px; padding-top: 6px; border-top: 1px solid var(--cwf-line); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--cwf-coral); font-weight: 700; }
+/* ── Night Watch report — verdict banner, stat strip, watch order + glanceable watch timeline ── */
+.cwf-night-verdict { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 10px; margin-bottom: 8px; }
+.cwf-night-verdict i { font-size: 17px; flex: none; }
+.cwf-night-verdict.quiet { background: color-mix(in srgb, var(--cwf-accent) 11%, transparent); border: 1px solid color-mix(in srgb, var(--cwf-accent) 32%, transparent); }
+.cwf-night-verdict.quiet i { color: var(--cwf-accent); }
+.cwf-night-verdict.alert { background: color-mix(in srgb, var(--cwf-severe) 14%, transparent); border: 1px solid var(--cwf-severe); }
+.cwf-night-verdict.alert i { color: var(--cwf-severe); }
+.cwf-nv-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.cwf-nv-main { font-size: 14px; font-weight: 700; color: var(--cwf-text); line-height: 1.2; }
+.cwf-nv-sub { font-size: 10.5px; font-weight: 600; color: var(--cwf-muted); }
+.cwf-night-stats { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.cwf-nstat { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 9px; background: rgba(255,255,255,.04); border: 1px solid var(--cwf-line); color: var(--cwf-text); }
+.cwf-nstat i { font-size: 10px; color: var(--cwf-accent); opacity: .9; }
+.cwf-watch-order { display: flex; flex-wrap: wrap; gap: 5px; margin: 3px 0 2px; }
+.cwf-worder-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 2px 5px 2px 8px; border-radius: 9px; background: color-mix(in srgb, var(--cwf-accent) 9%, transparent); border: 1px solid color-mix(in srgb, var(--cwf-accent) 26%, transparent); color: var(--cwf-text); }
+.cwf-worder-chip i { font-size: 9px; color: var(--cwf-accent); opacity: .85; }
+.cwf-worder-mod { font-size: 10px; font-weight: 700; color: var(--cwf-accent); background: rgba(189,169,232,.16); padding: 0 5px; border-radius: 7px; }
+.cwf-watch-tl { display: flex; flex-wrap: wrap; gap: 5px; margin: 3px 0 2px; }
+.cwf-wblock { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 4px 9px; border-radius: 9px; border: 1px solid var(--cwf-line); background: rgba(255,255,255,.03); min-width: 50px; }
+.cwf-wblock.quiet { opacity: .82; }
+.cwf-wblock.alert { border-color: var(--cwf-severe); background: color-mix(in srgb, var(--cwf-severe) 13%, transparent); }
+.cwf-wblock.heat { border-color: #c9a6ff; background: color-mix(in srgb, #c9a6ff 13%, transparent); }
+.cwf-wb-time { font-size: 8.5px; font-weight: 700; color: var(--cwf-muted); letter-spacing: .02em; }
+.cwf-wb-watcher { font-size: 11px; font-weight: 700; color: var(--cwf-text); max-width: 66px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cwf-wblock.unwatched .cwf-wb-watcher { color: var(--cwf-muted); font-weight: 600; }
+.cwf-wb-state { font-size: 9.5px; line-height: 1; }
+.cwf-wblock.quiet .cwf-wb-state { color: var(--cwf-easy); opacity: .7; }
+.cwf-wblock.alert .cwf-wb-state { color: var(--cwf-severe); }
+.cwf-wblock.heat .cwf-wb-state { color: #c9a6ff; }
 /* player-facing arrival card (public, spoiler-free) */
 .cwf-psum { font-size: 13px; line-height: 1.5; color: #ece9f2; }
 .cwf-psum-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }

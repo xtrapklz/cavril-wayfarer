@@ -1200,18 +1200,22 @@
       if (!url || /^(data:|icons\/|systems\/|modules\/)/.test(url)) return url;   // already local/inlined — leave it
       const clean = String(url).split("?")[0];
       const seg = decodeURIComponent(clean.split("/").pop() || "").replace(/[^a-z0-9._-]+/gi, "-");
-      const ext = (seg.match(/\.(webp|png|jpe?g|gif)$/i)?.[1] || "webp").toLowerCase();
+      const pfx = String(prefix).replace(/[^a-z0-9._-]+/gi, "-");
       const stem = (seg.replace(/\.(webp|png|jpe?g|gif)$/i, "") || "img").slice(0, 48);
       const dir = `${ROOT}/portraits/`;
-      const filename = `${String(prefix).replace(/[^a-z0-9._-]+/gi, "-")}-${stem}.${ext}`;
-      const rel = `${dir}${filename}`;
       try { await FP.createDirectory(SOURCE, dir); } catch (e) {}
-      let exists = false;
-      try { const ex = await FP.browse(SOURCE, dir); exists = ex.files.some(f => decodeURIComponent(f.split("/").pop()) === filename); } catch (e) {}
-      if (exists) return rel;
+      // Reuse a same-stem file in ANY image extension — so we don't re-download and don't strand a wrong-extension copy.
+      try { const ex = await FP.browse(SOURCE, dir); const want = `${pfx}-${stem}.`; const hit = ex.files.find(f => { const n = decodeURIComponent(f.split("/").pop() || ""); return n.startsWith(want) && /\.(webp|png|jpe?g|gif)$/i.test(n); }); if (hit) return hit; } catch (e) {}
       const r = await fetch(url); if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const up = await FP.upload(SOURCE, dir, new File([await r.blob()], filename));
-      return up?.path || rel;
+      const blob = await r.blob();
+      // Extension from the ACTUAL content type, NOT the URL — a portrait URL without a clean .png/.webp suffix was being saved
+      // as ".webp" with (e.g.) PNG bytes, which Foundry's TOKEN renderer then failed to load (the "token won't update" bug). v0.55.131.
+      const mime = (blob.type || "").toLowerCase();
+      const ext = mime.includes("png") ? "png" : (mime.includes("jpeg") || mime.includes("jpg")) ? "jpg" : mime.includes("gif") ? "gif"
+        : mime.includes("webp") ? "webp" : (seg.match(/\.(webp|png|jpe?g|gif)$/i)?.[1]?.toLowerCase() || "webp");
+      const filename = `${pfx}-${stem}.${ext}`;
+      const up = await FP.upload(SOURCE, dir, new File([blob], filename, { type: blob.type || undefined }));
+      return up?.path || `${dir}${filename}`;
     } catch (e) { warn("saveExternalImage failed", e); return url; }   // graceful: fall back to the live URL
   }
 
