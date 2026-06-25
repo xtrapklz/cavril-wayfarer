@@ -4140,6 +4140,29 @@ async function cwfRoadCastActor(m, kind) {
     if (items.length) { try { await actor.createEmbeddedDocuments("Item", items); } catch (e) { warn("road-cast items failed", e); } }
     return actor;
 }
+// A TRACKABLE Campaign Codex quest from this character's hook — given BY them, so it lands on the Quest Board with the NPC
+// as quest-giver and the twist tucked in GM notes. Idempotent by name (a rebuild re-uses the same quest). v0.55.133.
+async function cwfRoadCastQuest(m, npcDoc) {
+    if (!m?.hook || typeof game.campaignCodex?.createQuestJournal !== "function") return null;
+    const qname = `${m.name} — ${m.title || "a road hook"}`;
+    let q = (game.journal || []).find(j => { try { return j.getFlag(CC_NS, "type") === "quest" && j.name === qname; } catch (e) { return false; } });
+    if (q) return q;
+    try { q = await game.campaignCodex.createQuestJournal(qname); } catch (e) { warn("createQuestJournal failed", e); return null; }
+    if (!q) return null;
+    try {
+        const data = q.getFlag(CC_NS, "data") || {};
+        const quest = (Array.isArray(data.quests) && data.quests[0]) ? data.quests[0] : {};
+        quest.title = m.title ? `${m.name}, ${m.title}` : m.name;
+        quest.description = `<p>${cwfEsc(m.hook)}</p>`;
+        quest.questGiverUuid = npcDoc?.uuid || quest.questGiverUuid || "";
+        quest.inactive = true; quest.visible = false; quest.completed = false; quest.failed = false;
+        quest.urgency = m.arc ? "high" : "medium";
+        data.quests = [quest];
+        data.notes = `<p><strong>GM.</strong> ${cwfEsc(m.twist || m.lore || "")}</p>`;
+        await q.setFlag(CC_NS, "data", data);
+    } catch (e) { warn("populate quest failed", e); }
+    return q;
+}
 async function cwfRoadCastJournal(m, kind) {   // find or CREATE + populate this character's Campaign Codex NPC journal
     if (!game.campaignCodex || !game.user?.isGM || !m) return null;
     let doc = (game.journal || []).find(j => { try { return j.getFlag(CC_NS, "type") === "npc" && j.name === m.name; } catch (e) { return false; } });
@@ -4168,7 +4191,9 @@ async function cwfRoadCastJournal(m, kind) {   // find or CREATE + populate this
         + (outc ? `<p><strong>If the party helps / refuses / exploits.</strong> ${esc(outc)}</p>` : "");
     try {
         const data = doc.getFlag(CC_NS, "data") || {};
-        await doc.setFlag(CC_NS, "data", { ...data, description: desc, notes, associates: cwfRoadCastLinks(m, [m.lore, m.hook, m.readAloud, m.appearance].join(" ")) });
+        const quest = await cwfRoadCastQuest(m, doc).catch(() => null);   // hook → a trackable Quest-Board entry, this NPC as giver
+        const tags = Array.from(new Set([cwfShortSpecies(m.species || ""), kind === "merchant" ? "merchant" : "road NPC", ...(m.biomes || []), (String(m.arc || "").match(/Arc [A-Z]/)?.[0])].map(t => String(t || "").trim()).filter(Boolean)));
+        await doc.setFlag(CC_NS, "data", { ...data, description: desc, notes, tags, associates: cwfRoadCastLinks(m, [m.lore, m.hook, m.readAloud, m.appearance].join(" ")), linkedQuests: quest ? [quest.uuid] : (data.linkedQuests || []) });
         const img = (actor?.img && actor.img !== "icons/svg/mystery-man.svg") ? actor.img : cwfRoadCastToken(m); if (img) await doc.setFlag(CC_NS, "image", img);
     } catch (e) { warn("populate road-cast journal failed", e); }
     return doc;
