@@ -424,7 +424,8 @@ const Store = (() => {
         g.register(MOD, "lastOverworld", { scope: "world", config: false, type: String, default: "" });   // the overworld we left for an encounter — the robust Return target
         g.register(MOD, "journeyThreads", { scope: "world", config: false, type: String, default: "{}" });   // JSON {threadId: nextBeatIndex} — journey-storyline progress; CavrilWayfarer.resetJourney() restarts it
         g.register(MOD, "esTrophies", { scope: "world", config: false, type: Array, default: [] });   // combat-trophy keys the party holds (phase c) — gate thread beats via thread.trophies:{index:key}; CavrilWayfarer.grantTrophy(key)
-        g.register(MOD, "merchantCards", { name: "Spawn merchant shop cards", hint: "When a roadside 'trade' travel beat fires, also whisper the GM a generated merchant — a rotating shop with curated stock (priced, scaled to party level) and sometimes a quest hook. Off = just the flavour line. Roll one by hand any time with CavrilWayfarer.merchant().", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "merchantCards", { name: "Whisper traveling-merchant cards", hint: "When a roadside 'trade' travel beat fires, whisper the GM a HAND-CRAFTED traveling merchant — a written character (stock with story, a rumour, and a quest hook that foreshadows an arc), not a procedural shop. Off = just the flavour line. Browse them with CavrilWayfarer.travelingMerchants(); whisper one by name with CavrilWayfarer.merchantCard('name').", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "roadNpcCards", { name: "Whisper road-encounter NPC cards", hint: "On a quiet 'people' travel beat, whisper the GM a hand-crafted road-encounter NPC — a pilgrim, a survivor, or something uncanny, each a scene with a hook that's a choice with a price. Off = just the flavour line. Browse them with CavrilWayfarer.roadNpcs().", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "merchantPortraits", { name: "Merchant portraits (CZEPEKU)", hint: "Give each generated merchant a fitting character portrait pulled from your CZEPEKU token library (matched by trade — a robed alchemist, a hooded fence, a grizzled smith). Needs the CZEPEKU module connected. Off = no portrait.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "merchantTables", { scope: "world", config: false, type: Object, default: {} });   // {merchantTypeKey: RollTable uuid} — per-type SRD stock tables (CavrilWayfarer.buildMerchantTables())
         g.register(MOD, "merchantInteriors", { scope: "world", config: false, type: Object, default: {} });   // {merchantTypeKey: Scene uuid} — per-type CZEPEKU interior staged once + reused as a shop's enterable scene + hero image
@@ -1485,7 +1486,7 @@ async function cwfDiscoveryBeat(cls) {
 async function cwfTableBeat(cls, { road = false } = {}) {
     const biome = cls?.biome || "unknown";
     const kind = cwfWeightedPick({ flavor: 10, people: 3, arc: 3, trade: road ? 2 : 1 });
-    if (kind === "trade") { TravelingMerchants.onTrade(cls); return { halt: false, line: await Tables.drawBiome(biome, "trade", () => Tables.drawEvent("trade", cls)) }; }
+    if (kind === "trade") { const m = await TravelingMerchants.onTrade(cls); if (m) return { halt: false, line: `<i class="fa-solid fa-store"></i> Trade: <b>${cwfEsc(m.name)}</b>${m.title ? ` · ${cwfEsc(m.title)}` : ""} — ${cwfEsc((m.readAloud || "").split(/[.!?]/)[0] || "a trader on the road")}` }; return { halt: false, line: await Tables.drawBiome(biome, "trade", () => Tables.drawEvent("trade", cls)) }; }
     if (kind === "people") { const n = await NarrativeNPCs.onBeat(cls); if (n) return { halt: false, line: `<i class="fa-solid fa-user"></i> On the road: <b>${cwfEsc(n.name)}</b>${n.title ? ` · ${cwfEsc(n.title)}` : ""} — ${cwfEsc(n.situation || (n.readAloud || "").split(/[.!?]/)[0] || "a traveller")}` }; }
     if (kind === "arc") { const beat = await Tables.nextThreadBeat(cls); if (beat) return { halt: false, line: beat }; }
     return { halt: false, line: await Tables.drawBiome(biome, "flavor", () => Tables.drawFlavor(cls)) };
@@ -3735,7 +3736,7 @@ const NarrativeNPCs = (() => {
     }
     async function onBeat(cls) {
         try {
-            if (!game.user.isGM) return null;
+            if (!game.user.isGM || !game.settings.get(MOD, "roadNpcCards")) return null;
             const n = pick(cls); if (!n) return null;
             const gmIds = game.users.filter(u => u.isGM).map(u => u.id);
             await ChatMessage.create({ content: card(n, cls), whisper: gmIds.length ? gmIds : undefined });
@@ -5451,6 +5452,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
             ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "wakeHour", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "foodGraceDays", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
             ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
+            ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
         ];
         const anchor = rowFor("dangerDefault"); if (!anchor?.parentNode) return;   // not the Wayfarer section → bail
