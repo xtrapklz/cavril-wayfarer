@@ -306,10 +306,13 @@ const Domain = (() => {
     }
 
     // ---- Pace --------------------------------------------------------------
+    // `spaces` = the per-day MOVEMENT rate (route budget + danger mod); `hours` = wall-clock cost of ONE plain hex at this
+    // pace, decoupled so Slow can be 8h (1.5 hexes/day) without a fractional space count. A 12h travel day → Normal 2 hexes
+    // (6h), Fast 3 (4h), Slow 1.5 (8h). Roads/rivers ×2 and a vehicle ×3 come off this via stepCost; rugged terrain adds to it.
     const PACE = {
-        slow:   { label: "Slow",   spaces: 1, mod: "advantage",    shortRest: true,  note: "Advantage on all travel checks. May take a Short Rest." },
-        normal: { label: "Normal", spaces: 2, mod: null,           shortRest: false, note: "No modifiers." },
-        fast:   { label: "Fast",   spaces: 3, mod: "disadvantage", shortRest: false, note: "Disadvantage on all travel checks." }
+        slow:   { label: "Slow",   spaces: 1, hours: 8, mod: "advantage",    shortRest: true,  note: "~8h per hex (1.5/day). Advantage on all travel checks. May take a Short Rest." },
+        normal: { label: "Normal", spaces: 2, hours: 6, mod: null,           shortRest: false, note: "~6h per hex (2/day). No modifiers." },
+        fast:   { label: "Fast",   spaces: 3, hours: 4, mod: "disadvantage", shortRest: false, note: "~4h per hex (3/day). Disadvantage on all travel checks." }
     };
     const PACE_ORDER = ["slow", "normal", "fast"];
 
@@ -333,8 +336,8 @@ const Domain = (() => {
     // now comes from Hex.pathCost (boat/cart cheapens only river/road tiles); this
     // flat-rate helper is kept for reference and isn't on the travel path.
     function hoursPerHex(pace, boat) {
-        const spc = (PACE[pace]?.spaces ?? 2) * (boat ? 2 : 1);
-        return spc > 0 ? 12 / spc : 12;
+        const h = PACE[pace]?.hours ?? 6;   // base wall-clock per plain hex (Slow 8 · Normal 6 · Fast 4)
+        return boat ? h / 2 : h;            // a boat halves the displayed estimate; the exact per-hex (×2/×3 on road/river, + rugged terrain) is via stepCost
     }
 
     // ---- Travel roles (reference only — we never auto-roll) -----------------
@@ -1579,7 +1582,7 @@ function cwfPlayerSummaryHTML(t) {
 // BEFORE the next hex. Directly answers "eight hours passed without me realising" and "no way to change my pace".
 function cwfTrekTimeStrip(t) {
     if (!t) return "";
-    const rate = Math.round(Domain.hoursPerHex(t.pace, t.boat));   // ~12 slow · 6 normal · 4 fast (halved by boat/road)
+    const rate = Math.round(Domain.hoursPerHex(t.pace, t.boat));   // ~8 slow · 6 normal · 4 fast (halved by boat/road, + rugged terrain)
     const elapsed = Math.max(0, ((game.time?.worldTime ?? 0) - (t.startWorldTime ?? game.time?.worldTime ?? 0)) / 3600);
     const elapsedTxt = elapsed >= 0.5 ? `${elapsed < 10 ? elapsed.toFixed(1) : Math.round(elapsed)}h this leg` : "just set out";
     const heavy = elapsed >= 8;   // a full working day on the road → flag it amber
@@ -1665,8 +1668,8 @@ async function cwfAdvanceHex(auto) {
         finally { cwfMoving = false; }
     }
     Music.update(cls); MiniCal.syncBiome(cls);   // ambience follows THIS hex's biome
-    const sp = Domain.PACE[t.pace]?.spaces ?? 2;
-    const hexHours = sp > 0 ? (Hex.stepCost(off, cls, { boat: t.boat }, t.prev) / sp) * 12 : 0;
+    const hpH = Domain.PACE[t.pace]?.hours ?? 6;   // plain-hex hours at this pace (Slow 8 · Normal 6 · Fast 4)
+    const hexHours = Hex.stepCost(off, cls, { boat: t.boat }, t.prev) * hpH;   // stepCost folds in road/river (÷2, ÷3 w/ vehicle) + rugged-terrain penalty
     t.lastHexHours = hexHours; t.acc += hexHours;   // remember this hex's cost so the card can show "+Xh" per hex
     t.prev = off;
     const whole = Math.floor(t.acc); if (whole >= 1) { t.acc -= whole; await Store.advanceWorldTime(whole); }
@@ -2606,16 +2609,19 @@ const Hex = (() => {
         if (raw && String(raw).trim()) { try { const p = JSON.parse(raw); if (p && typeof p === "object") return { ...DEFAULT_PENALTY, ...p }; } catch (e) { warn("terrainPenaltyJSON invalid", e); } }
         return DEFAULT_PENALTY;
     }
+    // BIOME pace modifier (on TOP of the elevation penalty): open ground travels faster, dense/broken/frozen ground slower.
+    // Negative = quicker than baseline. Answers "grasslands should modify pace" — savanna is the open-plains fast lane,
+    // jungle/volcanic/frozen drag. Elevation (mountains/hills/wetland) is still handled separately by penaltyMap().
+    const BIOME_PACE = { savanna: -0.2, desert: 0.1, jungle: 0.3, tainted: 0.2, frozen: 0.2, volcanic: 0.2, wasteland: 0.15, tundra: 0.1 };
     function terrainPenalty(cls) {
         if (!cls || !game.settings.get(MOD, "terrainPenalties")) return 0;
         const map = penaltyMap();
+        let pen = 0;
         const e = cls.elevation;
-        if (e && Object.prototype.hasOwnProperty.call(map, e)) return map[e] || 0;
-        const k = cls.terrainKey;
-        if (k === "mountains" || k === "rocky") return map.high ?? 2;
-        if (k === "hills") return map.medium ?? 1;
-        if (k === "swamp") return map.swamp ?? 1;
-        return 0;
+        if (e && Object.prototype.hasOwnProperty.call(map, e)) pen = map[e] || 0;
+        else { const k = cls.terrainKey; if (k === "mountains" || k === "rocky") pen = map.high ?? 2; else if (k === "hills") pen = map.medium ?? 1; else if (k === "swamp") pen = map.swamp ?? 1; }
+        pen += BIOME_PACE[cls.biome] || 0;   // biome openness/density layered on the elevation penalty
+        return Math.max(-0.4, pen);           // floor so a biome bonus can't make a hex nearly free
     }
 
     // River EDGE connectivity (hexlands convention). riverMask is a 6-bit edge code;
@@ -2864,8 +2870,9 @@ const Travel = (() => {
     // cheapens river/road tiles (Hex.stepCost). Short Rest spends 1 space.
     const paceSpaces = () => ({ slow: 1, normal: 2, fast: 3 }[pace] ?? 2);
     const budget = () => Math.max(0, paceSpaces() - (shortRest ? 1 : 0));
-    // A travel turn is a 12h day; time passed = fraction of the day's spaces spent.
-    const travelHours = (path) => { const sp = paceSpaces(); return sp > 0 ? Math.round((Hex.pathCost(path, { boat }) / sp) * 12) : 0; };
+    // Hours a path costs at the current pace: each hex's stepCost (road/river/terrain already folded in) × the pace's
+    // plain-hex hours (Slow 8 · Normal 6 · Fast 4). A full 12h day is ~2 plain hexes at Normal.
+    const travelHours = (path) => Math.round(Hex.pathCost(path, { boat }) * (Domain.PACE[pace]?.hours ?? 6));
 
     function startToken() { return (plotting && plotTok) ? plotTok : Canvasry.activeToken(); }
 
@@ -4581,10 +4588,10 @@ const Turn = (() => {
 
         // Path from the Navigator's result → start the stepped travel card.
         const tok = turnTok || Canvasry.activeToken();
-        const sp = Domain.PACE[pace]?.spaces ?? 2;
+        const hpH = Domain.PACE[pace]?.hours ?? 6;   // plain-hex hours at this pace (Slow 8 · Normal 6 · Fast 4)
         let path = route.slice(), lostHours = 0;
-        if (navEffect === "dead") { path = []; lostHours = (tok && sp > 0) ? Math.round((Hex.pathCost(route, { boat }, Hex.offsetOf(tok.center)) / sp) * 12) : 0; }
-        else if (navEffect === "late") { lostHours = (tok && sp > 0) ? Math.max(2, Math.round((Hex.pathCost(route, { boat }, Hex.offsetOf(tok.center)) / sp) * 12 * 0.4)) : 3; }   // STILL arrive (path stays the route), but the detour costs ~40% extra hours — a soft failure, not a wasted day
+        if (navEffect === "dead") { path = []; lostHours = tok ? Math.round(Hex.pathCost(route, { boat }, Hex.offsetOf(tok.center)) * hpH) : 0; }
+        else if (navEffect === "late") { lostHours = tok ? Math.max(2, Math.round(Hex.pathCost(route, { boat }, Hex.offsetOf(tok.center)) * hpH * 0.4)) : 3; }   // STILL arrive (path stays the route), but the detour costs ~40% extra hours — a soft failure, not a wasted day
         else if (navEffect === "left" || navEffect === "right") {
             const flanks = tok ? Hex.flank(route, Hex.offsetOf(tok.center)) : [];
             const target = navEffect === "left" ? (flanks[0] || flanks[1]) : (flanks[1] || flanks[0]);
