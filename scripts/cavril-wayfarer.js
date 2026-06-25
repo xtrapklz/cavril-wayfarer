@@ -1517,17 +1517,17 @@ async function cwfHeatBeat(cls, biome, { surprised = false, night = false } = {}
 // Discovery (roll 20) — a clue, a way down, a glint of treasure. Non-halting; the GM acts on it when they choose. NOT capped.
 async function cwfDiscoveryBeat(cls) {
     const biome = cls?.biome || "unknown";
-    return { halt: false, kind: "discovery", line: `<i class="fa-solid fa-gem"></i> ${await Tables.drawBiome(biome, "site", () => Tables.drawEvent("site", cls))}` };
+    return { halt: false, kind: "discovery", line: `<i class="fa-solid fa-gem"></i> ${await Tables.drawTerrain(cls, "site", () => Tables.drawEvent("site", cls))}` };
 }
 // The biome TABLE (the non-combat/non-heat/non-discovery rolls): mostly flavour, sometimes an arc beat, sometimes a
 // merchant. Flavour/merchant draw from the per-biome EDITABLE RollTables (so the GM's edits show up in play).
 async function cwfTableBeat(cls, { road = false } = {}) {
     const biome = cls?.biome || "unknown";
     const kind = cwfWeightedPick({ flavor: 10, people: 3, arc: 3, trade: road ? 2 : 1 });
-    if (kind === "trade") { const m = await TravelingMerchants.onTrade(cls); if (m) return { halt: false, line: `<i class="fa-solid fa-store"></i> Trade: <b>${cwfEsc(m.name)}</b>${m.title ? ` · ${cwfEsc(m.title)}` : ""} — ${cwfEsc((m.readAloud || "").split(/[.!?]/)[0] || "a trader on the road")}` }; return { halt: false, line: await Tables.drawBiome(biome, "trade", () => Tables.drawEvent("trade", cls)) }; }
+    if (kind === "trade") { const m = await TravelingMerchants.onTrade(cls); if (m) return { halt: false, line: `<i class="fa-solid fa-store"></i> Trade: <b>${cwfEsc(m.name)}</b>${m.title ? ` · ${cwfEsc(m.title)}` : ""} — ${cwfEsc((m.readAloud || "").split(/[.!?]/)[0] || "a trader on the road")}` }; return { halt: false, line: await Tables.drawTerrain(cls, "trade", () => Tables.drawEvent("trade", cls)) }; }
     if (kind === "people") { const n = await NarrativeNPCs.onBeat(cls); if (n) return { halt: false, line: `<i class="fa-solid fa-user"></i> On the road: <b>${cwfEsc(n.name)}</b>${n.title ? ` · ${cwfEsc(n.title)}` : ""} — ${cwfEsc(n.situation || (n.readAloud || "").split(/[.!?]/)[0] || "a traveller")}` }; }
     if (kind === "arc") { const beat = await Tables.nextThreadBeat(cls); if (beat) return { halt: false, line: beat }; }
-    return { halt: false, line: await Tables.drawBiome(biome, "flavor", () => Tables.drawFlavor(cls)) };
+    return { halt: false, line: await Tables.drawTerrain(cls, "flavor", () => Tables.drawFlavor(cls)) };
 }
 
 // ---- STEPPED TRAVEL — one chat card the GM advances hex-by-hex, at their own pace.
@@ -3470,11 +3470,18 @@ const Tables = (() => {
     // the time return a random line from a random matching pool; else fall back to the generic, GM-editable RollTable.
     // Features stack — a forested river hex can draw river, forest, OR biome flavour — so terrain reads through clearly.
     const rnd = (arr) => arr[Math.floor(Math.random() * arr.length)];
-    function themedPools(cls, kind) {
+    // The FEATURE overlay pools for this hex (river/road/forest/upland/hill/coast) — what makes one temperate hex differ
+    // from the next. NO biome pool here; themedPools adds that on top. (Coast keyed on cls.coast — was cls.water, a bug
+    // that meant coastal-shore flavor never fired on a dry coast and only on open-water hexes. Now matches encounter-stage.)
+    function featurePools(cls, kind) {
         const pools = [];
         const add = (on, key) => { if (on) { const a = FEATURE_THEMES[key]?.[kind]; if (a && a.length) pools.push(a); } };
         add(cls?.river, "river"); add(cls?.infrastructure, "road"); add(cls?.vegetation === "high", "forest");
-        add(cls?.elevation === "high", "mountain"); add(cls?.elevation === "medium", "hill"); add(cls?.water, "coast");
+        add(cls?.elevation === "high", "mountain"); add(cls?.elevation === "medium", "hill"); add(cls?.coast, "coast");
+        return pools;
+    }
+    function themedPools(cls, kind) {
+        const pools = featurePools(cls, kind);
         const b = BIOME_THEMES[cls?.biome]?.[kind]; if (b && b.length) pools.push(b);
         return pools;
     }
@@ -3485,6 +3492,14 @@ const Tables = (() => {
     }
     const drawFlavor = (cls) => pickFor(cls, "flavor", FLAVOR_ENTRIES);
     const drawEvent = (kind, cls) => pickFor(cls, kind, EVENT_SEEDS[kind] || EVENT_SEEDS.narrative);
+    // Feature-aware terrain draw — the live path. A hex that carries a FEATURE (river / forest / upland / hill / road /
+    // coast) speaks that feature ~half the time, so a riverside or forested or highland temperate hex stops sounding like
+    // every other temperate hex; the rest of the time it draws its GM-editable per-biome RollTable. A plain, featureless
+    // hex always uses the biome table. This wires the long-existing FEATURE_THEMES overlay into normal play (was fallback-only).
+    async function drawTerrain(cls, kind, fb) {
+        try { const feats = featurePools(cls, kind); if (feats.length && Math.random() < 0.5) return rnd(rnd(feats)); } catch (e) { /* fall through to the biome table */ }
+        return await drawBiome(cls?.biome || "unknown", kind, fb);
+    }
 
     // PER-BIOME editable RollTables — REAL world documents (folder "Cavril: Wayfarer", named "Cavril {Biome} — {Kind}"),
     // seeded from the in-code BIOME_THEMES + generic seeds, id-cached in tableIds.biome[biome][kind]. The d20 engine draws
@@ -3657,7 +3672,7 @@ const Tables = (() => {
         ui.notifications?.info(`${TITLE}: travel flavor / event / trade tables rebuilt from the latest seeds.`);
     }
 
-    return { ensureAll, draw, ensureEncounter, drawEncounter, drawFlavor, drawEvent, drawBiome, ensureBiomeTable, buildEncounterTables, reseed, nextThreadBeat, resetJourney, journeyStatus, grantTrophy, dropTrophy, trophies, hasTrophy, ensureLocationTable, buildLocationTables, exploreLocation, locationKeys, locationKeyFor, DEFS, FOLDER };
+    return { ensureAll, draw, ensureEncounter, drawEncounter, drawFlavor, drawEvent, drawBiome, drawTerrain, ensureBiomeTable, buildEncounterTables, reseed, nextThreadBeat, resetJourney, journeyStatus, grantTrophy, dropTrophy, trophies, hasTrophy, ensureLocationTable, buildLocationTables, exploreLocation, locationKeys, locationKeyFor, DEFS, FOLDER };
 })();
 
 /* =========================================================================
@@ -4447,7 +4462,15 @@ const Turn = (() => {
     function emitTravelGroup(progress) {
         try {
             const parts = claimedRoles().map(([k, v]) => { const a = game.actors.get(v.actorId); return { name: v.actorName || a?.name || ROLE_LABEL[k], img: a?.img || a?.prototypeToken?.texture?.src || "", skill: ROLE_LABEL[k], total: v.total }; });
-            if (parts.length) window.DDBRollCards?.playGroupCinematic?.({ title: "Travel Turn", sub: governing?.label || `${route.length} hex${route.length === 1 ? "" : "es"}`, participants: parts, progress: !!progress });
+            if (!parts.length) return;
+            // Sub now carries the DETAILED terrain (biome + elevation/vegetation, e.g. "Temperate · highland · forest") and
+            // the DC everyone is trying to beat — so the group cinematic shows WHERE you are and WHAT you need to roll.
+            const dc = cwfRouteDc(governing);
+            let cls = null; try { const tk = turnTok || Canvasry.activeToken(); if (tk) cls = Canvasry.biomeForToken(tk); } catch (e) { /* noop */ }
+            const biomeTxt = cls ? `${cls.label || cls.biome || ""}${cls.detail ? ` · ${cls.detail}` : ""}`.trim() : "";
+            const govTxt = `${governing?.label ? governing.label + " · " : ""}DC ${dc}`;
+            const sub = [biomeTxt, govTxt].filter(Boolean).join("  ·  ") || `${route.length} hex${route.length === 1 ? "" : "es"}`;
+            window.DDBRollCards?.playGroupCinematic?.({ title: "Travel Turn", sub, participants: parts, progress: !!progress });
         } catch (e) { warn("travel group cinematic failed", e); }
     }
     const pulseTravelGroup = () => { try { if (step === "active" && claimedRoles().some(([, v]) => v.total != null)) emitTravelGroup(true); } catch (e) { /* noop */ } try { cwfSyncAdvance(); } catch (e) { /* noop */ } };
