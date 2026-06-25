@@ -3753,6 +3753,19 @@ const NarrativeNPCs = (() => {
     return { pick, onBeat, card, buildTable, list: () => NARRATIVE_NPCS.slice() };
 })();
 
+// Deliberately drop a road-cast member (a hand-crafted merchant OR a road NPC) for the current hex — the narrative
+// counterpart to the "force an encounter" chip. Bypasses the card settings (an explicit GM action). v0.55.97.
+function meetRoadCast(cls, { merchant = null } = {}) {
+    try {
+        if (!game.user.isGM) return null;
+        const gmIds = game.users.filter(u => u.isGM).map(u => u.id), whisper = gmIds.length ? gmIds : undefined;
+        const wantMerchant = merchant == null ? (Math.random() < 0.5) : !!merchant;
+        const postMerchant = () => { const m = TravelingMerchants.pick(cls); if (m) { ChatMessage.create({ content: TravelingMerchants.card(m, cls), whisper }); return m; } return null; };
+        const postNpc = () => { const n = NarrativeNPCs.pick(cls); if (n) { ChatMessage.create({ content: NarrativeNPCs.card(n, cls), whisper }); return n; } return null; };
+        return (wantMerchant ? (postMerchant() || postNpc()) : (postNpc() || postMerchant())) || null;
+    } catch (e) { warn("meetRoadCast failed", e); return null; }
+}
+
 const MerchantEconomy = (() => {
     const rint = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
     const pick = (a) => a[Math.floor(Math.random() * a.length)];
@@ -4736,6 +4749,7 @@ const WayfarerPanel = (() => {
                 case "encounter-test": await globalThis.CavrilEncounterStage?.stageEncounter?.({ token: Canvasry.activeToken() }); break;
                 case "stage-scene": await globalThis.CavrilEncounterStage?.stageScene?.({ token: Canvasry.activeToken() }); break;
                 case "stage-map": await globalThis.CavrilEncounterStage?.stageBattlemap?.({ token: Canvasry.activeToken() }); break;
+                case "meet-someone": { const tok = Canvasry.activeToken(); meetRoadCast(tok ? Canvasry.biomeForToken(tok) : {}); break; }
                 case "toggle-dials": _dialsOpen = !_dialsOpen; render(); return;
                 case "toggle-party": _partyOpen = !_partyOpen; render(); return;
                 case "open-party": {
@@ -5091,6 +5105,7 @@ const WayfarerPanel = (() => {
                         ${cls && globalThis.CavrilEncounterStage ? `<button class="cwf-chip chip-encounter" data-action="encounter-test" title="Force a combat encounter now — a Challenge-scaled fight rolled from this biome's roster, auto-staged on a matched battlemap. (Travel turns already roll one via Danger.)"><i class="fa-solid fa-dragon"></i> Encounter</button>` : ""}
                         ${cls && globalThis.CavrilEncounterStage ? `<button class="cwf-chip chip-scene" data-action="stage-scene" title="Stage a best-match SCENE for a roleplay beat here (a built place — tavern, shrine, ruin — no foes)"><i class="fa-solid fa-masks-theater"></i> Scene</button>` : ""}
                         ${cls && globalThis.CavrilEncounterStage ? `<button class="cwf-chip chip-map" data-action="stage-map" title="Stage a best-match empty BATTLE MAP for this hex (no foes) — for a hand-built fight"><i class="fa-solid fa-chess-board"></i> Map</button>` : ""}
+                        ${cls ? `<button class="cwf-chip chip-meet" data-action="meet-someone" title="Drop a hand-crafted road-cast member (a traveling merchant or a road NPC) fitting this biome — the narrative counterpart to the Encounter chip"><i class="fa-solid fa-handshake"></i> Meet</button>` : ""}
                         ${(() => { const lk = Tables.locationKeyFor(site?.name); if (!lk) return ""; const ln = Tables.locationKeys().find(l => l.key === lk)?.name || site?.name; return `<button class="cwf-chip chip-explore" data-action="explore-location" data-key="${esc(lk)}" title="${esc(ln)} — roll on its bespoke exploration table"><i class="fa-solid fa-dungeon"></i> Explore</button>`; })()}
                     </div>
                     ${_dialsOpen ? `<div class="cwf-dials">
@@ -5302,6 +5317,7 @@ Hooks.once("ready", () => {
             ui.notifications?.info(`${TITLE}: built every editable RollTable — biome flavour/site/trade, named locations, traveling merchants, and road-encounter NPCs. Find them in the "${Tables.FOLDER}" folder.`);
             return r;
         },
+        meetSomeone: (opts = {}) => { const tok = Canvasry.activeToken(); return meetRoadCast(opts.cls || (tok ? Canvasry.biomeForToken(tok) : {}), opts); },   // drop a road-cast member (merchant or NPC) for the current hex on demand ({merchant:true} to force a merchant)
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, TravelingMerchants, NarrativeNPCs, _installed: true
     };
     // Phase-transition cinematics broadcast from the GM → every client plays them.

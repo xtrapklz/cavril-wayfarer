@@ -409,6 +409,8 @@
 .cwf-chip.chip-scene:hover { border-color: #5dcaa5; }
 .cwf-chip.chip-map i { color: #4f9fe6; }
 .cwf-chip.chip-map:hover { border-color: #4f9fe6; }
+.cwf-chip.chip-meet i { color: #d8b25a; }
+.cwf-chip.chip-meet:hover { border-color: #d8b25a; }
 /* concise party supplies strip — totals + worst exhaustion at a glance; the per-character grid expands behind it */
 .cwf-supstrip { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
 .cwf-sup { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-variant-numeric: tabular-nums; }

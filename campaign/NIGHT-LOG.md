@@ -1,3 +1,65 @@
+# Cavril — Overnight Build Log (2026‑06‑24 → 25)
+
+You asked for the road to feel **authored**, with generous focus on each story. Roadside **trade and the people you meet are no longer procedural** — they're **30 written characters**, each with a rumour, a quest hook that foreshadows an arc, and a secret, all wired to the bible's spine (the Tithe, the King of the Road, the Collector's bark‑ledger, the Glovewright's glove, the drowned bell). Plus: encounters now pick **maps that fit the monsters**, and you can **stage a scene for any meeting in one click**.
+
+---
+
+## 🚀 Shipped to Forge (Bazaar → Update → reload)
+| Release | What |
+|---|---|
+| **Wayfarer 0.55.93** | **15 hand‑crafted traveling merchants** (replace the procedural roadside shop) · **monster‑aware map matching** · **Scene / Map HUD chips** |
+| **Wayfarer 0.55.94** | **15 hand‑crafted road‑encounter NPCs** + a new **"people" travel beat** |
+| **Wayfarer 0.55.95** | **"Stage a scene"** button on every merchant/NPC card · **`buildAllTables()`** |
+| **Wayfarer 0.55.96** | Trek log **names the merchant/NPC met** · settings: updated merchant hint, new road‑NPC toggle, a **"Trade & Road Encounters"** section |
+
+Every release passed the 37‑test preflight + `node --check`. All additive — nothing existing should have broken. City merchants stay procedural (this only changed the *roadside* ones).
+
+---
+
+## 🛒 The 15 traveling merchants
+Each carries one rumour + one quest hook (a **choice with a price**, never "go kill X"), tied to a named arc.
+
+**Arcs A–B–C** — Maven Coll *the Mending Widow* (the Glovewright's oldest freed runner‑child, fitting you for the harness she wore) · Hessenmaw *the Leavings‑Reliquer* (a relic‑buzzard weighing what the Gilded Company drops) · Annet *of the Tenth* (trades only in stories‑never‑told, pays in honest miles; her tally‑stick is the Collector's ledger) · Brother Ossifrage *the Vinegar Mendicant* (the honest, doomed inverse of the Plague‑Doctor Pedlar) · Quill *the Bark‑Pedlar* (a fey leshy who can credit or damn your tally).
+
+**Arcs D–E–F** — Maren Cole *the Salt‑Widow* (true‑upstream water + a dead apothecary's medicines, mapping the Shared Dream) · Iskander Vael *the Tallowright* (buys memories, sells them back as candles that burn a stranger's life into yours) · Brohm Cinderhauf (a scrap‑deacon smuggling a *waking* relic from the Scavenger‑Prophet) · Nettle *the Lamplit Child* (sells "company on the road" — and *is* a wild One‑Who‑Follows) · Voss Greel *the Tooth‑Counter* (buys grudges; teaches the one real lever — the bark ledger can be **argued**).
+
+**The laws made flesh** — Eustace Bray *the Tallowman* (candles that spend your life by the hour) · *Mother‑Coin* (names the sum of every kindness you've taken, sells the means to pay it glad) · Bartholomew Crane (**the recurrence**: met whole and overgenerous, met again hollowed by his own free mercies) · Nan Threnody *the Hazel‑Wife* (the benevolent loophole — wonders only for gifts given gladly) · Annot Drowne *the Bell‑Wife* (the Ferryman's downstream half; will name the One Who Follows for a toll).
+
+## 🧑 The 15 road‑encounter NPCs (the new "people" beat)
+The faces you meet that **aren't** selling — each a scene whose hook is help / refuse / exploit, with a price the country remembers.
+
+**Pilgrims** — Edrin Calloway *the Seed‑Mother* (a grief‑jar that's a slip of the Dreaming Forest) · Halsom *the Empty‑Handed* (forgot what he set out to carry; save him only by **refusing** what he offers) · The Evenwalk Family (five in lockstep, dissolving into one pilgrim) · Quillon "Wrongway" Bramm (the one happy man, marching **west** — the campaign's heresy: you're allowed to turn around) · Captain Aldís Mossgrave *the Boot‑Bearer* (carrying her dead son's boots to the treeline, where the thing wearing him will be glad of them).
+
+**The harrowed** — Geddy Half‑Coat (chained to the drowned bell's clapper; refusing pity is his last possession) · Sergeant Annet Bellwax (a Gilded Company soldier, the Spreading turning her wound to grey field) · Mother Cresh (barricading the only clean ford, her toll a ransom for grandchildren sliding into the Dream) · Iwinn the Ledger‑Bearer (stole the Collector's ledger believing the holder holds the debts — the book holds the bearer) · Harrow of the Nine Graves (digs a tenth grave humming a Fading tune she's never heard).
+
+**The uncanny** (each turns on a learnable rule) — The Half‑Crossing Toll (pay the King's tenth *freely given* and fog hardens to stone; coin dissolves the span mid‑stride) · The Good Host in the Fog (take the fire, refuse all food/drink/sleep) · The Girl Who Pays in Years (a child‑oracle who ages a year per answer; **giving** to her feeds years back) · The Nameless Fiddler (buy passage with a name belonging to no living soul) · The One Who Walks Ahead (the One‑Who‑Follows inverted — refuse its gifts or answer with your own glad one).
+
+---
+
+## 🗺️ Monster‑aware map matching
+Encounter staging now factors the **foes' creature types** into the battlemap pick, layered on top of the biome: undead → crypt/graveyard/ruins, fey → grove, aberration → cavern/void, fiend → demonic/temple, plus name keywords (spiders → web‑cave, bandits → camp, cultists → temple). Verified every tag I map to already exists in your CZEPEKU vocabulary, so it actually changes the pick. A temperate undead fight now prefers a temperate map that *also* reads as ruins.
+
+## 🎬 Stage a scene — two ways
+- **HUD chips** (current‑hex strip): **Scene** = best‑match narrative backdrop (a built place, no foes) · **Map** = best‑match empty battle map. Both match the hex (+ any foes).
+- **On any merchant/NPC card**: a **"Stage a scene"** button — one click stages a fitting backdrop for *that* meeting. The direct form of your "a button to make a scene for the current narrative encounter."
+
+---
+
+## ▶️ How to use it
+- Browse the cast: `CavrilWayfarer.travelingMerchants()` · `CavrilWayfarer.roadNpcs()`
+- Whisper one to yourself: `CavrilWayfarer.merchantCard('coll')` · `CavrilWayfarer.roadNpcCard('geddy')`
+- **Editable RollTables** (so you can curate/add): `CavrilWayfarer.buildAllTables()` — seeds biome flavour/site/trade, named locations, **Cavril Traveling Merchants**, and **Cavril Road Encounters (NPCs)** into the *Cavril* folder.
+- **Settings → Trade & Road Encounters**: toggle the merchant cards and the road‑NPC cards (both default on). Travel a stretch — roughly 1 in 6 quiet beats now surfaces a written merchant or face, whispered to you with read‑aloud + hook + twist.
+- Scene/Map: the **Scene** and **Map** chips on the hex strip, or `CavrilEncounterStage.stageScene()` / `.stageBattlemap()`.
+
+## 📋 Ready when you can test it (deliberately NOT shipped overnight)
+- **Core roadmap #1 — per‑part damage saves.** A save‑for‑half should halve only the *save‑gated* damage part (the poison), not the piercing too. It's a combat‑mechanics change best verified at the table, so I left it for a session you can test. See `modules/ddb-roll-cards/ABILITY-AUTOMATION.md` — say the word and I'll wire it behind a setting.
+
+Sleep well. 🌙
+
+---
+---
+
 # Cavril — Overnight Build Log (2026‑06‑23 → 24) ✅ COMPLETE
 
 You went to bed and asked me to impress you. Here's everything I built. **Read order:** this file → `PRIMUS-BIBLE.md` → `npcs.md` → `arcs/` → `encounters/` → then run the two macros.
