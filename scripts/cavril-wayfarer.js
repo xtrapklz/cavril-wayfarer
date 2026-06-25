@@ -3288,6 +3288,19 @@ const Travel = (() => {
         }
         return worst;
     }
+    // ETA for the plotted course: total hours = the route's terrain-weighted step cost × the per-hex hours at this pace,
+    // and the clock time the party would arrive (with a +Nd day rollover). Drives the plot-summary estimate.
+    function eta() {
+        if (!routeArr.length) return null;
+        const tok = startToken(); if (!tok) return null;
+        try {
+            const cost = Hex.pathCost(routeArr, { boat }, Hex.offsetOf(tok.center));
+            const hours = Math.max(0, Math.round(cost * (Domain.PACE[pace]?.hours ?? 6)));
+            const nowH = Math.floor((game.time?.worldTime ?? 0) / 3600), arrH = nowH + hours;
+            const arriveHour = ((arrH % 24) + 24) % 24, daysAhead = Math.floor(arrH / 24) - Math.floor(nowH / 24);
+            return { hours, arrive: `${String(arriveHour).padStart(2, "0")}:00${daysAhead > 0 ? ` +${daysAhead}d` : ""}` };
+        } catch (e) { return null; }
+    }
 
     async function confirmMove() {
         const tok = startToken();
@@ -3303,7 +3316,7 @@ const Travel = (() => {
     function cancel() { plotting = false; waypoints = []; routeArr = []; reachMap = null; anchor = null; plotTok = null; CourseOverlay.stop(); cwfCourseBroadcast(null); WayfarerPanel.render(); }
 
     return {
-        startPlot, reanchor, onPick, undo, setPace, setBoat, setShortRest, confirmMove, cancel, governing,
+        startPlot, reanchor, onPick, undo, setPace, setBoat, setShortRest, confirmMove, cancel, governing, eta,
         refresh: () => { if (plotting) recompute(); },
         redraw: () => { if (plotting) CourseOverlay.draw(reachMap, routeArr, { anchor, waypoints }); },
         get plotting() { return plotting; }, get pace() { return pace; }, get boat() { return boat; },
@@ -5337,6 +5350,7 @@ const Camp = (() => {
         const pendingMsg = nightDawnPending?.msgId; nightDawnPending = null;
         Music.combat(false);   // back to calm now the fight's over
         await new Promise(r => setTimeout(r, cwfDelayMs()));   // sit in the beat before dawn breaks
+        const bedDownWT = game.time?.worldTime ?? 0;   // capture BEFORE the clock jumps to dawn — used to reset the rested-clock to the wake time, not bed-down
         // Wake time = bed-down + the night's length (which the watch + any sleep-in set) — NOT a fixed dawn hour, so the
         // party genuinely controls when they rise. campHour 21 + a 10h night → 07:00; + 4h sleep-in → 11:00.
         const campH = Number(game.settings.get(MOD, "campHour")) || 21, total = campH + nightHours();
@@ -5349,6 +5363,9 @@ const Camp = (() => {
             if (rest === "short" || noLongRest()) await cwfPartyRest("short", { silent: true });   // a night fight they moved out of, OR everyone forwent the long rest → short rest for all
             else await cwfPartyRest("long", { newDay: true, silent: true, extraExh: restRecovery() - 1, shortIds: shortResterSet() });   // long rest, but the forgoing watchers only short-rest
         }
+        // Reset the "hours since last long rest" clock to the WAKE time — not the bed-down time cwfPartyRest's mark may have
+        // read before MiniCal's clock update propagated (the bug that made the HUD start at ~10h). Only on a real long rest.
+        if (rest !== "short" && !noLongRest()) { const nowWT = game.time?.worldTime ?? 0; try { await game.settings.set(MOD, "lastRestTime", nowWT > bedDownWT ? nowWT : bedDownWT + Math.round(nightHours()) * 3600); } catch (e) { /* noop */ } }
         active = false;
         if (pendingMsg) { const m = game.messages.get(pendingMsg); if (m) { try { await m.update({ content: cwfCardShell("fa-moon", "Night Watch", `<div class="cwf-muted2">Resolved — dawn breaks on Day ${nextDay}.</div>`) }); } catch { /* noop */ } } }
         await cwfCampFinalize(`Resolved — dawn breaks on Day ${nextDay}.`);
@@ -5804,8 +5821,9 @@ const WayfarerPanel = (() => {
                 }).join("");
                 const wps = Travel.waypointCount;
                 const reach = Travel.reach?.size ?? 0;
+                const e = Travel.eta();
                 const summary = n
-                    ? `<div class="cwf-route">${gov ? `<span class="cwf-pill" data-tier="${Domain.tier(gov)}"><i class="fa-solid ${gov.icon}"></i> ${gov.label} · DC ${gov.dc ?? "?"}</span>` : ""}<span class="cwf-pill cwf-muted">${n} hex${n === 1 ? "" : "es"}${wps > 1 ? ` · ${wps} stops` : ""}${gov && Domain.fastProhibited(gov) ? " · No Fast" : ""}</span></div>`
+                    ? `<div class="cwf-route">${gov ? `<span class="cwf-pill" data-tier="${Domain.tier(gov)}"><i class="fa-solid ${gov.icon}"></i> ${gov.label} · DC ${gov.dc ?? "?"}</span>` : ""}<span class="cwf-pill cwf-muted">${n} hex${n === 1 ? "" : "es"}${wps > 1 ? ` · ${wps} stops` : ""}${gov && Domain.fastProhibited(gov) ? " · No Fast" : ""}</span>${e ? `<span class="cwf-pill cwf-muted" title="Estimated travel time + arrival clock at ${Domain.PACE[Travel.pace]?.label || Travel.pace} pace"><i class="fa-solid fa-hourglass-half"></i> ~${e.hours}h · arrive ${e.arrive}</span>` : ""}</div>`
                     : `<div class="cwf-muted2">Click a glowing hex to chart your course — each click adds a stop.</div>`;
                 const hint = reach > 0
                     ? `${reach} hex${reach === 1 ? "" : "es"} in range · click to extend`
