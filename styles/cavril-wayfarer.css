@@ -172,6 +172,16 @@
 .cwf-adv { margin-left: auto; color: #061; background: var(--cwf-easy); border-radius: 6px; padding: 0 6px; font-size: 9px; font-weight: 800; }
 .cwf-dis { margin-left: auto; color: #fff; background: var(--cwf-severe); border-radius: 6px; padding: 0 6px; font-size: 9px; font-weight: 800; }
 .cwf-role-b { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: var(--cwf-muted); }
+/* Helpers — extra players who back up a role's skill (best-of) */
+.cwf-helpers { margin-top: 7px; padding-top: 7px; border-top: 1px dashed var(--cwf-line); display: flex; flex-direction: column; gap: 5px; }
+.cwf-helpers-h { font-size: 12px; }
+.cwf-helpers-h .cwf-muted2 { font-weight: 400; margin-left: 2px; }
+.cwf-role.cwf-helper { background: color-mix(in srgb, var(--cwf-bg2) 78%, transparent); border-style: dashed; }
+.cwf-role.cwf-helper.claimed { border-color: #5dcaa5; }
+.cwf-helper .cwf-claim { display: flex; gap: 5px; align-items: center; }
+.cwf-helper .cwf-claim .cwf-sel { min-width: 0; }
+.cwf-helper-x { flex: 0 0 auto; padding: 0 8px; height: 26px; }
+.cwf-help-add { align-self: flex-start; height: 26px; }
 .cwf-vs { color: var(--cwf-text); font-weight: 600; }
 .cwf-mini { margin-left: auto; width: 26px; height: 22px; border-radius: 6px; border: 1px solid var(--cwf-line); background: rgba(189,169,232,.1); color: var(--cwf-accent); cursor: pointer; }
 .cwf-mini:hover { background: rgba(189,169,232,.22); }
@@ -295,6 +305,7 @@
 .cwf-rr-role > i { color: var(--cwf-accent); margin-right: 4px; }
 .cwf-rr-sub { font-size: 11px; color: #9a9a9a; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cwf-rr-who { color: #fff; font-weight: 600; }
+.cwf-rr-help { color: #5dcaa5; font-weight: 600; }   /* a helper's higher roll stepped in for this role */
 .cwf-rr-sk { text-transform: uppercase; letter-spacing: .05em; color: var(--cwf-accent); }
 .cwf-rr-b { font-size: 12px; color: #cfcfcf; margin-top: 4px; line-height: 1.4; }
 .cwf-tier-badge { font-weight: 800; font-size: 10px; padding: 2px 8px; border-radius: 9px; letter-spacing: .03em; white-space: nowrap; min-width: 130px; text-align: center; box-sizing: border-box; }

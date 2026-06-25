@@ -2974,13 +2974,13 @@ const Tables = (() => {
     const DEFS = {
         navigate: {
             crit:     { name: "Navigator — Critical Success", entries: ["A shortcut or vantage point — you arrive with no extra movement, and one adjacent hidden hex is revealed."] },
-            success:  { name: "Navigator — Success", entries: ["You hold your course and reach your destination hex."] },
+            success:  { name: "Navigator — Success", entries: ["You hold your course and reach your destination — and read the ground ahead: the next hex's terrain is yours to know before you commit."] },
             fail:     { name: "Navigator — Failure (d4)", formula: "1d4", entries: [
-                { text: "Dead in the Water — the party gets turned around. You move 0 spaces today.", effect: "dead" },
-                { text: "Lost (Left) — you drift into the hex to the left of your destination.", effect: "left" },
-                { text: "Lost (Right) — you drift into the hex to the right of your destination.", effect: "right" },
+                { text: "The Long Way Round — you still reach the destination, but the detour eats extra hours; the day runs late.", effect: "late" },
+                { text: "Drifted Left — you veer into the hex to the left of your destination.", effect: "left" },
+                { text: "Drifted Right — you veer into the hex to the right of your destination.", effect: "right" },
                 { text: "Minor Setback — you reach your destination but suffer a faction-based penalty.", effect: "setback" } ] },
-            critfail: { name: "Navigator — Critical Failure", entries: [{ text: "Hopelessly lost — you move 0 spaces and suffer a setback.", effect: "dead" }] }
+            critfail: { name: "Navigator — Critical Failure", entries: [{ text: "Hopelessly lost — turned around for the day. You move 0 spaces and suffer a setback.", effect: "dead" }] }
         },
         scout: {
             crit:     { name: "Scout — Critical Success", entries: ["You spot the encounter first — take a solo Sabotage, Steal, or Spy action before rejoining the party."] },
@@ -4328,12 +4328,15 @@ const ROLE_SKILLS = {
     scout:    ["prc", "ste", "inv", "sur"],
     forage:   ["nat", "sur", "med"]
 };
+// A Helper can roll any skill a role can — at resolve, the SAME-skill role takes the better of the two rolls.
+const HELPER_SKILLS = [...new Set(Object.values(ROLE_SKILLS).flat())];   // sur · inv · prc · nat · ste · med
 const Turn = (() => {
     let active = false, step = "active", route = [], governing = null, pace = "normal", boat = false, turnTok = null;
     let held = false;   // set when the GM manually edits a roll value → suspends auto-resolve so they can adjust freely
     let _suppressed = [];   // actorIds currently suppressed in ddb-roll-cards — their travel-role CHECK cinematics fold into the group cinematic
-    const newSlot = () => ({ actorId: null, actorName: null, skillId: null, total: null, nat: null, outcome: null, result: null });
+    const newSlot = () => ({ actorId: null, actorName: null, skillId: null, total: null, nat: null, outcome: null, result: null, helpedBy: null });
     const roles = { navigate: newSlot(), scout: newSlot(), forage: newSlot() };
+    let helpers = [];   // [{ actorId, actorName, skillId, total, nat }] — each backs up the same-skill role (best-of) at resolve
 
     function begin() {
         const r = Travel.route;
@@ -4353,6 +4356,7 @@ const Turn = (() => {
             const sid = saved[k]?.actorId;
             if (sid && present.has(sid)) { const a = game.actors.get(sid); roles[k].actorId = a?.id || null; roles[k].actorName = a?.name || null; }
         }
+        helpers = [];                       // fresh turn → no helpers yet
         Travel.cancel();                    // exit plotting state cleanly (also stops the overlay)
         CourseOverlay.draw(null, route);    // re-light the locked route during the check
         Tables.ensureAll();                 // make sure editable tables exist
@@ -4375,7 +4379,7 @@ const Turn = (() => {
         try {
             const W = window.DDBRollCards;
             if (_suppressed.length) W?.suppressRoll?.(_suppressed, false);
-            _suppressed = on ? claimedRoles().map(([, v]) => v.actorId).filter(Boolean) : [];
+            _suppressed = on ? [...claimedRoles().map(([, v]) => v.actorId), ...claimedHelpers().map(h => h.actorId)].filter(Boolean) : [];
             if (_suppressed.length) W?.suppressRoll?.(_suppressed, true);
         } catch (e) { warn("roll-suppress sync failed", e); }
     }
@@ -4390,6 +4394,52 @@ const Turn = (() => {
         syncRollSuppress(true);             // re-sync the suppress set after a (re)claim
     }
     function setSkill(roleKey, skillId) { roles[roleKey].skillId = skillId; saveRoles(); WayfarerPanel.render(); }
+    // ── HELPERS ──────────────────────────────────────────────────────────────────────────────────────────────────
+    // A Helper backs up a ROLE by rolling the SAME skill; at resolve the role takes the BETTER of the two (best-of). Lets a
+    // 5th/6th player matter and a 4th double up a key check. Folded into the group cinematic so everyone is in the check.
+    const claimedHelpers = () => helpers.filter(h => h.actorId);
+    function addHelper() { helpers.push({ actorId: null, actorName: null, skillId: HELPER_SKILLS[0], total: null, nat: null }); WayfarerPanel.render(); }
+    function dropHelper(idx) { if (helpers[idx]) { helpers.splice(idx, 1); WayfarerPanel.render(); syncRollSuppress(true); } }
+    function setHelper(idx, { actorId, skillId } = {}) {
+        const h = helpers[idx]; if (!h) return;
+        if (actorId !== undefined) {
+            if (actorId) {   // one actor, one seat — release them from any role or other helper slot first
+                for (const k of Object.keys(roles)) if (roles[k].actorId === actorId) Object.assign(roles[k], { actorId: null, actorName: null, total: null, nat: null, outcome: null });
+                helpers.forEach((x, i) => { if (i !== idx && x.actorId === actorId) Object.assign(x, { actorId: null, actorName: null, total: null, nat: null }); });
+            }
+            const a = actorId ? game.actors.get(actorId) : null;
+            Object.assign(h, { actorId: a?.id || null, actorName: a?.name || null, total: null, nat: null });
+        }
+        if (skillId !== undefined) { h.skillId = skillId; h.total = null; h.nat = null; }
+        WayfarerPanel.render(); syncRollSuppress(true);
+    }
+    async function rollHelper(idx) {
+        const h = helpers[idx]; if (!h?.actorId || h._rolling) return;
+        const actor = game.actors.get(h.actorId); if (!actor?.rollSkill) { ui.notifications?.warn("That character can't roll skills."); return; }
+        const major = parseInt(String(game.system?.version ?? "4"), 10) || 4;
+        h._rolling = true; let result = null;
+        try {
+            if (major >= 4) result = await actor.rollSkill({ skill: h.skillId }, { configure: false });
+            else result = await actor.rollSkill(h.skillId, { fastForward: true });
+        } catch (e) { warn("helper rollSkill failed", e); } finally { h._rolling = false; }
+        const rr = Array.isArray(result) ? result[0] : result;
+        if (rr) { h.total = rr.total ?? null; h.nat = natOf(rr); pulseTravelGroup(); }
+        WayfarerPanel.render();
+    }
+    function enterHelper(idx, val) { const h = helpers[idx]; if (!h) return; const n = Number(val); if (Number.isFinite(n)) { h.total = n; h.nat = null; held = true; pulseTravelGroup(); } WayfarerPanel.render(); }
+    // At resolve: each rolled helper backs up the matching-skill role it improves MOST (lowest current total it beats).
+    // One helper per role, one role per helper — so two Survival helpers shore up two Survival roles, not pile on one.
+    function foldHelpers() {
+        const helped = new Set();
+        for (const h of claimedHelpers().filter(h => h.total != null).sort((a, b) => b.total - a.total)) {
+            const cands = claimedRoles().filter(([k, v]) => !helped.has(k) && v.skillId === h.skillId && h.total > (v.total ?? -Infinity));
+            if (!cands.length) continue;
+            cands.sort((a, b) => (a[1].total ?? -Infinity) - (b[1].total ?? -Infinity));
+            const [k, v] = cands[0];
+            v.total = h.total; v.nat = h.nat; v.helpedBy = h.actorName;
+            helped.add(k);
+        }
+    }
     function rollState(roleKey) {
         // Off by default → clean single rolls. When on, Slow gives advantage, Fast
         // disadvantage, and weather can hamper a role (the 5e-flavored mechanic).
@@ -4456,12 +4506,15 @@ const Turn = (() => {
         return s.total >= dc ? "success" : "fail";
     }
     const claimedRoles = () => Object.entries(roles).filter(([, v]) => v.actorId);
-    const allRolled = () => { const c = claimedRoles(); return c.length > 0 && c.every(([, v]) => v.total != null); };
+    const allRolled = () => { const c = claimedRoles(); return c.length > 0 && c.every(([, v]) => v.total != null) && claimedHelpers().every(h => h.total != null); };
     // The party's travel-role rolls land as ONE group cinematic: it appears on the FIRST roll and UPDATES as the rest come
     // in (progress=persistent declare), then reveals as the result at resolve. progress true = update, false = final reveal.
     function emitTravelGroup(progress) {
         try {
-            const parts = claimedRoles().map(([k, v]) => { const a = game.actors.get(v.actorId); return { name: v.actorName || a?.name || ROLE_LABEL[k], img: a?.img || a?.prototypeToken?.texture?.src || "", skill: ROLE_LABEL[k], total: v.total }; });
+            const sk = (id) => CONFIG.DND5E?.skills?.[id]?.label || id;
+            const parts = claimedRoles().map(([k, v]) => { const a = game.actors.get(v.actorId); return { name: v.actorName || a?.name || ROLE_LABEL[k], img: a?.img || a?.prototypeToken?.texture?.src || "", skill: v.helpedBy ? `${ROLE_LABEL[k]} · via ${v.helpedBy}` : ROLE_LABEL[k], total: v.total }; });
+            // Helpers ride in the same group check — their portrait + roll shows alongside the roles they're backing up.
+            for (const h of claimedHelpers()) { const a = game.actors.get(h.actorId); parts.push({ name: h.actorName || a?.name || "Helper", img: a?.img || a?.prototypeToken?.texture?.src || "", skill: `Helps · ${sk(h.skillId)}`, total: h.total }); }
             if (!parts.length) return;
             // Sub now carries the DETAILED terrain (biome + elevation/vegetation, e.g. "Temperate · highland · forest") and
             // the DC everyone is trying to beat — so the group cinematic shows WHERE you are and WHAT you need to roll.
@@ -4482,6 +4535,7 @@ const Turn = (() => {
     }
 
     async function resolve() {
+        foldHelpers();                      // best-of: a helper's higher same-skill roll replaces the role-holder's BEFORE anything reads the totals
         const dc = cwfRouteDc(governing);
         emitTravelGroup(false);             // rolls are in → reveal the group cinematic as the RESULT (clears the persistent progress one)
         syncRollSuppress(false);            // rolls are in → release the suppress
@@ -4513,7 +4567,7 @@ const Turn = (() => {
             body += `<div class="cwf-rr">
                 <div class="cwf-rr-top">
                     <span class="cwf-rr-role"><i class="fa-solid ${ROLE_ICON[k]}"></i> ${ROLE_LABEL[k]}</span>
-                    <span class="cwf-rr-sub"><span class="cwf-rr-who">${v.actorName || "—"}</span> · <span class="cwf-rr-sk">${sk}</span></span>
+                    <span class="cwf-rr-sub"><span class="cwf-rr-who">${v.actorName || "—"}</span>${v.helpedBy ? ` <span class="cwf-rr-help" title="A helper's higher roll of the same skill stepped in">↗ ${v.helpedBy}</span>` : ""} · <span class="cwf-rr-sk">${sk}</span></span>
                     <span class="cwf-tier-badge cwf-tier-${v.outcome}">${v.total} · ${TIER_LABEL[v.outcome]}</span>
                 </div>
                 <div class="cwf-rr-b">${v.result}</div>
@@ -4530,6 +4584,7 @@ const Turn = (() => {
         const sp = Domain.PACE[pace]?.spaces ?? 2;
         let path = route.slice(), lostHours = 0;
         if (navEffect === "dead") { path = []; lostHours = (tok && sp > 0) ? Math.round((Hex.pathCost(route, { boat }, Hex.offsetOf(tok.center)) / sp) * 12) : 0; }
+        else if (navEffect === "late") { lostHours = (tok && sp > 0) ? Math.max(2, Math.round((Hex.pathCost(route, { boat }, Hex.offsetOf(tok.center)) / sp) * 12 * 0.4)) : 3; }   // STILL arrive (path stays the route), but the detour costs ~40% extra hours — a soft failure, not a wasted day
         else if (navEffect === "left" || navEffect === "right") {
             const flanks = tok ? Hex.flank(route, Hex.offsetOf(tok.center)) : [];
             const target = navEffect === "left" ? (flanks[0] || flanks[1]) : (flanks[1] || flanks[0]);
@@ -4552,6 +4607,7 @@ const Turn = (() => {
     function end() {
         active = false; step = "active"; route = []; governing = null; turnTok = null; held = false;
         for (const k of Object.keys(roles)) roles[k] = newSlot();
+        helpers = [];
         CourseOverlay.clear();
         try { cwfSyncAdvance(); } catch (e) { /* clear the travel-turn Advance step */ }
         WayfarerPanel.render(); BiomeBadge.update();
@@ -4562,22 +4618,34 @@ const Turn = (() => {
     function ingestRoll({ actorId, skillId, total, nat } = {}) {
         if (!active || step === "resolved" || total == null || !actorId) return;
         const entry = Object.entries(roles).find(([, v]) => v.actorId === actorId);
-        if (!entry) return;
-        const [key, s] = entry;
-        // Don't overwrite an existing total with a roll of a different skill than assigned.
-        if (s.total != null && skillId && s.skillId && skillId !== s.skillId) return;
-        s.total = Number(total);
-        s.nat = Number.isFinite(nat) ? nat : null;
-        pulseTravelGroup();   // a roll landed → the group cinematic appears (first roll) / updates (subsequent)
-        ui.notifications?.info(`${TITLE}: ${ROLE_LABEL[key]} (${s.actorName}) rolled ${total} on D&D Beyond.`);
-        WayfarerPanel.renderExternal();
-        maybeAutoResolve();
+        if (entry) {
+            const [key, s] = entry;
+            // Don't overwrite an existing total with a roll of a different skill than assigned.
+            if (s.total != null && skillId && s.skillId && skillId !== s.skillId) return;
+            s.total = Number(total);
+            s.nat = Number.isFinite(nat) ? nat : null;
+            pulseTravelGroup();   // a roll landed → the group cinematic appears (first roll) / updates (subsequent)
+            ui.notifications?.info(`${TITLE}: ${ROLE_LABEL[key]} (${s.actorName}) rolled ${total} on D&D Beyond.`);
+            WayfarerPanel.renderExternal();
+            maybeAutoResolve();
+            return;
+        }
+        const h = helpers.find(x => x.actorId === actorId);   // a Helper's remote roll lands the same way
+        if (h) {
+            if (h.total != null && skillId && h.skillId && skillId !== h.skillId) return;
+            h.total = Number(total); h.nat = Number.isFinite(nat) ? nat : null;
+            pulseTravelGroup();
+            ui.notifications?.info(`${TITLE}: Helper (${h.actorName}) rolled ${total} on D&D Beyond.`);
+            WayfarerPanel.renderExternal();
+            maybeAutoResolve();
+        }
     }
 
     return {
         begin, claim, setSkill, roll, enter, adjust, resolve, end, ingestRoll, partyMembers, outcomeFor, rollState, rollWhy,
         claimedRoles, allRolled,
-        get active() { return active; }, get step() { return step; }, get roles() { return roles; },
+        addHelper, setHelper, dropHelper, rollHelper, enterHelper, claimedHelpers,
+        get active() { return active; }, get step() { return step; }, get roles() { return roles; }, get helpers() { return helpers; },
         get governing() { return governing; }, get route() { return route; }
     };
 })();
@@ -4806,6 +4874,9 @@ const WayfarerPanel = (() => {
             if (t.dataset.action === "turn-claim") Turn.claim(role, t.value);
             else if (t.dataset.action === "turn-skill") Turn.setSkill(role, t.value);
             else if (t.dataset.action === "turn-enter") Turn.enter(role, t.value);
+            else if (t.dataset.action === "turn-helper-claim") Turn.setHelper(Number(t.dataset.idx), { actorId: t.value || null });
+            else if (t.dataset.action === "turn-helper-skill") Turn.setHelper(Number(t.dataset.idx), { skillId: t.value });
+            else if (t.dataset.action === "turn-helper-enter") Turn.enterHelper(Number(t.dataset.idx), t.value);
         });
         // drag by header
         el.addEventListener("pointerdown", (ev) => {
@@ -4875,6 +4946,9 @@ const WayfarerPanel = (() => {
                 case "turn-begin": Turn.begin(); if (Turn.active) Travel.cancel(); break;
                 case "turn-roll": await Turn.roll(btn.dataset.role); break;
                 case "turn-adjust": Turn.adjust(btn.dataset.role, Number(btn.dataset.d)); break;
+                case "turn-add-helper": Turn.addHelper(); break;
+                case "turn-helper-roll": await Turn.rollHelper(Number(btn.dataset.idx)); break;
+                case "turn-helper-drop": Turn.dropHelper(Number(btn.dataset.idx)); break;
                 case "turn-resolve": await Turn.resolve(); break;
                 case "turn-end": Turn.end(); break;
                 case "camp-danger": Camp.setDanger(Number(btn.dataset.n)); break;
@@ -5049,6 +5123,34 @@ const WayfarerPanel = (() => {
                 </div>`;
         }).join("");
 
+        // HELPERS — extra (or doubled-up) party members who roll a role's skill; the better roll wins at resolve.
+        const helperSkillOpts = (sel) => HELPER_SKILLS.map(s => `<option value="${s}" ${sel === s ? "selected" : ""}>${CONFIG.DND5E?.skills?.[s]?.label || s}</option>`).join("");
+        const helperRows = (Turn.helpers || []).map((h, i) => {
+            const badge = h.total != null ? `<span class="cwf-tier cwf-${Turn.outcomeFor(h)}">${h.total}</span>` : "";
+            const rollRow = h.actorId ? `
+                <div class="cwf-roll-row">
+                    <button class="cwf-btn cwf-roll" data-action="turn-helper-roll" data-idx="${i}" ${dis}><i class="fa-solid fa-dice-d20"></i> Roll</button>
+                    <input class="cwf-enter" data-action="turn-helper-enter" data-idx="${i}" type="number" placeholder="#" title="Type a d20 total" value="${h.total ?? ""}" ${dis}>
+                    ${badge}
+                </div>` : "";
+            return `
+                <div class="cwf-role cwf-helper ${h.actorId ? "claimed" : ""}">
+                    <div class="cwf-claim">
+                        <select class="cwf-sel" data-action="turn-helper-claim" data-idx="${i}" ${dis} title="Who is helping?">${memberOpts(h.actorId)}</select>
+                        <select class="cwf-sel" data-action="turn-helper-skill" data-idx="${i}" ${dis} title="Help with this skill — backs up the role rolling the SAME skill, taking the better roll">${helperSkillOpts(h.skillId)}</select>
+                        <button class="cwf-btn cwf-helper-x" data-action="turn-helper-drop" data-idx="${i}" ${dis} title="Remove helper"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
+                    ${rollRow}
+                </div>`;
+        }).join("");
+        const helperSection = (Turn.step !== "resolved" || helperRows)
+            ? `<div class="cwf-helpers">
+                    <div class="cwf-role-h cwf-helpers-h"><i class="fa-solid fa-hands-holding-circle"></i> <b>Helpers</b> <span class="cwf-muted2">roll a role's skill — better roll wins</span></div>
+                    ${helperRows}
+                    ${Turn.step !== "resolved" ? `<button class="cwf-btn cwf-help-add" data-action="turn-add-helper" ${dis}><i class="fa-solid fa-plus"></i> Add helper</button>` : ""}
+               </div>`
+            : "";
+
         const footer = Turn.step === "resolved"
             ? `<button class="cwf-btn" data-action="turn-end" ${dis}><i class="fa-solid fa-route"></i> New turn</button>
                <button class="cwf-btn cwf-primary" data-action="camp" ${dis}><i class="fa-solid fa-campground"></i> Make camp</button>`
@@ -5060,6 +5162,7 @@ const WayfarerPanel = (() => {
                 <div class="cwf-label">Travel Turn · <b>${dcLabel}</b> <span class="cwf-muted2">${govLabel} · ${Turn.route.length} hex${Turn.route.length === 1 ? "" : "es"}</span></div>
                 ${cwfRouteBreakdownHTML(Turn.route, dc)}
                 <div class="cwf-roles">${cards}</div>
+                ${helperSection}
                 <div class="cwf-actions">${footer}</div>
             </div>`;
     }
