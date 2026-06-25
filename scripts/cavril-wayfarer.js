@@ -3724,6 +3724,88 @@ const TRAVELING_MERCHANTS = [
   {"key": "nan-threnody", "name": "Nan Threnody", "title": "the Hazel-Wife; She Who Takes No Coin", "species": "Fey-touched human, or human-touched fey — a hedge-trader the Two Sisters acknowledge as kin, who has lived on the gift-economy so long the rules have grown into her", "appearance": "A bird-boned old woman under a hazel-staff hung with everything anyone ever gave her, who leaves no print in soft ground on her left side only, as though half of her already walks the other road.", "voice": "Sing-song, riddling, fond and sharp by turns — she speaks in the old courtesy where every word is a clause and every gift is a contract, and she will not, cannot, take your money: she recoils from coin the way others recoil from a snake, and barters only in things freely given. She asks 'what will you give?' and 'what is it worth to you?' and means the second question literally, as a price written in the soul.", "biomes": ["temperate", "boreal", "jungle", "tundra", "desert", "water", "void"], "road": false, "stock": ["A handful of hazelnuts and a drink of clean water — the mundane anchor, and not so mundane: the nut is the Green-Eyed Sister's gift in mortal hands, 'for a thirst you can't yet name,' and it will be water in the desert when you need it, if you took it glad.", "Safe passage through the fog, the cold, the watching wood — sold for a true kindness done in front of her to someone who can't repay it; she trades protection only to the generous, because only the generous can hold it.", "A name back — if the desert king or the candle-man or the road has taken a name off you, Nan can fetch it home, for the price of a name you give *freely*, your own or a gift of one you love and are willing to spend.", "A year of someone's grief, lifted clean and kept in a nutshell 'till you've strength to carry it again' — she will not destroy it (grief is not hers to unmake) but she'll hold it, gladly, for a song you compose for her on the spot and never sing again.", "A memory you'd rather keep, set safe in amber sap where the Thirst-King and the Collector can't spend it — warded, for the gift of a memory you're glad to be rid of, traded straight across.", "Directions that are true — to water, to shelter, to the gentler of two fey, to the door out of the fog — for the only coin she keeps: a promise, freely sworn, to give the next traveller something for nothing."], "buys": ["A true gift, freely given, expecting nothing — this is the only currency she banks, and she pays for it in wonders, because in a country where every gift is a claim, a gift given *without* one is the rarest thing there is, and she hoards them like a dragon hoards gold.", "A grudge surrendered — not bought (she'd never buy a grudge, it's poison coin) but *forgiven* in her presence, and she'll pay for the forgiveness as for a gift, because letting a debt go ungrudged is the one move the fey market has no answer to."], "rumour": "Of the Tithe-Warden and his bark book: 'There's a clerk walks the deep road with a ledger that grows, and he'll read you a sum you can't argue down with coin, only with *kindness banked* — so bank it, dearie, bank it glad, for his pages don't tally what you kept, only what you gave away.'", "hook": "Nan Threnody is the merchant who *only* deals in the world's safe currency — she will not touch coin, and trades wonders (a name back, a year of grief held safe, true passage through the fog) for nothing but things freely given and grudges freely forgiven. She is the loophole walking: in a country where every gift is a claim, she has built a stall out of the one exception, the gift given *without* a claim, and she pays a fortune for it because the fey themselves cannot manufacture it. A party that grasps the rule can leave her stall provisioned for the whole threshold — warded memories, a fetched name, safe crossings — having paid only in generosity they were going to spend anyway; a party that tries to buy her with coin, or haggles, or gives 'freely' while grudging it, gets nothing, because she can taste the difference and the difference is the entire point. She is the Two Sisters' lesson made benevolent: honour the gift, give glad, and the fey market turns, for once, in your favour.", "arc": "Law: generosity is the only safe currency (the gift given without a claim is the one move the market can't answer). Threads: the Two Sisters (Arc A — she is the gift-logic of the Green-Eyed Sister, mortal-side and kindly); the Tithe-Warden's ledger (Arc A/E — she counsels banking glad-gifts against the bill he'll read); the Thirst-King's Emissary and the Collector (Arc E — she wards memories and names against the market they trade in); What Walks in the Fog (Arc D — she sells the fog's safe passage to the generous).", "readAloud": "She is sitting where there was no one a moment ago, a tiny old woman beneath a hazel-staff so hung with trinkets — a ribbon, a thimble, a baby's curl, a soldier's button, a hundred small given things — that it chimes like the road-wife's apron, but softer, like memory. 'Put it away, put it away,' she clucks before a single coin clears your purse, flapping a hand as if you'd drawn a blade. 'I'll not touch the cold round stuff, it's all *owed*, every penny of it, and I deal only in the free.' She tilts her head, bright as a sparrow, and her left side throws no shadow at all on the bright ground. 'Now. There's fog ahead that counts, and cold that smiles, and a clerk with a growing book, and I can see you safe past every one of them, dearie. But not for coin. Never for coin.' She leans in, and her eyes are very green, and very old. 'What will you give — *glad*, mind, glad, or it's worth nothing to me — for nothing back at all?'", "lore": "Nan Threnody has lived so long on the fey gift-economy that its first rule has grown into her bones: a gift is a claim, always, except the gift given freely and gladly with no claim attached — and that exception is the only thing she eats. She may once have been a human hedge-witch the Two Sisters took a liking to, or a fey who went so native to kindness she forgot how to take, but it no longer matters; she is the benevolent face of the same law that damns everyone else, the proof that the country's cruellest rule has a door in it for the generous. The cost of dealing with Nan is the gentlest in PRIMUS and the hardest for a grasping party to pay: you must give her something *truly* freely, wanting nothing, and mean it all the way down, because she can taste a grudging gift like sour milk and will hand it back. To the open-handed she is the best friend on the road, the one merchant whose wonders come with no hook in them. To the grasping she is a locked door with a smile, selling everything they need for the one coin they cannot counterfeit."},
   {"key": "the-bell-wife", "name": "Annot Drowne", "title": "the Bell-Wife; the Ferry-Keeper of the Far Bank", "species": "Drowned — the Ferryman's other half, or his widow, or the debt itself in an apron; a woman who tolled under for the river's favour and trades from the bank she came back to", "appearance": "A sturdy, dripping woman who is always already on the far side of any water you mean to cross, her wagon a flat ferry-barge beached on the wrong bank, a green bronze bell the size of a skull hung where a shop-sign should be.", "voice": "Low and pooling, an undertow under every sentence, kind the way deep water is kind right up until it isn't. She speaks in the river's grammar of currents and crossings and what is owed downstream, counts under her breath ('one, and one, and one more than there should be'), and tolls the little bell once, softly, to seal a bargain — after which you'll find you agreed to more than you heard.", "biomes": ["water", "temperate", "boreal", "tundra", "frozen", "wasteland", "tainted", "void"], "road": true, "stock": ["Dry passage across any water, ahead of the current, before you can hail her — the mundane anchor that isn't, because like the Ferryman she waves off coin, and a crossing taken and not repaid is a favour the river will want returned upstream, at the source.", "A safe drink — water that is *only* water, drawn from above the dream, sold to those who've tasted the River-Grey Sister's sweetness and want the forest out of their sleep again; she alone can tell the two apart by ear.", "The drowned bell's count — for a price she'll tell you the true number of your party as the river reckons it, which is to say your number *plus one*, and name the extra if you dare to ask, though knowing the One Who Follows by name is its own undertow.", "A held breath, sold back — if the fog or the cold or the deep has stopped someone's breath, Annot can return it, once, for a breath of yours held now against that need; she keeps them in stoppered green bottles that fog from within.", "Passage for the dead — she'll carry a body, or a soul, or a debt across to the far bank where it can rest or be paid, ferrying what the living can't, for the toll all ferrymen take and never name in coin.", "A bell of your own, cast small from the green bronze, that tolls when the water nearby remembers a debt — a warning-bell for a country laced with owed crossings, and a thing that will not stop ringing as you near the forest."], "buys": ["The breath you're holding right now — named the instant you realise you're holding it — 'give it me, love, you'll take another'; a price that is a held breath today and a debt the river collects at the source, where all its favours come due.", "The first word you spoke at the last dawn, or the last word you'll speak at the next — she trades in the thresholds of speech the way the river trades in the thresholds of the bank, and pays in crossings for the words you let go over the water."], "rumour": "Of the Ferryman, with a still face: 'You've met him, then — the slow kind man who poles you over and won't take your coin. He's my own, or I'm his, the water's never said which. We're two banks of the one crossing, and the favour he lent you upstream, I'm the one stood downstream to collect.'", "hook": "Annot Drowne is the Ferryman's downstream half — where he lends the easy crossing and waves off coin, she is the bank where that favour comes home to roost — and she sells the one cure for the River-Grey Sister's sweet water (clean water, the dream poured back out of your sleep) and the one warning for a country full of owed crossings (a bell that tolls when the water remembers a debt). The encounter turns on the river's law that a gift accepted is a claim and a crossing taken is a favour owed upstream: a party that repays her gladly — a breath, a first word, a kindness left for the next traveller — settles the river's account before the bell can count it against them at the source; a party that takes her dry passage and stiffs her finds every water from here to the forest tugging them a hand's-width sideways, and the drowned bell counting them louder. Most chilling, she will, for the right toll, tell the party the true number the bell counts — *plus one* — and name the One Who Follows, turning Arc F's dread from a question into a debt with a face.", "arc": "Law: a gift accepted is a claim (the river's dialect — a crossing taken is a favour owed upstream). Threads: the Ferryman's Debt (Arc A — she is its far-bank face, the collection to his loan); the drowned bell that counts (Arc A, beat A2 — her stock is its count, party plus one); the River-Grey Sister's dream-water (Arc D — she sells the cure and tells true water from sweet); What Walks in the Fog & the frozen smile (Arc D — she returns held breaths the cold and fog stole); the One Who Follows (Arc F — she can name the extra the bell counts).", "readAloud": "You come down to the water meaning to find a ford, and she is already on the other side, which is wrong, because there was no one there and there is no bridge and you did not see a boat. Her barge is beached on the far bank like a shop run aground, and from a post where a sign should hang swings a bell of green-black bronze the size of a skull, and the woman beside it is wet to the waist though the day is dry. 'Come over, come over,' she calls, low and pooling, and somehow the barge is at your feet now without having crossed the gap, dry and waiting. 'No coin, loves, never coin — the river gave you the easy water, didn't it, somewhere back along, and it does so like its favours returned.' She tolls the little bell once, soft, and under the sound of it you hear the big bell answer from somewhere deep and drowned, counting — and you count with it, without meaning to, and reach a number that is one more than there are of you. 'Aye,' says Annot Drowne, watching your face. 'Plus one. Always plus one, this close to home. Shall I tell you who?'", "lore": "Annot Drowne tolled herself under, once, for the river's favour — a crossing for a drowning child, a passage no living ferry could make — and the river kept her the way it keeps all its debts: not destroyed, only moved to the far bank, to stand downstream of the kind slow Ferryman and collect what he so generously lends. They are two banks of one crossing, his loan and her ledger, and between them they are the Ferryman's Debt entire. She is kind, genuinely, the way deep water is kind to a good swimmer, and she deals fair by the river's law, which is the world's law in a wetter accent: a crossing taken is a favour owed, a gift accepted is a claim, and the favour always comes due upstream, at the source, which is the forest. The cost of dealing with the Bell-Wife is that every easy crossing she gives is a thread pulling you toward the threshold where the river's account is settled — and that she can hear, in the toll of a drowned bell, the exact number the forest expects to receive, which has been, since you stepped into the first boat, one more than you packed."},
 ];   // { key,name,title,species,appearance,voice,biomes[],road,stock[],buys[],rumour,hook,arc,readAloud,lore } — injected below
+// ── ROAD CAST → CAMPAIGN CODEX ───────────────────────────────────────────────────────────────────────────────────
+// A hand-crafted merchant/NPC is too rich for a chat card. When Campaign Codex is installed we instead build them a real
+// NPC JOURNAL — full bio, wares, the quest hook, GM-only secrets, auto-linked to any named cast they touch, with a fitting
+// token — and the chat card shrinks to a portrait + one line + "Open journal". Created lazily the first time they're met.
+const CC_NS = "campaign-codex";
+function cwfRoadCastLinks(m, text) {   // link the named-cast CC journals this character's bio/lore mentions
+    try {
+        const t = String(text || "").toLowerCase(), out = [];
+        for (const j of (game.journal || [])) {
+            try { if (j.getFlag(CC_NS, "type") !== "npc" || j.name === m.name) continue; const nm = String(j.name).toLowerCase(); if (nm.length > 3 && t.includes(nm)) out.push(j.uuid); } catch (e) { /* noop */ }
+        }
+        return out.slice(0, 8);
+    } catch (e) { return []; }
+}
+function cwfRoadCastToken(m) {   // best-effort: a world actor whose name/race matches the species → borrow its art
+    try {
+        const sp = cwfShortSpecies(m.species || "").toLowerCase(); if (!sp || sp.length < 3) return null;
+        const a = (game.actors || []).find(x => !x.hasPlayerOwner && (String(x.name).toLowerCase().includes(sp) || String(x.system?.details?.race || x.system?.details?.type?.value || "").toLowerCase().includes(sp)));
+        return a?.prototypeToken?.texture?.src || a?.img || null;
+    } catch (e) { return null; }
+}
+async function cwfRoadCastJournal(m, kind) {   // find or CREATE + populate this character's Campaign Codex NPC journal
+    if (!game.campaignCodex || !game.user?.isGM || !m) return null;
+    let doc = (game.journal || []).find(j => { try { return j.getFlag(CC_NS, "type") === "npc" && j.name === m.name; } catch (e) { return false; } });
+    if (doc) return doc;
+    try { doc = await game.campaignCodex.createNPCJournal(null, m.name, false); } catch (e) { warn("createNPCJournal failed", e); return null; }
+    if (!doc) return null;
+    const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
+    const ul = (arr) => (arr?.length) ? `<ul>${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
+    const sec = (label, body) => body ? `<h3>${label}</h3>${body}` : "";
+    const fullSp = String(m.species || "").trim();
+    const desc = `<p><em>${esc(m.title || (kind === "merchant" ? "a traveling merchant" : "a wayfarer on the road"))}${m.arc ? ` · ${esc(m.arc)}` : ""}</em></p>`
+        + (fullSp ? `<p><strong>Nature.</strong> ${esc(fullSp)}</p>` : "")
+        + (m.readAloud ? `<blockquote>${esc(m.readAloud)}</blockquote>` : "")
+        + (m.appearance ? `<p><strong>Looks.</strong> ${esc(m.appearance)}</p>` : "")
+        + (m.voice ? `<p><strong>Voice.</strong> ${esc(m.voice)}</p>` : "")
+        + (m.situation ? `<p><strong>Scene.</strong> ${esc(m.situation)}</p>` : "")
+        + (m.wants ? `<p><strong>Wants.</strong> ${esc(m.wants)}</p>` : "")
+        + sec("Sells", ul(m.stock)) + sec("Pays well for", ul(m.buys))
+        + (m.rumour ? sec("Rumour", `<p>“${esc(m.rumour)}”</p>`) : "")
+        + (m.hook ? sec(`Quest hook${m.arc ? ` · ${esc(m.arc)}` : ""}`, `<p>${esc(m.hook)}</p>`) : "");
+    const outc = Array.isArray(m.outcomes) ? m.outcomes.join(" · ") : m.outcomes;
+    const notes = `<p><strong>The truth — GM only.</strong></p>`
+        + (m.lore ? `<p>${esc(m.lore)}</p>` : "")
+        + (m.twist ? `<p><strong>Twist.</strong> ${esc(m.twist)}</p>` : "")
+        + (outc ? `<p><strong>If the party helps / refuses / exploits.</strong> ${esc(outc)}</p>` : "");
+    try {
+        const data = doc.getFlag(CC_NS, "data") || {};
+        await doc.setFlag(CC_NS, "data", { ...data, description: desc, notes, associates: cwfRoadCastLinks(m, [m.lore, m.hook, m.readAloud, m.appearance].join(" ")) });
+        const img = cwfRoadCastToken(m); if (img) await doc.setFlag(CC_NS, "image", img);
+    } catch (e) { warn("populate road-cast journal failed", e); }
+    return doc;
+}
+function cwfRoadCastCompactCard(m, cls, kind, uuid) {
+    const esc = cwfEsc;
+    const lead = String(m.readAloud || m.situation || m.appearance || "").split(/(?<=[.!?])\s/)[0] || "";
+    const sub = `${esc(cwfShortSpecies(m.species || ""))}${cls?.label ? " · " + esc(cls.label) : ""}${m.arc ? " · " + esc(m.arc) : ""}`;
+    const foot = `<div class="cwf-cardbtns"><button class="cwf-cardbtn cwf-primary" data-cwf="open-journal" data-uuid="${esc(uuid)}" title="Open the full Campaign Codex journal — bio, wares, hook, connections + secrets"><i class="fa-solid fa-book-open"></i> Open journal</button>${globalThis.CavrilEncounterStage ? `<button class="cwf-cardbtn" data-cwf="stage-scene" title="Stage a best-match scene backdrop for this meeting"><i class="fa-solid fa-masks-theater"></i> Stage a scene</button>` : ""}</div>`;
+    const body = `<div class="cwf-merch-read">${esc(lead)}</div><div class="cwf-muted2" style="font-size:11px;margin-top:5px"><i class="fa-solid fa-book-open" style="opacity:.6"></i> Full bio · wares · hook · who they know · secrets — in the journal.</div>`;
+    return cwfCardShell(kind === "merchant" ? "fa-store" : "fa-user", `${esc(m.name)}${m.title ? ", " + esc(m.title) : ""}`, body, { sub, footerHTML: foot });
+}
+// Post a road-cast member: with Campaign Codex → a COMPACT card linked to a freshly-built journal (and optionally open it);
+// without CC → the full chat card (unchanged). Returns the journal (or null).
+async function cwfRoadCastPost(m, cls, kind, { open = false } = {}) {
+    const gmIds = game.users.filter(u => u.isGM).map(u => u.id), whisper = gmIds.length ? gmIds : undefined;
+    let journal = null, uuid = null;
+    if (game.campaignCodex) { try { journal = await cwfRoadCastJournal(m, kind); uuid = journal?.uuid || null; } catch (e) { warn("road-cast journal failed", e); } }
+    const content = uuid ? cwfRoadCastCompactCard(m, cls, kind, uuid)
+        : (kind === "merchant" ? TravelingMerchants.card(m, cls) : NarrativeNPCs.card(m, cls));
+    try { await ChatMessage.create({ content, whisper }); } catch (e) { warn("road-cast post failed", e); }
+    if (open && journal) { try { journal.sheet.render(true); } catch (e) { /* noop */ } }
+    return journal;
+}
+// Build (or refresh) Campaign Codex journals for the WHOLE road cast at once — 30 NPC pages, auto-linked + tokened.
+async function cwfBuildRoadCastCodex() {
+    if (!game.campaignCodex) { ui.notifications?.warn(`${TITLE}: Campaign Codex isn't installed — no journals to build.`); return 0; }
+    if (!game.user?.isGM) return 0;
+    const all = [...TravelingMerchants.list().map(m => [m, "merchant"]), ...NarrativeNPCs.list().map(n => [n, "npc"])];
+    let n = 0; for (const [m, kind] of all) { try { if (await cwfRoadCastJournal(m, kind)) n++; } catch (e) { /* noop */ } }
+    ui.notifications?.info(`${TITLE}: ${n} road-cast NPC journals in Campaign Codex — bios, hooks, connections + secrets. (Run again after meeting more to refresh.)`);
+    return n;
+}
 const TravelingMerchants = (() => {
     let _recent = [];
     const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
@@ -3760,8 +3842,7 @@ const TravelingMerchants = (() => {
         try {
             if (!game.user.isGM || !game.settings.get(MOD, "merchantCards")) return null;
             const m = pick(cls); if (!m) return null;
-            const gmIds = game.users.filter(u => u.isGM).map(u => u.id);
-            await ChatMessage.create({ content: card(m, cls), whisper: gmIds.length ? gmIds : undefined });
+            await cwfRoadCastPost(m, cls, "merchant");   // compact card + a Campaign Codex journal if installed; else the full card
             return m;
         } catch (e) { warn("traveling merchant failed", e); return null; }
     }
@@ -3831,8 +3912,7 @@ const NarrativeNPCs = (() => {
         try {
             if (!game.user.isGM || !game.settings.get(MOD, "roadNpcCards")) return null;
             const n = pick(cls); if (!n) return null;
-            const gmIds = game.users.filter(u => u.isGM).map(u => u.id);
-            await ChatMessage.create({ content: card(n, cls), whisper: gmIds.length ? gmIds : undefined });
+            await cwfRoadCastPost(n, cls, "npc");   // compact card + a Campaign Codex journal if installed; else the full card
             return n;
         } catch (e) { warn("narrative npc failed", e); return null; }
     }
@@ -3851,11 +3931,14 @@ const NarrativeNPCs = (() => {
 function meetRoadCast(cls, { merchant = null } = {}) {
     try {
         if (!game.user.isGM) return null;
-        const gmIds = game.users.filter(u => u.isGM).map(u => u.id), whisper = gmIds.length ? gmIds : undefined;
         const wantMerchant = merchant == null ? (Math.random() < 0.5) : !!merchant;
-        const postMerchant = () => { const m = TravelingMerchants.pick(cls); if (m) { ChatMessage.create({ content: TravelingMerchants.card(m, cls), whisper }); return m; } return null; };
-        const postNpc = () => { const n = NarrativeNPCs.pick(cls); if (n) { ChatMessage.create({ content: NarrativeNPCs.card(n, cls), whisper }); return n; } return null; };
-        return (wantMerchant ? (postMerchant() || postNpc()) : (postNpc() || postMerchant())) || null;
+        let m = null, kind = null;
+        const tryMerchant = () => { const x = TravelingMerchants.pick(cls); if (x) { m = x; kind = "merchant"; } return !!x; };
+        const tryNpc = () => { const x = NarrativeNPCs.pick(cls); if (x) { m = x; kind = "npc"; } return !!x; };
+        if (wantMerchant) { tryMerchant() || tryNpc(); } else { tryNpc() || tryMerchant(); }
+        if (!m) return null;
+        cwfRoadCastPost(m, cls, kind, { open: true });   // a DELIBERATE meet → open the full journal + post the compact card
+        return m;
     } catch (e) { warn("meetRoadCast failed", e); return null; }
 }
 
@@ -5545,10 +5628,11 @@ Hooks.once("ready", () => {
         exploreLocation: (k) => Tables.exploreLocation(k),           // roll one beat from a named location's table → GM whisper
         locations: () => { const l = Tables.locationKeys(); console.table(l); return l; },   // list the named set-piece tables
         travelingMerchants: () => { const l = TravelingMerchants.list().map(m => ({ name: m.name, title: m.title, biomes: (m.biomes || []).join("/"), arc: m.arc })); console.table(l); return l; },   // the hand-crafted roadside merchants
-        merchantCard: (key) => { const m = TravelingMerchants.list().find(x => x.key === key || (x.name || "").toLowerCase().includes(String(key || "").toLowerCase())); if (m) ChatMessage.create({ content: TravelingMerchants.card(m, {}), whisper: game.users.filter(u => u.isGM).map(u => u.id) }); return m || null; },   // whisper a specific merchant's card
+        merchantCard: (key) => { const m = TravelingMerchants.list().find(x => x.key === key || (x.name || "").toLowerCase().includes(String(key || "").toLowerCase())); if (m) cwfRoadCastPost(m, {}, "merchant", { open: true }); return m || null; },   // open a merchant's journal + post the compact card
         buildMerchantTable: () => TravelingMerchants.buildTable(),     // create the editable "Cavril Traveling Merchants" RollTable
         roadNpcs: () => { const l = NarrativeNPCs.list().map(n => ({ name: n.name, title: n.title, biomes: (n.biomes || []).join("/"), arc: n.arc })); console.table(l); return l; },   // the hand-crafted road-encounter NPCs
-        roadNpcCard: (key) => { const n = NarrativeNPCs.list().find(x => x.key === key || (x.name || "").toLowerCase().includes(String(key || "").toLowerCase())); if (n) ChatMessage.create({ content: NarrativeNPCs.card(n, {}), whisper: game.users.filter(u => u.isGM).map(u => u.id) }); return n || null; },
+        roadNpcCard: (key) => { const n = NarrativeNPCs.list().find(x => x.key === key || (x.name || "").toLowerCase().includes(String(key || "").toLowerCase())); if (n) cwfRoadCastPost(n, {}, "npc", { open: true }); return n || null; },   // open an NPC's journal + post the compact card
+        buildRoadCastCodex: () => cwfBuildRoadCastCodex(),            // build Campaign Codex journals for ALL 30 road-cast at once
         buildRoadEncounterTable: () => NarrativeNPCs.buildTable(),     // create the editable "Cavril Road Encounters (NPCs)" RollTable
         buildAllTables: async () => {   // one call: every editable RollTable the system can seed — biome, locations, merchants, road NPCs
             const r = {};
@@ -5616,6 +5700,7 @@ function wireCardButtons(root) {
                 if (act === "dawn") { advanceToDawn(); return; }
                 if (!game.user.isGM) return;
                 if (act === "stage") { await globalThis.CavrilEncounterStage?.stageEncounter?.({ surprised: el.dataset.surprised === "1" }); }   // build CZEPEKU map + foes + music; pass the surprise so a Scout-failed / unwatched encounter fires the Ambush cinematic
+                else if (act === "open-journal") { try { const d = await fromUuid(el.dataset.uuid); d?.sheet?.render(true); } catch (e) { warn("open journal failed", e); } }   // open the road-cast member's Campaign Codex journal
                 else if (act === "stage-scene") { await globalThis.CavrilEncounterStage?.stageScene?.(); }   // best-match narrative backdrop for THIS meeting (no foes)
                 else if (act === "stage-map") { await globalThis.CavrilEncounterStage?.stageBattlemap?.(); }   // best-match empty battle map for this hex
                 else if (act === "enter-encounter") { await globalThis.CavrilEncounterStage?.enterEncounter?.(el.dataset.scene); }   // move to the staged scene
