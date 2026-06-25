@@ -200,6 +200,13 @@
 /* actions */
 .cwf-actions { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 2px; }
 .cwf-actions .cwf-btn { min-width: 84px; }
+.cwf-actions-stack { flex-direction: column; }
+.cwf-actions-stack .cwf-btn { width: 100%; }
+/* camp rest summary — night length, wake time, exhaustion recovery, and the sleep-in stepper */
+.cwf-rest-sum { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-top: 7px; padding: 6px 9px; border-radius: 7px; background: color-mix(in srgb, var(--cwf-accent) 12%, transparent); font-size: 12px; flex-wrap: wrap; }
+.cwf-rest-sum i { color: var(--cwf-accent); margin-right: 4px; }
+.cwf-rest-sleepin { display: flex; align-items: center; gap: 7px; margin-top: 5px; font-size: 11px; color: var(--cwf-muted); }
+.cwf-rest-si { min-width: 30px; text-align: center; font-weight: 700; color: var(--cwf-text); font-size: 12px; }
 .cwf-btn { flex: 1; height: 30px; border-radius: 8px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-text); cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-size: 12px; }
 .cwf-btn:hover:not(:disabled) { border-color: var(--cwf-accent); }
 .cwf-btn:disabled { opacity: .5; cursor: default; }

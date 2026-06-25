@@ -415,7 +415,7 @@ const Store = (() => {
         g.register(MOD, "lastRoles", { scope: "world", config: false, type: Object, default: {} });
         // Night camp / watch / danger.
         g.register(MOD, "dangerDefault", { name: "Default danger level", hint: "Base encounter danger (0-5) for new scenes — drives BOTH day-travel events and night camp checks. Adjustable per scene in the Camp panel. 0 = safe road, 2 = ordinary wilds (default), 3-4 = hostile region, 5 = deadly. At 0-1 a competent party sees almost no encounters; bump it to make the wilds bite.", scope: "world", config: true, type: Number, default: 2, range: { min: 0, max: 5, step: 1 } });
-        g.register(MOD, "nightHours", { name: "Night length (hours)", hint: "How many hourly encounter checks the night runs (watches split this evenly).", scope: "world", config: true, type: Number, default: 8 });
+        g.register(MOD, "nightHours", { name: "Base rest (sleep hours)", hint: "Hours of SLEEP a long rest needs (default 8). The night runs longer than this so every watcher still gets it AROUND their shift — more watchers = shorter shifts = an earlier wake. The number of 2-hour encounter checks scales with the resulting night.", scope: "world", config: true, type: Number, default: 8 });
         g.register(MOD, "encounterScale", { name: "Encounter die (x/N per hour)", hint: "Denominator for the hourly NIGHT encounter check. Higher = rarer. Default 40 (nights were a touch too quiet at 50).", scope: "world", config: true, type: Number, default: 40 });
         g.register(MOD, "oneEncounterPerNight", { name: "One encounter per night", hint: "Stop checking once a night encounter triggers (at most one per night).", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "campHour", { name: "Bed-down hour (0-23)", hint: "Hour the party turns in when you Make Camp.", scope: "world", config: true, type: Number, default: 21 });
@@ -454,7 +454,10 @@ const Store = (() => {
         g.register(MOD, "lastRestTime", { scope: "world", config: false, type: Number, default: 0 });   // worldTime of the party's last long rest — drives the hours-awake clock
         // Watch ↔ rest: a long watch shift BLOCKS that member's long-rest exhaustion
         // recovery (the native rest still restores HP / slots / hit dice).
-        g.register(MOD, "watchRest", { name: "Watches cost exhaustion", hint: "Standing watch applies an exhaustion toll = the shift length ÷ the hours below (the dawn long rest gives 1 level back). They still recover HP / slots / hit dice. Off = the watch costs nothing.", scope: "world", config: true, type: Boolean, default: true });
+        g.register(MOD, "extraRestRecovery", { name: "Sleep in to recover more exhaustion", hint: "Resting past the base 8h removes 1 EXTRA exhaustion per 2 hours slept in, to a max of 3 total per rest (8h=1, 10h=2, 12h=3). The cost is a longer, more dangerous night and a later start. Off = the dnd5e standard of 1 per long rest.", scope: "world", config: true, type: Boolean, default: true });
+        // SUPERSEDED by the self-sizing night (the night now runs long enough that every watcher sleeps a full 8h, so a watch
+        // costs TIME — a later wake — not exhaustion). Default OFF; left for GMs who want the old grueling-watch toll back.
+        g.register(MOD, "watchRest", { name: "Watches cost exhaustion (legacy)", hint: "OFF by default now the night self-sizes so watchers get a full 8h. On = the old toll: a watch applies exhaustion = shift ÷ the hours below.", scope: "world", config: true, type: Boolean, default: false });
         g.register(MOD, "watchBlockHours", { name: "Hours per watch-exhaustion level", hint: "Each whole multiple of this in a watcher's shift = +1 exhaustion (the dawn rest then recovers 1). The night (Night length) splits evenly among watchers, so with an 8h night & 4h here: 1 watcher (8h)=+2 → nets +1 (all-nighter gains a level), 2 (4h)=+1 → nets 0 (no recovery), 3+ (<4h)=0 → recovers. Default 4.", scope: "world", config: true, type: Number, default: 4 });
         // Rest & D&D Beyond re-sync.
         g.register(MOD, "longRestAtDawn", { name: "Long rest at dawn", hint: "When the night resolves to dawn, run a dnd5e long rest for the party (HP, spell slots, hit dice). Exhaustion stays under Wayfarer's watch rules.", scope: "world", config: true, type: Boolean, default: true });
@@ -2051,12 +2054,12 @@ function cwfRestSummary(type, rows) {
 }
 // Rest the whole party. Long rest restores HP/slots/hit dice (NOT exhaustion).
 // Short rest auto-spends hit dice (Foundry-rolled for now; DDB-sourced is the next step).
-async function cwfPartyRest(type, { newDay = false, silent = false } = {}) {
+async function cwfPartyRest(type, { newDay = false, silent = false, extraExh = 0 } = {}) {
     if (!game.user.isGM) return;
     const mem = Party.members();
     if (!mem.length) { ui.notifications?.warn(`${TITLE}: no party members found to rest.`); return; }
     if (!silent) Cinematic.broadcast(type === "long"
-        ? { icon: "fa-bed", title: "Long Rest", subtitle: "the party recovers", tone: "dawn" }
+        ? { icon: "fa-bed", title: "Long Rest", subtitle: extraExh > 0 ? `slept in — recovers ${1 + extraExh} exhaustion` : "the party recovers", tone: "dawn" }
         : { icon: "fa-mug-hot", title: "Short Rest", subtitle: "a moment's respite", tone: "dusk" });
     const rows = [];
     for (const a of mem) {
@@ -2068,6 +2071,12 @@ async function cwfPartyRest(type, { newDay = false, silent = false } = {}) {
             if (type === "long") await a.longRest({ dialog: false, chat: false, newDay });
             else await a.shortRest({ dialog: false, chat: false, autoHD: true, autoHDThreshold: 1 });
         } catch (e) { warn("rest failed", a.name, e); }
+        // Sleep-in bonus: extra hours past the base 8 remove MORE exhaustion — but only for a member the long rest actually
+        // recovered (a starving member, blocked from recovery, gets no bonus either). cur < before.exh = it went down.
+        if (type === "long" && extraExh > 0) {
+            const cur = a.system?.attributes?.exhaustion ?? 0;
+            if (cur > 0 && cur < before.exh) { try { await a.update({ "system.attributes.exhaustion": Math.max(0, cur - extraExh) }); } catch (e) { /* noop */ } }
+        }
         rows.push({ name: a.name, before, after: cwfRestSnapshot(a) });
     }
     cwfRestSummary(type, rows);
@@ -4665,8 +4674,19 @@ const Camp = (() => {
     let active = false, supplyNote = "", watchers = [];   // watchers = ordered actorIds
     let mealResult = null, mealForaged = false;           // carried from Make Camp → resolved at dawn
     let nightDawnPending = null;                           // {nextDay,msgId} while a night encounter halts the flow before dawn
+    let sleepIn = 0;                                       // extra rest hours past the minimum — later wake, more exhaustion recovered
 
-    const nightHours = () => Math.max(1, Number(game.settings.get(MOD, "nightHours")) || 8);
+    // Hours of SLEEP a long rest needs (the "nightHours" setting, default 8). Each watcher must still get this AROUND their
+    // shift, so a watched night runs longer: with w sharing the watch over a night N, each watches N/w and sleeps N−N/w;
+    // set that to the base sleep → N = sleep·w/(w−1). MORE watchers → shorter shifts → shorter night → everyone wakes
+    // EARLIER. Nobody (or a lone watcher who can't both cover the night and sleep) → a clean base sleep. + any sleep-in.
+    const baseSleep = () => Math.max(1, Number(game.settings.get(MOD, "nightHours")) || 8);
+    function baseNightHours(w) { const s = baseSleep(); return w < 2 ? s : Math.round((s * w / (w - 1)) * 2) / 2; }   // to the half-hour
+    const nightHours = () => baseNightHours(watchers.length) + (sleepIn || 0);
+    const setSleepIn = (h) => { sleepIn = Math.max(0, Math.min(8, Math.round((Number(h) || 0) * 2) / 2)); WayfarerPanel.render(); cwfCampRefresh(); };
+    // Exhaustion a peaceful long rest removes: 1 base, +1 per 2 SLEEP-IN hours, capped (so a wrecked party can claw back in
+    // one long, dangerous night). Gated by the extraRestRecovery setting — off = the dnd5e standard 1. v0.55.108.
+    const restRecovery = () => 1 + (game.settings.get(MOD, "extraRestRecovery") ? Math.min(2, Math.floor((sleepIn || 0) / 2)) : 0);
     const dangerScore = () => Store.sceneState().danger ?? (Number(game.settings.get(MOD, "dangerDefault")) || 0);
     const challengeScore = () => cwfChallengeEff();   // public seam for EncounterStage's difficulty — the dial + night bump
 
@@ -4674,7 +4694,7 @@ const Camp = (() => {
         if (!game.user.isGM) return;
         if (cwfLastRest() == null) cwfMarkRested();   // seed the hours-awake clock on the first leg of the journey
         active = true; supplyNote = note; mealResult = consumeResult; mealForaged = !!foraged;
-        nightDawnPending = null;
+        nightDawnPending = null; sleepIn = 0;
         const members = new Set(Party.members().map(a => a.id));
         watchers = (game.settings.get(MOD, "lastWatch") || []).filter(id => members.has(id));
         advanceToNight();
@@ -4791,7 +4811,7 @@ const Camp = (() => {
             const _nAuto = cwfAutoStage() && !!globalThis.CavrilEncounterStage;
             if (_nAuto) { try { globalThis.CavrilEncounterStage.stageEncounter({ surprised: !firstWatcher }); } catch (e) { warn("night auto-stage failed", e); } }
             else Cinematic.broadcast({ icon: "fa-dragon", title: "Ambushed!", subtitle: `${cls?.label || "the wild"} · hour ${firstHour}`, tone: "encounter" });
-            const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span>${_nAuto ? "" : cwfStageBtn(!firstWatcher)}<button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn"><i class="fa-solid fa-sun"></i> Resolved → wake at dawn</button></div>`;
+            const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span>${_nAuto ? "" : cwfStageBtn(!firstWatcher)}<button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn-long" title="Slept in past the fight — full long rest, later wake"><i class="fa-solid fa-bed"></i> Long rest</button><button class="cwf-cardbtn" data-cwf="nightdawn-short" title="Moved out — a short rest's benefit only"><i class="fa-solid fa-mug-hot"></i> Short rest</button></div>`;
             const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "", footerHTML: foot }) }).catch(() => null);
             nightDawnPending = { nextDay, msgId: msg?.id };
             cwfCampFinalize("Night watch — resolve the encounter, then wake at dawn.");   // collapse the camp card so its Resolve can't re-fire
@@ -4803,17 +4823,24 @@ const Camp = (() => {
     }
     // Advance to the following dawn — automatically on a quiet night, or from the
     // "wake at dawn" button once a night encounter has been run.
-    async function wakeAtDawn(nextDay) {
+    async function wakeAtDawn(nextDay, { rest = "long" } = {}) {
         if (!game.user.isGM) return;
         if (nextDay == null) nextDay = nightDawnPending?.nextDay ?? (Store.sceneState().day || 1);
         const pendingMsg = nightDawnPending?.msgId; nightDawnPending = null;
         Music.combat(false);   // back to calm now the fight's over
         await new Promise(r => setTimeout(r, cwfDelayMs()));   // sit in the beat before dawn breaks
-        Cinematic.broadcast({ icon: "fa-sun", title: "Dawn", subtitle: `Day ${nextDay}`, tone: "dawn" });
-        try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(1, Number(game.settings.get(MOD, "wakeHour")) || 6); else await Store.advanceWorldTime(nightHours()); }
+        // Wake time = bed-down + the night's length (which the watch + any sleep-in set) — NOT a fixed dawn hour, so the
+        // party genuinely controls when they rise. campHour 21 + a 10h night → 07:00; + 4h sleep-in → 11:00.
+        const campH = Number(game.settings.get(MOD, "campHour")) || 21, total = campH + nightHours();
+        const wakeH = Math.round(total % 24), dayOff = Math.max(1, Math.floor(total / 24));
+        Cinematic.broadcast({ icon: "fa-sun", title: rest === "short" ? "Roused" : "Dawn", subtitle: `Day ${nextDay} · ${String(wakeH).padStart(2, "0")}:00`, tone: "dawn" });
+        try { const mc = MiniCal.api?.(); if (mc?.setTime) await mc.setTime(dayOff, wakeH); else await Store.advanceWorldTime(Math.round(nightHours())); }
         catch (e) { warn("advance to dawn failed", e); }
         cwfSettleVision();   // big darkness jump back to day → recompute until the map brightens (no lingering black-out)
-        if (game.settings.get(MOD, "longRestAtDawn")) await cwfPartyRest("long", { newDay: true, silent: true });
+        if (game.settings.get(MOD, "longRestAtDawn")) {
+            if (rest === "short") await cwfPartyRest("short", { silent: true });   // a night fight they moved out of → only a short rest's benefit (no exhaustion recovery)
+            else await cwfPartyRest("long", { newDay: true, silent: true, extraExh: restRecovery() - 1 });
+        }
         active = false;
         if (pendingMsg) { const m = game.messages.get(pendingMsg); if (m) { try { await m.update({ content: cwfCardShell("fa-moon", "Night Watch", `<div class="cwf-muted2">Resolved — dawn breaks on Day ${nextDay}.</div>`) }); } catch { /* noop */ } } }
         await cwfCampFinalize(`Resolved — dawn breaks on Day ${nextDay}.`);
@@ -4824,8 +4851,8 @@ const Camp = (() => {
     const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
 
     return {
-        begin, setDanger, toggleWatcher, moveWatcher, setAllWatch, resolveNight, wakeAtDawn, cancel, watcherForHour, shiftHours, dangerScore, challengeScore, nightHours,
-        get active() { return active; }, get watchers() { return watchers; }, get supplyNote() { return supplyNote; },
+        begin, setDanger, toggleWatcher, moveWatcher, setAllWatch, resolveNight, wakeAtDawn, cancel, watcherForHour, shiftHours, dangerScore, challengeScore, nightHours, setSleepIn, restRecovery, baseNightHours,
+        get active() { return active; }, get watchers() { return watchers; }, get supplyNote() { return supplyNote; }, get sleepIn() { return sleepIn; },
         get nightEncounterPending() { return !!nightDawnPending; }
     };
 })();
@@ -4966,8 +4993,11 @@ const WayfarerPanel = (() => {
                 case "camp-watch-down": Camp.moveWatcher(btn.dataset.id, "down"); break;
                 case "camp-watch-all": Camp.setAllWatch(true); break;
                 case "camp-watch-none": Camp.setAllWatch(false); break;
+                case "camp-sleepin": Camp.setSleepIn(Camp.sleepIn + Number(btn.dataset.d)); break;
                 case "camp-resolve": await Camp.resolveNight(); break;
                 case "camp-dawn": await Camp.wakeAtDawn(); break;
+                case "camp-dawn-long": await Camp.wakeAtDawn(null, { rest: "long" }); break;
+                case "camp-dawn-short": await Camp.wakeAtDawn(null, { rest: "short" }); break;
                 case "camp-cancel": Camp.cancel(); break;
             }
         } catch (e) { warn("panel action failed", action, e); }
@@ -5191,9 +5221,10 @@ const WayfarerPanel = (() => {
         if (Camp.nightEncounterPending) return `
             <div class="cwf-section cwf-turn">
                 <div class="cwf-label">Camp · Night <span class="cwf-muted2">${esc(cls?.label || "")}</span></div>
-                <div class="cwf-card-row"><span class="cwf-card-l"><i class="fa-solid fa-dragon" style="color:#e0554d"></i> Encounter</span><span class="cwf-card-v">underway — resolve it, then wake the party</span></div>
-                <div class="cwf-actions">
-                    <button class="cwf-btn cwf-primary" data-action="camp-dawn" ${dis}><i class="fa-solid fa-sun"></i> Resolved → wake at dawn</button>
+                <div class="cwf-card-row"><span class="cwf-card-l"><i class="fa-solid fa-dragon" style="color:#e0554d"></i> Encounter</span><span class="cwf-card-v">the rest was interrupted — resolve the fight, then choose how the night ends</span></div>
+                <div class="cwf-actions cwf-actions-stack">
+                    <button class="cwf-btn cwf-primary" data-action="camp-dawn-long" ${dis} title="Sleep in past the fight — extend the night to re-bank a full rest. They wake later."><i class="fa-solid fa-bed"></i> Slept in → Long rest</button>
+                    <button class="cwf-btn" data-action="camp-dawn-short" ${dis} title="Move out on schedule — only a short rest's benefit (HP from hit dice, no exhaustion recovery, no slots)."><i class="fa-solid fa-mug-hot"></i> Moved out → Short rest</button>
                 </div>
             </div>`;
         return `
@@ -5204,6 +5235,14 @@ const WayfarerPanel = (() => {
                 <div class="cwf-label cwf-watch-label" style="margin-top:6px">Watch order <span class="cwf-muted2">${watchNote}</span>
                     <span class="cwf-watch-bulk"><button class="cwf-mini-btn" data-action="camp-watch-all" ${dis} title="Put the whole party on watch">All</button><button class="cwf-mini-btn" data-action="camp-watch-none" ${dis} title="Clear the watch">Clear</button></span></div>
                 ${cwfWatchRosterHTML({ attr: "action", toggle: "camp-watch", up: "camp-watch-up", down: "camp-watch-down" })}
+                ${(() => {
+                    const night = Camp.nightHours(), campH = Number(game.settings.get(MOD, "campHour")) || 21;
+                    const wakeH = String(Math.round((campH + night) % 24)).padStart(2, "0");
+                    const rec = Camp.restRecovery(), si = Camp.sleepIn, extraOn = !!game.settings.get(MOD, "extraRestRecovery");
+                    const sleepNote = watch.length >= 2 ? "all sleep 8h" : "8h base rest";
+                    return `<div class="cwf-rest-sum"><span><i class="fa-solid fa-bed"></i> Night <b>${night}h</b> · wake <b>${wakeH}:00</b></span><span class="cwf-muted2">${sleepNote} · recovers <b>${rec}</b> exhaustion</span></div>`
+                        + (extraOn ? `<div class="cwf-rest-sleepin"><span class="cwf-muted2">Sleep in</span><button class="cwf-mini-btn" data-action="camp-sleepin" data-d="-2" ${dis || si <= 0 ? "disabled" : ""}>−</button><span class="cwf-rest-si">+${si}h</span><button class="cwf-mini-btn" data-action="camp-sleepin" data-d="2" ${dis || si >= 8 ? "disabled" : ""}>+</button><span class="cwf-muted2">later wake, more recovery</span></div>` : "");
+                })()}
                 <div class="cwf-actions">
                     <button class="cwf-btn" data-action="camp-cancel" ${dis}><i class="fa-solid fa-xmark"></i> Cancel</button>
                     <button class="cwf-btn cwf-primary" data-action="camp-resolve" ${dis}><i class="fa-solid fa-moon"></i> Resolve night → dawn</button>
@@ -5593,7 +5632,9 @@ function wireCardButtons(root) {
                 else if (act === "cwatch-all") { Camp.setAllWatch(true); }
                 else if (act === "cwatch-none") { Camp.setAllWatch(false); }
                 else if (act === "cresolve") { await Camp.resolveNight(); }
-                else if (act === "nightdawn") { await Camp.wakeAtDawn(); }   // after the night encounter is run
+                else if (act === "nightdawn") { await Camp.wakeAtDawn(); }   // after the night encounter is run (legacy default = long)
+                else if (act === "nightdawn-long") { await Camp.wakeAtDawn(null, { rest: "long" }); }   // slept in past the fight → full long rest
+                else if (act === "nightdawn-short") { await Camp.wakeAtDawn(null, { rest: "short" }); }  // moved out → short rest only
                 else if (act === "ccancel") { Camp.cancel(); }
             } catch (e) { warn("card button failed", e); }
         });
@@ -5669,7 +5710,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
         const SECTIONS = [
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "autoTravelOnResolve", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
-            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "wakeHour", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "foodGraceDays", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
+            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "watchRest", "watchBlockHours", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "foodGraceDays", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
             ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
