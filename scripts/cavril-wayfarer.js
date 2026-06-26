@@ -4181,6 +4181,22 @@ async function cwfRoadCastActor(m, kind) {
     if (items.length) { try { await actor.createEmbeddedDocuments("Item", items); } catch (e) { warn("road-cast items failed", e); } }
     return actor;
 }
+// Inject (idempotently) a Campaign Codex sheet WIDGET + its data — the verified CC v5.5.3 recipe: a `sheet-widgets` entry
+// { id, widgetName, counter, active, tab } PLUS the widget's own state at `data.widgets.<typeKey>.<id>`. Drives the merchant
+// restock counter and the per-NPC reputation tracker. Re-running updates the SAME widget (matched by name+tab). v0.55.138.
+async function cwfCodexWidget(doc, widgetName, tab, typeKey, widgetData) {
+    if (!doc?.getFlag) return null;
+    const CCN = "campaign-codex";
+    try {
+        const widgets = foundry.utils.duplicate(doc.getFlag(CCN, "sheet-widgets") || []);
+        let entry = widgets.find(w => w.widgetName === widgetName && (w.tab || "widgets") === tab);
+        if (!entry) { entry = { id: foundry.utils.randomID(), widgetName, counter: widgets.filter(w => w.widgetName === widgetName).length + 1, active: true, tab }; widgets.push(entry); await doc.setFlag(CCN, "sheet-widgets", widgets); }
+        const data = foundry.utils.duplicate(doc.getFlag(CCN, "data") || {});
+        foundry.utils.setProperty(data, `widgets.${typeKey}.${entry.id}`, widgetData);
+        await doc.setFlag(CCN, "data", data);
+        return entry.id;
+    } catch (e) { warn("codex widget inject failed", widgetName, e); return null; }
+}
 // A TRACKABLE Campaign Codex quest from this character's hook — given BY them, so it lands on the Quest Board with the NPC
 // as quest-giver and the twist tucked in GM notes. Idempotent by name (a rebuild re-uses the same quest). v0.55.133.
 async function cwfRoadCastQuest(m, npcDoc) {
@@ -4236,6 +4252,8 @@ async function cwfRoadCastJournal(m, kind) {   // find or CREATE + populate this
         const tags = Array.from(new Set([cwfShortSpecies(m.species || ""), kind === "merchant" ? "merchant" : "road NPC", ...(m.biomes || []), (String(m.arc || "").match(/Arc [A-Z]/)?.[0])].map(t => String(t || "").trim()).filter(Boolean)));
         await doc.setFlag(CC_NS, "data", { ...data, description: desc, notes, tags, associates: cwfRoadCastLinks(m, [m.lore, m.hook, m.readAloud, m.appearance].join(" ")), linkedQuests: quest ? [quest.uuid] : (data.linkedQuests || []) });
         const img = (actor?.img && actor.img !== "icons/svg/mystery-man.svg") ? actor.img : cwfRoadCastToken(m); if (img) await doc.setFlag(CC_NS, "image", img);
+        // A Reputation Tracker on the Info tab → track the party's STANDING with this NPC at a glance (the "alliances" pillar).
+        await cwfCodexWidget(doc, "Reputation Tracker", "info", "reputationtracker", { useLoyalty: false, reputationValue: 0 });
     } catch (e) { warn("populate road-cast journal failed", e); }
     return doc;
 }
@@ -4774,7 +4792,11 @@ const CodexShop = (() => {
                 if (interior.image) await shop.setFlag(MOD_CC, "image", interior.image);   // CC hero image = the interior
             }
         } catch (e) { warn("merchant interior wire failed", e); }
-        const extras = [actor ? "shopkeeper" : null, interior?.scene ? "interior" : null].filter(Boolean).join(" + ");
+        // Pre-wire the Merchant Counter widget to this type's SRD RollTable so the GM RESTOCKS with one click — the inject
+        // recipe is now proven (CC v5.5.3 scrape), so no more dragging the table onto the widget by hand.
+        let restocked = false;
+        try { const table = await tableForType(m.key); if (table) { await cwfCodexWidget(shop, "Merchant Counter", "widgets", "merchantcounter", { restockTables: [{ uuid: table.uuid, multiplier: "1d4", name: table.name, img: table.img || "icons/svg/d20.svg" }] }); restocked = true; } } catch (e) { warn("merchant restock wire failed", e); }
+        const extras = [actor ? "shopkeeper" : null, interior?.scene ? "interior" : null, restocked ? "restock" : null].filter(Boolean).join(" + ");
         try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell(m.type.icon || "fa-store", `Storefront: ${cwfEsc(m.name)}`, cwfRow(m.type.name, `${picks.length} SRD items · APL ${m.level} · markup ×${(m.type.markup ?? 1).toFixed(2)}${extras ? ` · ${extras}` : ""} — open it in the Journal (Campaign Codex shop) to manage stock & trade.`)) }); } catch (e) {}
         ui.notifications?.info(`Cavril: created storefront "${shop.name}" — ${picks.length} items${extras ? ` (+ ${extras})` : ""}.`);
         return shop;
