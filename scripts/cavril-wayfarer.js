@@ -5741,7 +5741,8 @@ const Camp = (() => {
             // music, fire the encounter beat (the cavril-wayfarer.encounter hook already
             // fired — this is where the auto-encounter generator will build it), and wait
             // for the GM to run it. A button wakes the party to dawn afterwards.
-            Music.combat(true);
+            // Music stays on the calm camp ambience here — the tense/combat music now waits until the party ENTERS the staged
+            // scene, not the ambush announcement (a night camp shouldn't have its music spoil the surprise). v0.55.156.
             // Same as day travel: auto-stage in the background + suppress the lead-in so you narrate while it loads.
             const _nAuto = cwfAutoStage() && !!globalThis.CavrilEncounterStage;
             if (_nAuto) { try { globalThis.CavrilEncounterStage.stageEncounter({ surprised: !firstWatcher }); } catch (e) { warn("night auto-stage failed", e); } }

@@ -1966,7 +1966,11 @@
       const { x, y } = snapFree(cx + Math.cos(ang) * r, cy + Math.sin(ang) * r, span);
       try {
         const td = await actors[i].getTokenDocument({ x, y, hidden: false });
-        const obj = td.toObject(); obj.x = x; obj.y = y; data.push(obj);
+        const obj = td.toObject(); obj.x = x; obj.y = y;
+        // Default each token to its FASTEST movement type — a creature with a fly speed spawns flying, a swimmer swimming, etc.
+        // (dnd5e 2024 movement). Best-effort: only override when the fastest isn't plain walk; no-op if the field/speeds are absent.
+        try { const mv = actors[i].system?.attributes?.movement || {}; const fastest = [["fly", mv.fly], ["swim", mv.swim], ["climb", mv.climb], ["burrow", mv.burrow], ["walk", mv.walk]].filter(([, v]) => Number(v) > 0).sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0))[0]; if (fastest && fastest[0] !== "walk") obj.movementAction = fastest[0]; } catch (e) { /* movement default is best-effort */ }
+        data.push(obj);
       } catch (e) { warn(`token for ${actors[i].name} failed`, e); }
     }
     try { return await sceneDoc.createEmbeddedDocuments("Token", data); }
@@ -2863,7 +2867,9 @@
       log(`dropped ${foeTokens.length}/${actors.length} foes around the party${onFallback ? " (current scene)" : ""}.`);
       // Combat music switches NOW — at stage time, while the encounter loads — using the SAME dominant-foe-type logic as
       // Begin Combat (user request), instead of waiting for Enter. _combatMusicScene stops Enter/combatStart restarting it.
-      try { if (CFG.playCombatMusic) { playCombatMusic(actors); _combatMusicScene = scene.id; } } catch (e) { warn("stage combat music failed", e); }
+      // At NIGHT defer the combat-music switch to scene ENTER (a camp ambush keeps its calm music until the party arrives); by
+      // day it still switches at stage time (the prior request). Leaving _combatMusicScene unset lets the Enter path start it. v0.55.156.
+      try { const _nh = (Math.floor((game.time?.worldTime ?? 0) / 3600) % 24 + 24) % 24, _night = _nh >= 21 || _nh < 5; if (CFG.playCombatMusic && !_night) { playCombatMusic(actors); _combatMusicScene = scene.id; } } catch (e) { warn("stage combat music failed", e); }
     }
 
     // 4) Add EVERYONE to the encounter, roll NPC initiative, and call for initiative.
@@ -2915,6 +2921,9 @@
   // the whispered exposition card while the scene loads; the table just feels the air change. v0.55.123.
   function shiftTension() {
     if (!(CFG.tensionOnStage ?? true)) return;
+    // At NIGHT (a camp ambush), DON'T pre-shift the music — keep the calm camp ambience until the party actually ENTERS the
+    // staged scene (combat music starts on Enter). The pre-stage tension slide is a daytime-travel cue only, not a camp spoiler. v0.55.156.
+    try { const h = (Math.floor((game.time?.worldTime ?? 0) / 3600) % 24 + 24) % 24; if (h >= 21 || h < 5) return; } catch (e) { /* fall through */ }
     try { globalThis.Maestro?.tension?.(); } catch (e) { warn("tension shift failed", e); }
   }
   // On manual ENTER: reaffirm tension, fire the alert SFX, and play the Roll-for-Initiative (or Ambush) cinematic OVER the
