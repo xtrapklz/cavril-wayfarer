@@ -520,6 +520,7 @@ const Store = (() => {
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "biomeForageJSON", { name: "Forage difficulty by biome (advanced)", hint: 'Optional JSON of per-biome forage DCs, e.g. {"desert":{"food":18,"water":20},"jungle":{"food":10,"water":11}}. Lower = easier to find. Blank uses the defaults (temperate easy, desert brutal; rivers/coast make water easy, forest eases food).', scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "biomeForageWeightsJSON", { name: "Forage draw weights by biome (advanced)", hint: 'Optional JSON of per-biome forage-DRAW weights {food,water,herb} — the relative odds each draw turns up food, a water source, or a herb. e.g. {"desert":{"food":2,"water":1,"herb":2},"swamp":{"food":4,"water":6,"herb":4}}. Higher = likelier. A river/coast/water hex adds +5 water on top; dense forest +2 food. Blank uses the defaults.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "gatherIngredients", { name: "Forage gathers crafting ingredients", hint: "On a HIGH forage roll (a crit, or well over the DC) also draw a craftable INGREDIENT from this biome's gather table and deposit it in the shared party GROUP inventory (or the Forager's own pack if there's no group actor). Separate from rations & water — never touches the supply counts. Default on.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "biomeGatherJSON", { name: "Biome → gather table (advanced)", hint: 'Optional JSON to remap a biome to a specific RollTable name or id, e.g. {"jungle":"Gathering: Swamp"}. Blank uses the built-in map to Potion-Crafting-&-Gathering\'s "Gathering: <Environment>" tables (searched in world AND compendiums): temperate→Grasslands, boreal/jungle→Forests, savanna→Savannahs, swamp→Swamp, desert→Desert, tundra/frozen→Arctic, volcanic→Volcanos, wasteland/tainted→Blightshore, void→Underground, water & coast→Coast, high elevation→Mountains.', scope: "world", config: true, type: String, default: "" });
         // Cavril: Maestro biome → environment soundscape.
@@ -1519,6 +1520,38 @@ function cwfBiomeForage(biome) {
     try { const raw = game.settings.get(MOD, "biomeForageJSON"); if (raw && String(raw).trim()) { const p = JSON.parse(raw); if (p && typeof p === "object") map = { ...CWF_BIOME_FORAGE, ...p }; } } catch (e) { /* keep defaults */ }
     return map[biome] || map.temperate || { food: 13, water: 13 };
 }
+// Per-biome forage-draw WEIGHTS — the relative odds each DRAW yields food / water / a herb. Lusher biomes weight food up,
+// wet biomes water up, barren ones thin to herbs-or-nothing. A river / coast / water hex adds a big water bump on top, and
+// dense vegetation nudges food (both applied in cwfForageWeights). This is what makes a forage VARY instead of always topping
+// off both food AND water. Overridable via biomeForageWeightsJSON. v0.55.135.
+const CWF_FORAGE_WEIGHTS = {
+    temperate: { food: 6, water: 3, herb: 3 }, boreal: { food: 5, water: 3, herb: 4 }, jungle: { food: 7, water: 4, herb: 5 },
+    savanna:   { food: 5, water: 2, herb: 2 }, swamp:  { food: 4, water: 6, herb: 4 }, desert: { food: 2, water: 1, herb: 2 },
+    tundra:    { food: 3, water: 3, herb: 1 }, frozen: { food: 2, water: 3, herb: 1 }, volcanic: { food: 2, water: 1, herb: 2 },
+    wasteland: { food: 2, water: 1, herb: 2 }, tainted: { food: 2, water: 1, herb: 3 }, void: { food: 1, water: 1, herb: 1 },
+    water:     { food: 3, water: 6, herb: 2 }
+};
+const CWF_FORAGE_WEIGHTS_DEFAULT = { food: 5, water: 3, herb: 3 };
+function cwfForageWeights(gov) {
+    let map = CWF_FORAGE_WEIGHTS;
+    try { const raw = game.settings.get(MOD, "biomeForageWeightsJSON"); if (raw && String(raw).trim()) { const p = JSON.parse(raw); if (p && typeof p === "object") map = { ...CWF_FORAGE_WEIGHTS, ...p }; } } catch (e) { /* keep defaults */ }
+    const biome = gov?.biome || "temperate";
+    const w = { ...(map[biome] || CWF_FORAGE_WEIGHTS_DEFAULT) };
+    if (gov?.river || gov?.coast || gov?.terrainKey === "water" || biome === "water") w.water = (w.water || 0) + 5;   // a reliable source → water draws far likelier
+    if (gov?.vegetation === "high") w.food = (w.food || 0) + 2;   // forest mast / berries / game
+    return w;
+}
+// One weighted draw → "food" | "water" | "herb". Deterministic-friendly: a caller can pre-roll if it needs a seed.
+function cwfForageDraw(weights, roll = Math.random()) {
+    const entries = [["food", weights.food || 0], ["water", weights.water || 0], ["herb", weights.herb || 0]];
+    const total = entries.reduce((s, [, w]) => s + w, 0);
+    if (total <= 0) return "food";
+    let r = roll * total;
+    for (const [k, w] of entries) { if ((r -= w) < 0) return k; }
+    return "food";
+}
+// Draws scale with success: meeting the forage DC = 1 draw, +1 per 2 points clear (the same curve the herb haul used).
+const cwfForageDraws = (total, dc) => 1 + Math.floor(Math.max(0, (total ?? 0) - (dc ?? 0)) / 2);
 // Each travel role faces its OWN DC, shaped by the governing hex's biome: navigation by how legible the ground is, scouting
 // by how much cover blocks sightlines, foraging by how scarce food / water are. Returns { dc, food?, water? } — dc is the
 // success threshold (forage: the EASIER of food / water → you find SOMETHING), food/water the per-resource thresholds.
@@ -5079,26 +5112,29 @@ const Turn = (() => {
                 // then drawn down normally at camp, so a good forage nets flat-or-up and a poor one leaves them eating reserves.
                 if (tier === "success" || tier === "crit") {
                     const rdc = cwfRoleDc("forage", governing);
-                    const size = Party.size() || 1, meals = Math.max(1, Number(game.settings.get(MOD, "mealsPerDay")) || 3);
-                    const crit = tier === "crit";
-                    const spaces = Domain.PACE[pace]?.spaces ?? 2;   // hexes/day at this pace: slow 1 · normal 2 · fast 3
-                    // FOOD scales with time-per-hex: a slow day's forage feeds the whole day, a fast one a single meal — so the
-                    // daily total is pace-INVARIANT (3 fast forages ≈ 1 slow forage) and foraging every hex stops out-provisioning.
-                    const perMember = Math.max(1, meals - (spaces - 1));   // slow 3 · normal 2 · fast 1 (at 3 meals/day)
-                    const foodAmt = (v.total >= rdc.food || crit) ? size * perMember : 0;
-                    const got = await Party.addSupplies(foodAmt, 0);   // food into packs (capped at capacity); water is a separate reset
-                    // WATER is a rare FULL RESET: find a source and EVERYONE tops their skins off to capacity, until the next source.
-                    let waterFilled = 0;
-                    if (v.total >= rdc.water || crit) waterFilled = await Party.refillWater();
+                    const size = Party.size() || 1, crit = tier === "crit";
+                    // DRAW-BASED forage: success buys DRAWS (1 at the DC, +1 per 2 points clear — the same curve the herb haul
+                    // used; a crit adds one more), and each draw rolls the biome's WEIGHTED table → food (1–3× party size), a
+                    // water source (full refill), or a herb from the gather table. So a forage VARIES by biome + roll instead of
+                    // always topping off both food AND water — a wet biome / river leans water, a lush one leans food, a barren
+                    // one mostly turns up herbs or nothing.
+                    const draws = cwfForageDraws(v.total, rdc.dc) + (crit ? 1 : 0);
+                    const weights = cwfForageWeights(governing);
+                    let foodGot = 0, watered = 0, herbDraws = 0;
+                    for (let d = 0; d < draws; d++) {
+                        let kind = cwfForageDraw(weights);
+                        if (kind === "water" && watered) kind = "food";   // already a full skin → a duplicate water draw becomes food
+                        if (kind === "food") { const amt = size * (1 + Math.floor(Math.random() * 3)); const got = await Party.addSupplies(amt, 0); foodGot += got.rations || 0; }
+                        else if (kind === "water") watered += await Party.refillWater();
+                        else herbDraws++;
+                    }
+                    let herbTxt = "";
+                    if (herbDraws > 0) { const g = await cwfForageGather(v.actorId, governing, { count: herbDraws }); if (g) herbTxt = g; }
                     const bits = [];
-                    if (got.rations) bits.push(`+${got.rations}${cwfResIcon("rations")}`);
-                    if (waterFilled) bits.push(`${cwfResIcon("water")} water source — all skins topped off (+${waterFilled})`);
-                    v.result += bits.length ? ` <em>— foraged ${bits.join(" · ")}.</em>` : ` <em>— turned up nothing usable here.</em>`;
-                    // A HIGH forage (a crit, or well clear of the DC) also turns up a craftable ingredient from the biome's gather table.
-                    // Herbal finds scale with the MARGIN over the forage DC — one per 4 points clear — and a crit DOUBLES the haul.
-                    let herbs = Math.floor(Math.max(0, v.total - rdc.dc) / 4);
-                    if (crit) herbs = Math.max(1, herbs) * 2;
-                    if (herbs > 0) { const g = await cwfForageGather(v.actorId, governing, { count: herbs }); if (g) v.result += ` <em>· ${g}</em>`; }
+                    if (foodGot) bits.push(`+${foodGot}${cwfResIcon("rations")}`);
+                    if (watered) bits.push(`${cwfResIcon("water")} water source — all skins topped off`);
+                    if (herbTxt) bits.push(herbTxt);
+                    v.result += bits.length ? ` <em>— ${draws} draw${draws === 1 ? "" : "s"}: ${bits.join(" · ")}.</em>` : ` <em>— ${draws} draw${draws === 1 ? "" : "s"}, nothing usable here.</em>`;
                     if (crit) { const eased = await cwfForageMedicinal(); if (eased) v.result += ` <em>${eased}</em>`; }
                 } else if (tier === "critfail") {
                     forageMishap = v.actorId;   // tainted flora or a roused beast → sickness OR a surprise wildlife fight
@@ -5536,6 +5572,7 @@ const WayfarerPanel = (() => {
                 case "camp": await makeCamp(); break;
                 case "enter-site": await enterSite(); break;
                 case "plan-route": Travel.startPlot(); break;
+                case "step": await cwfDoHexStep(); break;   // mid-trek "Advance one hex" lives in the HUD too now, not just the chat card / floating button
                 case "travel-pace": await Travel.setPace(btn.dataset.pace); break;
                 case "travel-boat": Travel.setBoat(!Travel.boat); break;
                 case "travel-short": Travel.setShortRest(!Travel.shortRest); break;
@@ -5846,9 +5883,14 @@ const WayfarerPanel = (() => {
         let travelSection = "";
         if (isGM) {
             if (!Travel.plotting) {
-                // Idle = the day's two choices: travel on, or bed down for the night.
+                // Idle = the day's two choices: travel on, or bed down. MID-TREK, the left button becomes "Advance one hex" so
+                // the step action is ALWAYS in the HUD (never depending on the floating Advance button, which clears itself).
+                const trekOn = !!cwfTrek && !cwfTrek.done && (cwfTrek.idx ?? 0) < (cwfTrek.route?.length ?? 0);
+                const left = trekOn ? (cwfTrek.route.length - cwfTrek.idx) : 0;
                 travelSection = `<div class="cwf-section cwf-daychoice">
-                    <button class="cwf-btn cwf-primary cwf-plan" data-action="plan-route"><i class="fa-solid fa-route"></i> Plan a route</button>
+                    ${trekOn
+                        ? `<button class="cwf-btn cwf-primary cwf-plan" data-action="step" title="Advance to the next hex — the clock, weather + any beat resolve as you arrive"><i class="fa-solid fa-shoe-prints"></i> Advance one hex <span class="cwf-muted2">· ${left} left</span></button>`
+                        : `<button class="cwf-btn cwf-primary cwf-plan" data-action="plan-route"><i class="fa-solid fa-route"></i> Plan a route</button>`}
                     <button class="cwf-btn" data-action="camp" title="Bed down — camp ambience, watch order, then resolve the night to dawn"><i class="fa-solid fa-campground"></i> Make camp</button>
                 </div>`;
             } else {
@@ -6144,6 +6186,8 @@ Hooks.once("ready", () => {
             return r;
         },
         meetSomeone: (opts = {}) => { const tok = Canvasry.activeToken(); return meetRoadCast(opts.cls || (tok ? Canvasry.biomeForToken(tok) : {}), opts); },   // drop a road-cast member (merchant or NPC) for the current hex on demand ({merchant:true} to force a merchant)
+        // Inspect the draw-based forage: forage.draws(total, dc) → draw count · forage.weights({biome,river,…}) → {food,water,herb} odds · forage.draw(weights) → one pick.
+        forage: { draws: cwfForageDraws, weights: cwfForageWeights, draw: cwfForageDraw, WEIGHTS: CWF_FORAGE_WEIGHTS },
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, TravelingMerchants, NarrativeNPCs, _installed: true
     };
     // Phase-transition cinematics broadcast from the GM → every client plays them.
@@ -6297,7 +6341,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "autoTravelOnResolve", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
             ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "mealsPerDay", "shareProvisions", "foodGraceDays", "carryBase", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
-            ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeForageJSON", "gatherIngredients", "biomeGatherJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
+            ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeForageJSON", "biomeForageWeightsJSON", "gatherIngredients", "biomeGatherJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
         ];
