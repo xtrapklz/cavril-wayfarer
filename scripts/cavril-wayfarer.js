@@ -2474,19 +2474,53 @@ async function cwfMealBeat(tod) {
 }
 // The role-play prompt when the party can't all feed themselves at camp: who shares from their own pack? Returns a decision
 // per shortfall ({ donorId }) — null = go without (the toll lands at the survival check). v0.55.127.
+const CWF_SHARE_CSS = `.cwf-share{font-size:13px}.cwf-share-intro{color:#cdc6e0;margin:0 0 10px;line-height:1.5}.cwf-share-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid #ffffff12}.cwf-share-row:first-of-type{border-top:none}.cwf-share-need{flex:1;display:flex;align-items:center;gap:6px}.cwf-share-sel{flex:1.3;min-width:0;background:#0006;border:1px solid #ffffff24;border-radius:7px;color:#dde;padding:4px 8px;font-size:12px}.cwf-share-sel option.cwf-low{color:#d6887e}`;
+// Live-update the share dialog: as donors are picked, every dropdown re-labels each donor with their REMAINING supply of that
+// resource — their own pack minus what they've already committed in other rows, INCLUDING the meal-worth the giver forfeits —
+// and flags anyone who can no longer cover a gift. Keyed by (donor, kind) so rations + water track independently. v0.55.154.
+function cwfWireShareLive(root, shortfalls) {
+    const selects = shortfalls.map((s, i) => root.querySelector(`[name="share_${i}"]`));
+    const key = (did, kind) => `${did}::${kind}`;
+    const base = {};
+    for (const s of shortfalls) for (const d of s.donors) base[key(d.id, s.kind)] = d.have;
+    const refresh = () => {
+        const spent = {};
+        selects.forEach((sel, i) => { if (!sel?.value) return; const k = key(sel.value, shortfalls[i].kind); spent[k] = (spent[k] || 0) + (shortfalls[i].amt + 1); });   // +1 = the giver's own meal-worth ("generosity has teeth")
+        selects.forEach((sel, i) => {
+            if (!sel) return;
+            const word = cwfResWord(shortfalls[i].kind).trim(), cost = shortfalls[i].amt + 1;
+            for (const opt of sel.options) {
+                if (!opt.value) continue;
+                const k = key(opt.value, shortfalls[i].kind), other = (spent[k] || 0) - (sel.value === opt.value ? cost : 0);
+                const remaining = (base[k] ?? 0) - other;
+                opt.textContent = `${opt.dataset.name} — has ${Math.max(0, remaining)} ${word}`;
+                opt.classList.toggle("cwf-low", remaining < cost);
+            }
+        });
+    };
+    selects.forEach(sel => sel && sel.addEventListener("change", refresh));
+    refresh();
+}
 async function cwfShareDialog(shortfalls) {
     if (!shortfalls?.length) return [];
-    const ic = (k) => ` ${cwfResWord(k)}`;   // <option> text can't render an icon — use the word, not an emoji
     const rowsHtml = shortfalls.map((s, i) => {
-        const opts = `<option value="">— go without (takes the toll) —</option>` + s.donors.map(d => `<option value="${d.id}">${cwfEsc(d.name)} — has ${d.have}${ic(s.kind)}</option>`).join("");
-        return `<div class="form-group" style="display:flex;align-items:center;gap:8px;margin:5px 0"><label style="flex:1"><b>${cwfEsc(s.name)}</b> is short ${s.amt}${ic(s.kind)}</label><select name="share_${i}" style="flex:1.4">${opts}</select></div>`;
+        const opts = `<option value="">— go without (takes the toll) —</option>` + s.donors.map(d => `<option value="${d.id}" data-name="${cwfEsc(d.name)}">${cwfEsc(d.name)} — has ${d.have} ${cwfResWord(s.kind).trim()}</option>`).join("");
+        return `<div class="cwf-share-row"><span class="cwf-share-need">${cwfResIcon(s.kind)} <b>${cwfEsc(s.name)}</b> short ${s.amt} ${cwfResWord(s.kind).trim()}</span><select class="cwf-share-sel" name="share_${i}">${opts}</select></div>`;
     }).join("");
-    const content = `<div class="cwf-dialog"><p>Not everyone could feed themselves tonight. Who shares from their own pack? <em>Refusal leaves them to go without.</em></p>${rowsHtml}</div>`;
+    const content = `<div class="cwf-share"><p class="cwf-share-intro">Not everyone could feed themselves. Who shares from their own pack? <em>Sharing costs the giver a meal-worth on top — refusal leaves them to go without.</em></p>${rowsHtml}</div>`;
     const DialogV2 = foundry.applications?.api?.DialogV2;
     if (DialogV2) {
-        const res = await DialogV2.prompt({ window: { title: "Share provisions" }, content,
-            ok: { label: "Resolve the night", callback: (_e, btn) => shortfalls.map((s, i) => ({ donorId: btn.form.elements[`share_${i}`]?.value || null })) } }).catch(() => null);
-        return res || shortfalls.map(() => ({ donorId: null }));
+        return await new Promise((resolve) => {
+            let done = false; const finish = (v) => { if (done) return; done = true; try { Hooks.off("closeDialogV2", onClose); } catch (e) {} resolve(v); };
+            const collect = (form) => shortfalls.map((s, i) => ({ donorId: form?.elements?.[`share_${i}`]?.value || null }));
+            const dlg = new DialogV2({ window: { title: "Share provisions" }, content, buttons: [{ action: "ok", label: "Resolve the night", icon: "fa-solid fa-bowl-food", default: true, callback: (_e, btn) => finish(collect(btn.form)) }] });
+            const onClose = (app) => { if (app === dlg) finish(shortfalls.map(() => ({ donorId: null }))); };
+            Hooks.on("closeDialogV2", onClose);
+            dlg.render({ force: true }).then(() => {
+                try { const st = document.createElement("style"); st.textContent = CWF_SHARE_CSS; dlg.element.prepend(st); } catch (e) {}
+                try { cwfWireShareLive(dlg.element, shortfalls); } catch (e) { warn("share live-update failed", e); }
+            }).catch(() => finish(shortfalls.map(() => ({ donorId: null }))));
+        });
     }
     return new Promise(resolve => { new Dialog({ title: "Share provisions", content, buttons: { ok: { label: "Resolve", callback: (h) => resolve(shortfalls.map((s, i) => ({ donorId: h[0].querySelector(`[name="share_${i}"]`)?.value || null }))) } }, default: "ok", close: () => resolve(shortfalls.map(() => ({ donorId: null }))) }).render(true); });
 }
@@ -6268,10 +6302,9 @@ const WayfarerPanel = (() => {
             <div class="cwf-head" data-drag>
                 <i class="fa-solid fa-mountain-sun"></i>
                 <span class="cwf-title">${TITLE}</span>
-                <span class="cwf-day" title="Days travelling this journey">Day ${st.day}</span>
+                <span class="cwf-day" title="Days travelling this journey"><i class="fa-solid fa-calendar-day"></i> Day ${st.day}</span>
                 ${cwfMealTrackerHTML()}
-                ${isGM && hasMaestro ? `<button class="cwf-icon ${musicOn ? "cwf-on" : ""}" data-action="toggle-music" title="${musicOn ? "Maestro ambience ON — biome drives the music. Click to mute · right-click to assign biomes." : "Maestro ambience OFF. Click to enable · right-click to assign biomes."}"><i class="fa-solid ${musicOn ? "fa-music" : "fa-volume-xmark"}"></i></button>` : ""}
-                ${isGM ? `<button class="cwf-icon" data-action="reset-journey" title="New journey — reset the day counter"><i class="fa-solid fa-rotate-left"></i></button>` : ""}
+                ${isGM ? `<button class="cwf-end-exped" data-action="reset-journey" title="End this expedition — reset the day counter for a fresh journey"><i class="fa-solid fa-flag-checkered"></i> End Expedition</button>` : ""}
                 <button class="cwf-icon" data-action="collapse" title="Collapse/expand"><i class="fa-solid ${collapsedRef ? "fa-chevron-down" : "fa-chevron-up"}"></i></button>
                 <button class="cwf-icon" data-action="close" title="Close"><i class="fa-solid fa-xmark"></i></button>
             </div>
