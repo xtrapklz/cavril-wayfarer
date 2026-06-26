@@ -1585,10 +1585,10 @@ async function cwfTravelHealthCheck({ toLines = null, applyExhaustion = false } 
     } catch (e) { warn("rest check failed", e); }
     try {
         const { rations, water } = Party.supplies(); const size = Math.max(1, Party.size());
-        const low = [];
-        if (rations < size) low.push(rations <= 0 ? "out of rations 🍖" : `low rations (${rations}🍖 for ${size})`);
-        if (water < size) low.push(water <= 0 ? "out of water 💧" : `low water (${water}💧 for ${size})`);
-        if (low.length) { notes.push(`🥖 ${low.join(" · ")}`); notify.push(`${low.join(" and ")} — forage or resupply before your next rest.`); }
+        const low = [];   // { h: HTML with the canonical FA icon · t: plain text for the toast (no markup) }
+        if (rations < size) low.push(rations <= 0 ? { h: "out of rations", t: "out of rations" } : { h: `low rations · ${rations}${cwfResIcon("rations")} for ${size}`, t: `low rations (${rations} for ${size})` });
+        if (water < size) low.push(water <= 0 ? { h: "out of water", t: "out of water" } : { h: `low water · ${water}${cwfResIcon("water")} for ${size}`, t: `low water (${water} for ${size})` });
+        if (low.length) { notes.push(low.map(x => x.h).join(" · ")); notify.push(`${low.map(x => x.t).join(" and ")} — forage or resupply before your next rest.`); }
     } catch (e) { warn("supply check failed", e); }
     const sig = notify.join(" | ");
     if (notify.length && sig !== _cwfHealthSig) { ui.notifications?.warn(`${TITLE}: ${notify.join("  ·  ")}`); _cwfHealthSig = sig; }
@@ -2016,12 +2016,12 @@ function cwfCampCardHTML() {
         return tags.length ? `${a.name} (${tags.join(", ")})` : null;
     }).filter(Boolean);
     const partyNote = partyStat.length ? partyStat.join(" · ") : "all rested & healthy";
-    const body = `${Camp.supplyNote ? cwfRow("Supplies", cwfEsc(Camp.supplyNote)) : ""}${cwfRow("Party", cwfEsc(partyNote))}
+    const body = `${Camp.supplyNote ? cwfRow("Supplies", Camp.supplyNote) : ""}${cwfRow("Party", cwfEsc(partyNote))}
         <div class="cwf-card-row"><span class="cwf-card-l">Danger</span><span class="cwf-card-v">${danger} + biome ${biomeM} + hostiles ${hostileM} = <b>${base}</b>/${Danger.scale()} per hr</span></div>
         <div class="cwf-cardbtns">${dial}</div>
         <div class="cwf-night-sec">Watch order · ${cwfEsc(watchNote)} <button class="cwf-cardbtn" data-cwf="cwatch-all" style="min-width:0;padding:0 7px;font-size:.82em" title="Put the whole party on watch">All</button><button class="cwf-cardbtn" data-cwf="cwatch-none" style="min-width:0;padding:0 7px;font-size:.82em" title="Clear the watch">Clear</button></div>
         ${cwfWatchRosterHTML({ attr: "cwf", toggle: "cwatch", up: "cwatch-up", down: "cwatch-down" })}`;
-    const foot = `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="ccancel"><i class="fa-solid fa-xmark"></i> Cancel</button><button class="cwf-cardbtn cwf-primary" data-cwf="cresolve"><i class="fa-solid fa-moon"></i> Resolve night → dawn</button></div>`;
+    const foot = `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="ccancel"><i class="fa-solid fa-xmark"></i> Cancel</button><button class="cwf-cardbtn cwf-primary" data-cwf="cresolve" title="Resolve the watch and wake the party at dawn"><i class="fa-solid fa-moon"></i> Resolve night</button></div>`;
     return cwfCardShell("fa-campground", "Make Camp", body, { sub: cls?.label || "", footerHTML: foot });
 }
 async function cwfCampPost() {
@@ -2373,7 +2373,7 @@ async function cwfMealBeat(tod) {
 // per shortfall ({ donorId }) — null = go without (the toll lands at the survival check). v0.55.127.
 async function cwfShareDialog(shortfalls) {
     if (!shortfalls?.length) return [];
-    const ic = (k) => k === "water" ? "💧" : "🍖";
+    const ic = (k) => ` ${cwfResWord(k)}`;   // <option> text can't render an icon — use the word, not an emoji
     const rowsHtml = shortfalls.map((s, i) => {
         const opts = `<option value="">— go without (takes the toll) —</option>` + s.donors.map(d => `<option value="${d.id}">${cwfEsc(d.name)} — has ${d.have}${ic(s.kind)}</option>`).join("");
         return `<div class="form-group" style="display:flex;align-items:center;gap:8px;margin:5px 0"><label style="flex:1"><b>${cwfEsc(s.name)}</b> is short ${s.amt}${ic(s.kind)}</label><select name="share_${i}" style="flex:1.4">${opts}</select></div>`;
@@ -2381,7 +2381,7 @@ async function cwfShareDialog(shortfalls) {
     const content = `<div class="cwf-dialog"><p>Not everyone could feed themselves tonight. Who shares from their own pack? <em>Refusal leaves them to go without.</em></p>${rowsHtml}</div>`;
     const DialogV2 = foundry.applications?.api?.DialogV2;
     if (DialogV2) {
-        const res = await DialogV2.prompt({ window: { title: "🤝 Share provisions" }, content,
+        const res = await DialogV2.prompt({ window: { title: "Share provisions" }, content,
             ok: { label: "Resolve the night", callback: (_e, btn) => shortfalls.map((s, i) => ({ donorId: btn.form.elements[`share_${i}`]?.value || null })) } }).catch(() => null);
         return res || shortfalls.map(() => ({ donorId: null }));
     }
@@ -4801,6 +4801,10 @@ function cwfCardShell(icon, title, bodyHTML, { sub = "", footerHTML = "" } = {})
     </div>`;
 }
 const cwfRow = (label, value) => `<div class="cwf-card-row"><span class="cwf-card-l">${label}</span><span class="cwf-card-v">${value}</span></div>`;
+// The ONE canonical way to show a resource — the same FA icons the HUD + survival chips use (fa-drumstick-bite rations,
+// fa-bottle-water water), never emoji. cwfResIcon() for HTML; cwfResWord() for plain-text contexts (e.g. <option>, tooltips).
+const cwfResIcon = (k) => k === "water" ? `<i class="fa-solid fa-bottle-water"></i>` : `<i class="fa-solid fa-drumstick-bite"></i>`;
+const cwfResWord = (k) => k === "water" ? "water" : "rations";
 // "Build encounter" button — only when the Encounter Stage module is installed. Rolls
 // SRD foes + combat music for the current hex, on a matched CZEPEKU map if connected
 // (else the current scene). data-cwf="stage".
@@ -5087,8 +5091,8 @@ const Turn = (() => {
                     let waterFilled = 0;
                     if (v.total >= rdc.water || crit) waterFilled = await Party.refillWater();
                     const bits = [];
-                    if (got.rations) bits.push(`+${got.rations}🍖`);
-                    if (waterFilled) bits.push(`💧 water source — all skins topped off (+${waterFilled})`);
+                    if (got.rations) bits.push(`+${got.rations}${cwfResIcon("rations")}`);
+                    if (waterFilled) bits.push(`${cwfResIcon("water")} water source — all skins topped off (+${waterFilled})`);
                     v.result += bits.length ? ` <em>— foraged ${bits.join(" · ")}.</em>` : ` <em>— turned up nothing usable here.</em>`;
                     // A HIGH forage (a crit, or well clear of the DC) also turns up a craftable ingredient from the biome's gather table.
                     // Herbal finds scale with the MARGIN over the forage DC — one per 4 points clear — and a crit DOUBLES the haul.
@@ -5337,7 +5341,7 @@ const Camp = (() => {
         }
         const tlHTML = tl.map(k => {
             const ic = k.state === "alert" ? "fa-burst" : k.state === "heat" ? "fa-user-secret" : "fa-check";
-            const tip = `${k.name || "unwatched"} · rolled ${k.roll || "—"} vs ${k.cs}⚔ / ${k.hs}👤 of 20`;
+            const tip = `${k.name || "unwatched"} · rolled ${k.roll || "—"} vs ${k.cs} threat / ${k.hs} heat of 20`;
             return `<div class="cwf-wblock ${k.state}${k.name ? "" : " unwatched"}" title="${esc(tip)}"><span class="cwf-wb-time">${k.time}</span><span class="cwf-wb-watcher">${k.name ? esc(String(k.name).split(/\s+/)[0]) : "—"}</span><span class="cwf-wb-state"><i class="fa-solid ${ic}"></i></span></div>`;
         }).join("");
         const quiet = !encounters, watchN = watchers.length;
@@ -5607,7 +5611,7 @@ const WayfarerPanel = (() => {
         const apply = async (days) => {
             const r = Math.max(0, days | 0) * size;
             const got = await Party.addSupplies(r, r);
-            ChatMessage.create({ content: cwfCardShell("fa-box-open", "Restocked", cwfRow("Supplies", `+${got.rations}🍖 / +${got.water}💧 distributed across the party (asked ${days | 0} day${(days | 0) === 1 ? "" : "s"} × ${size}).`)) });
+            ChatMessage.create({ content: cwfCardShell("fa-box-open", "Restocked", cwfRow("Supplies", `+${got.rations}${cwfResIcon("rations")} / +${got.water}${cwfResIcon("water")} distributed across the party (asked ${days | 0} day${(days | 0) === 1 ? "" : "s"} × ${size}).`)) });
             render();
         };
         const DialogV2 = foundry.applications?.api?.DialogV2;
@@ -5632,7 +5636,7 @@ const WayfarerPanel = (() => {
         // Meals are eaten DURING the day at Dawn / Day / Dusk now (each a meal beat with its own toll) — camp is just the
         // night's rest + the watch. No food or water is consumed here; the survival card resolves the WATCH toll at dawn.
         const sup = Party.supplies();
-        const note = `Bedded down · ${sup.rations}🍖 / ${sup.water}💧 in the packs`;
+        const note = `Bedded down · ${sup.rations}${cwfResIcon("rations")} / ${sup.water}${cwfResIcon("water")} in the packs`;
         Camp.begin(note, null, false);
     }
 
@@ -5804,7 +5808,7 @@ const WayfarerPanel = (() => {
                 })()}
                 <div class="cwf-actions">
                     <button class="cwf-btn" data-action="camp-cancel" ${dis}><i class="fa-solid fa-xmark"></i> Cancel</button>
-                    <button class="cwf-btn cwf-primary" data-action="camp-resolve" ${dis}><i class="fa-solid fa-moon"></i> Resolve night → dawn</button>
+                    <button class="cwf-btn cwf-primary" data-action="camp-resolve" ${dis} title="Resolve the watch and wake the party at dawn"><i class="fa-solid fa-moon"></i> Resolve night</button>
                 </div>
             </div>`;
     }
