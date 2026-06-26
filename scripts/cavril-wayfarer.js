@@ -419,7 +419,6 @@ const Store = (() => {
         g.register(MOD, "encounterScale", { name: "Encounter die (x/N per hour)", hint: "Denominator for the hourly NIGHT encounter check. Higher = rarer. Default 40 (nights were a touch too quiet at 50).", scope: "world", config: true, type: Number, default: 40 });
         g.register(MOD, "oneEncounterPerNight", { name: "One encounter per night", hint: "Stop checking once a night encounter triggers (at most one per night).", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "campHour", { name: "Bed-down hour (0-23)", hint: "Hour the party turns in when you Make Camp.", scope: "world", config: true, type: Number, default: 21 });
-        g.register(MOD, "wakeHour", { name: "Wake hour (0-23)", hint: "Hour the party rises at dawn after the night resolves.", scope: "world", config: true, type: Number, default: 6 });
         g.register(MOD, "biomeDangerJSON", { name: "Biome danger modifier (advanced)", hint: 'Optional JSON of biome → night danger (0-2), e.g. {"volcanic":2,"jungle":1}. Blank uses defaults.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "campMapJSON", { name: "Biome → camp ambience (advanced)", hint: 'Optional JSON of biome → Maestro arrangement for camp. Blank = "campVista" for all.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "openCityOnArrival", { name: "Open CityHUD on settlement arrival", hint: "When you enter a site whose scene is a Cavril CityHUD city, raise its CityHUD automatically — the road→town handoff in one motion. No effect if CityHUD isn't installed.", scope: "world", config: true, type: Boolean, default: true });
@@ -461,10 +460,7 @@ const Store = (() => {
         // Watch ↔ rest: a long watch shift BLOCKS that member's long-rest exhaustion
         // recovery (the native rest still restores HP / slots / hit dice).
         g.register(MOD, "extraRestRecovery", { name: "Sleep in to recover more exhaustion", hint: "Resting past the base 8h removes 1 EXTRA exhaustion per 2 hours slept in, to a max of 3 total per rest (8h=1, 10h=2, 12h=3). The cost is a longer, more dangerous night and a later start. Off = the dnd5e standard of 1 per long rest.", scope: "world", config: true, type: Boolean, default: true });
-        // SUPERSEDED by the self-sizing night (the night now runs long enough that every watcher sleeps a full 8h, so a watch
-        // costs TIME — a later wake — not exhaustion). Default OFF; left for GMs who want the old grueling-watch toll back.
-        g.register(MOD, "watchRest", { name: "Watches cost exhaustion (legacy)", hint: "Superseded by the self-sizing night + forgo mechanic.", scope: "world", config: false, type: Boolean, default: false });
-        g.register(MOD, "watchBlockHours", { name: "Hours per watch-exhaustion level", hint: "Legacy (paired with the retired watch-toll).", scope: "world", config: false, type: Number, default: 4 });
+        // Watch exhaustion toll RETIRED (v0.55.158) — the self-sizing night means a watch costs TIME (a later wake), not exhaustion.
         // Rest & D&D Beyond re-sync.
         g.register(MOD, "longRestAtDawn", { name: "Long rest at dawn", hint: "When the night resolves to dawn, run a dnd5e long rest for the party (HP, spell slots, hit dice). Exhaustion stays under Wayfarer's watch rules.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "resyncAtDawn", { name: "Offer DDB re-sync at dawn", hint: "After the dawn long rest, prompt to re-sync the party's sheets from D&D Beyond (you confirm each time). Off = use the Re-sync button when you're ready.", scope: "world", config: true, type: Boolean, default: false });
@@ -588,7 +584,7 @@ const Store = (() => {
     }
 
     // Per-scene travel state lives on the scene flags (the overworld map).
-    const DEFAULT_STATE = { day: 1, weather: "clear", pace: "normal", boat: false, shortRest: false, foraged: false };
+    const DEFAULT_STATE = { day: 1, weather: "clear", pace: "normal", boat: false, shortRest: false };
     function sceneState(scene = canvas?.scene) {
         const flag = scene?.getFlag?.(MOD, "state") || {};
         return { ...DEFAULT_STATE, ...flag };
@@ -1473,7 +1469,7 @@ async function advanceToDawn() {
     if (!game.user.isGM) return;
     const st = Store.sceneState();
     const nextDay = (st.day || 1) + 1;
-    await Store.setSceneState({ day: nextDay, foraged: false, shortRest: false });
+    await Store.setSceneState({ day: nextDay, shortRest: false });
     try {
         const mc = MiniCal.api?.();
         if (mc?.setTime) await mc.setTime(1, "dawn");   // tomorrow's dawn
@@ -2198,11 +2194,7 @@ async function cwfForcedMarch(pace) {
 // =+2 (nets +1, an all-nighter gains a level), 2 (4h)=+1 (nets 0, no recovery),
 // 3+ (<4h)=0 (nets −1, recovers normally). No hook, no recovery math — just apply.
 const cwfWatchShiftHours = (n) => { const nh = Math.max(1, Number(game.settings.get(MOD, "nightHours")) || 8); return n > 0 ? nh / n : 0; };
-function cwfWatchLevels(n) {
-    if (!game.settings.get(MOD, "watchRest") || n <= 0) return 0;
-    const block = Math.max(0.5, Number(game.settings.get(MOD, "watchBlockHours")) || 4);
-    return Math.floor(cwfWatchShiftHours(n) / block);
-}
+function cwfWatchLevels() { return 0; }   // watch exhaustion toll RETIRED — the self-sizing night costs TIME, not exhaustion
 // One-line description of what the current watch nets after the dawn rest (camp UI).
 // Shared watch-order roster, used by BOTH the chat camp card and the HUD panel (so the two surfaces stay identical).
 // Two zones: an ordered list of shifts (number · name · hour-window · best mod · reorder ▲▼ · remove ✕) and a "Resting"
@@ -2241,13 +2233,7 @@ function cwfWatchRosterHTML(io) {
     </div>`;
 }
 
-function cwfWatchRestLabel(n) {
-    if (!game.settings.get(MOD, "watchRest")) return "";
-    if (n <= 0) return "no watch — everyone recovers normally";
-    const net = cwfWatchLevels(n) - 1;   // the dawn long rest gives one back
-    const lab = net <= -1 ? "watchers still recover" : net === 0 ? "watchers don't recover" : `watchers end +${net} exhaustion`;
-    return `~${Math.round(cwfWatchShiftHours(n) * 10) / 10}h shifts — ${lab}`;
-}
+function cwfWatchRestLabel() { return ""; }   // watch-toll retired → no toll label (the self-sizing night handles recovery)
 
 // Camp = the lead-in to the dawn long rest. Wayfarer touches exhaustion in only two
 // ways (the native dnd5e rest does the recovery):
@@ -2258,7 +2244,7 @@ function cwfWatchRestLabel(n) {
 //     water (5e: no provisions, no recovery) — a one-shot flag the dnd5e.preLongRest
 //     hook honours. (The watch is a toll, not a block — food/water is the block.)
 // `consumeResult` = Party.consume()'s perMember breakdown; foraged → all provided.
-async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] } = {}) {
+async function cwfCampSurvival(consumeResult, { watchers = [] } = {}) {
     if (!game.user.isGM) return;
     const starve = !!game.settings.get(MOD, "starveExhaustion");
     const mem = Party.members();
@@ -2274,8 +2260,8 @@ async function cwfCampSurvival(consumeResult, { foraged = false, watchers = [] }
     for (const a of mem) {
         const pm = byId.get(a.id);
         const need = pm?.need || Math.max(1, Number(game.settings.get(MOD, "mealsPerDay")) || 3);
-        const waterGot = foraged ? need : (pm?.waterGot ?? 0);
-        const fed = foraged || !!pm?.food;   // ate ≥⅔ of the day's meals
+        const waterGot = pm?.waterGot ?? 0;
+        const fed = !!pm?.food;   // ate ≥⅔ of the day's meals
         const grace = Math.max(0, graceBase);   // flat reserve days for HUNGER — no CON math
         let lvl = a.system?.attributes?.exhaustion ?? 0;
         const before = lvl;
@@ -5634,7 +5620,7 @@ const Turn = (() => {
  * ========================================================================= */
 const Camp = (() => {
     let active = false, supplyNote = "", watchers = [];   // watchers = ordered actorIds
-    let mealResult = null, mealForaged = false;           // carried from Make Camp → resolved at dawn
+    let mealResult = null;           // carried from Make Camp → resolved at dawn
     let nightDawnPending = null;                           // {nextDay,msgId} while a night encounter halts the flow before dawn
     let sleepIn = 0;                                       // extra rest hours past the minimum — later wake, more exhaustion recovered
     let shortResters = [];                                 // watcher ids who FORGO the long rest (short rest only) — each acts as an extra shift
@@ -5665,10 +5651,10 @@ const Camp = (() => {
     const dangerScore = () => Store.sceneState().danger ?? (Number(game.settings.get(MOD, "dangerDefault")) || 0);
     const challengeScore = () => cwfChallengeEff();   // public seam for EncounterStage's difficulty — the dial + night bump
 
-    function begin(note = "", consumeResult = null, foraged = false) {
+    function begin(note = "", consumeResult = null) {
         if (!game.user.isGM) return;
         if (cwfLastRest() == null) cwfMarkRested();   // seed the hours-awake clock on the first leg of the journey
-        active = true; supplyNote = note; mealResult = consumeResult; mealForaged = !!foraged;
+        active = true; supplyNote = note; mealResult = consumeResult;
         nightDawnPending = null; sleepIn = 0; shortResters = [];
         const members = new Set(Party.members().map(a => a.id));
         watchers = (game.settings.get(MOD, "lastWatch") || []).filter(id => members.has(id));
@@ -5776,11 +5762,11 @@ const Camp = (() => {
         if (encounters > 0) { try { const etxt = await cwfEncounterText(cls, { when: "night", surprised: !firstWatcher }); const mem = nightHeat ? (cwfRandomMember()?.name || null) : null; body += cwfRow("Encounter", mem ? `<span class="cwf-tier-badge" title="A Heat / renown encounter">Personal · ${esc(mem)}</span> Someone from ${esc(mem)}'s past has found the fire. ${etxt}` : etxt); } catch (e) { warn("night encounter text failed", e); } }
         // Resolve hunger / thirst / watch toll now the watch is known, and FOLD it into
         // this same Night Watch card rather than posting a second one.
-        const survival = await cwfCampSurvival(mealResult, { foraged: mealForaged, watchers });
+        const survival = await cwfCampSurvival(mealResult, { watchers });
         mealResult = null;
         if (survival?.html) body += `<div class="cwf-night-sec">Rest &amp; provisions${survival.label ? ` · ${survival.label}` : ""}</div>${survival.html}`;
         const prev = Store.sceneState().day || 1, nextDay = prev + 1;
-        await Store.setSceneState({ day: nextDay, foraged: false, shortRest: false });
+        await Store.setSceneState({ day: nextDay, shortRest: false });
         for (const m of Party.members()) { try { await m.unsetFlag?.(MOD, "mealTollToday"); } catch (e) { /* a new day → the per-day meal-toll cap resets */ } }
 
         if (encounters > 0) {
@@ -6111,7 +6097,7 @@ const WayfarerPanel = (() => {
     }
     async function endJourney() {
         const prev = Store.sceneState().day || 1;
-        await Store.setSceneState({ day: 1, foraged: false, shortRest: false });
+        await Store.setSceneState({ day: 1, shortRest: false });
         if (prev > 1) ChatMessage.create({ content: cwfCardShell("fa-flag-checkered", "Journey's End", cwfRow("Arrived", `The party reaches a settlement after ${prev - 1} day${prev - 1 === 1 ? "" : "s"} on the road — the journey counter resets. Restock supplies as needed.`)) });
         else ui.notifications?.info(`${TITLE}: journey day counter reset.`);
     }
