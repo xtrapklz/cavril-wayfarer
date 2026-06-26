@@ -4371,8 +4371,17 @@ async function cwfRoadCastQuest(m, npcDoc, assocUuids = [], force = false) {
     } catch (e) { warn("populate quest failed", e); }
     return q;
 }
-// The arc → ordered-member-names override the GM can set (CavrilWayfarer.setArcOrder); blank = list order.
-function cwfArcOrder() { try { return foundry.utils.duplicate(game.settings.get(MOD, "arcQuestOrder") || {}); } catch (e) { return {}; } }
+// DRAFT chain order per arc — a narrative progression (lure → escalation → climax → convergence) the writing room edits
+// freely. Entries are distinctive whole-word tokens that match the member names. Overridden per-arc by the arcQuestOrder setting.
+const CWF_ARC_ORDER = {
+    "Arc A": ["Quill", "Nan Threnody", "Edrin", "Ossifrage", "Evenwalk", "Eustace", "Annot", "Geddy", "Halsom", "Quillon", "Mossgrave"],
+    "Arc B": ["Bartholomew", "Annet", "Maven", "Mother Coin"],
+    "Arc C": ["Hessenmaw", "Bellwax"],
+    "Arc D": ["Mother Cresh", "Maren", "Harrow", "Brohm"],
+    "Arc E": ["Iwinn", "Voss", "Iskander"],
+};
+// The arc → ordered tokens, the baked draft with the GM's per-arc arcQuestOrder override layered on top.
+function cwfArcOrder() { let o = {}; try { o = game.settings.get(MOD, "arcQuestOrder") || {}; } catch (e) { /* noop */ } return foundry.utils.mergeObject(foundry.utils.deepClone(CWF_ARC_ORDER), o, { inplace: false }); }
 // AUTO-CHAIN quests by arc: within each arc, order the members (stored order first, then list order), then wire each quest's
 // dependencies (the prior quest in the arc) ←→ unlocks (the next), so completing one opens the next. Keys = "journalUuid::questId".
 async function cwfWireQuestChains() {
@@ -4386,7 +4395,8 @@ async function cwfWireQuestChains() {
     let wired = 0;
     for (const [a, members] of Object.entries(byArc)) {
         const ord = order[a] || [];
-        members.sort((x, y) => { const ix = ord.indexOf(x.name), iy = ord.indexOf(y.name); return (ix < 0 ? 1e6 : ix) - (iy < 0 ? 1e6 : iy); });
+        const idxOf = (name) => { const i = ord.findIndex(n => { try { return new RegExp("(^|\\s)" + String(n).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(\\s|$)", "i").test(name); } catch (e) { return name === n; } }); return i < 0 ? 1e6 : i; };   // whole-word token match (Quill ≠ Quillon)
+        members.sort((x, y) => idxOf(x.name) - idxOf(y.name));
         const chain = members.map(questFor).filter(Boolean);
         for (let i = 0; i < chain.length; i++) {
             const j = chain[i]; const data = foundry.utils.duplicate(j.getFlag(CC_NS, "data") || {}); const quest = (data.quests || [])[0]; if (!quest) continue;
