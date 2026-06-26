@@ -454,6 +454,8 @@ const Store = (() => {
         g.register(MOD, "shareProvisions", { name: "Prompt to share provisions", hint: "When a character can't cover their own rations or water at camp, prompt who shares from their pack — so the table role-plays the moment AND the right person actually gives. Refusal (or no one with surplus) leaves them to go without, taking the hunger/thirst toll. Default on.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "foodGraceDays", { name: "Food reserve (days before hunger)", hint: "How many consecutive HUNGRY days (a character ate ≤⅓ of the day's meals) a member can stack before the next adds +1 exhaustion — a flat reserve, no CON math. Eating ≥⅔ of the day's meals keeps you fed. Default 1.", scope: "world", config: true, type: Number, default: 1 });
         g.register(MOD, "carryBase", { name: "Carry base (rations / water capacity)", hint: "Each character carries up to this many rations AND this many waterskin charges, PLUS their Strength modifier. The party's totals are just the sum of what everyone holds — no shared stockpile. At 3 meals/day this is ~days of autonomy. Default 9 (STR 14 → 11 ≈ 3½ days, STR 8 → 8).", scope: "world", config: true, type: Number, default: 9 });
+        g.register(MOD, "rationCost", { name: "Ration price (gp)", hint: "Gold per ration when you Resupply the party to full capacity. Default 0.5 (5 sp — the dnd5e ration price).", scope: "world", config: true, type: Number, default: 0.5 });
+        g.register(MOD, "waterCost", { name: "Water price (gp)", hint: "Gold per waterskin charge when you Resupply. Default 0.1 — water is cheap where it's sold (free at a found source). Set 0 to make water free.", scope: "world", config: true, type: Number, default: 0.1 });
         g.register(MOD, "restThresholdHours", { name: "Hours awake before exhaustion", hint: "How long the party can go since its last LONG REST before fatigue sets in. Past this, each travel leg adds +1 exhaustion to everyone until they bed down. The HUD shows the hours-awake clock. Default 24.", scope: "world", config: true, type: Number, default: 24 });
         g.register(MOD, "lastRestTime", { scope: "world", config: false, type: Number, default: 0 });   // worldTime of the party's last long rest — drives the hours-awake clock
         // Watch ↔ rest: a long watch shift BLOCKS that member's long-rest exhaustion
@@ -2563,6 +2565,51 @@ async function cwfConfirm(title, content) {
         if (DialogV2?.confirm) return await DialogV2.confirm({ window: { title }, content: `<p>${content}</p>`, modal: true });
         return await Dialog.confirm({ title, content: `<p>${content}</p>` });
     } catch { return false; }
+}
+
+// ── RESUPPLY — what it costs to top the whole party's packs back to full carrying capacity, as a total + per-character, and the
+// one-click "replenish & deduct" that fills every pack and removes the gold from each character. Prices in gp/unit (settings). v0.55.157.
+function cwfResupplyPrices() {
+    let r = 0.5, w = 0.1;
+    try { const rr = Number(game.settings.get(MOD, "rationCost")); if (rr >= 0) r = rr; } catch (e) { /* default */ }
+    try { const ww = Number(game.settings.get(MOD, "waterCost")); if (ww >= 0) w = ww; } catch (e) { /* default */ }
+    return { ration: r, water: w };
+}
+const cwfActorGold = (actor) => { const c = actor?.system?.currency || {}; return (Number(c.pp) || 0) * 10 + (Number(c.gp) || 0) + (Number(c.ep) || 0) * 0.5 + (Number(c.sp) || 0) * 0.1 + (Number(c.cp) || 0) * 0.01; };
+// Deduct a gp cost from a purse — works the whole purse to copper, takes the cost (clamped), re-stacks into pp/gp/sp/cp. Returns gp taken.
+async function cwfDeductGold(actor, gpCost) {
+    if (!actor || !(gpCost > 0)) return 0;
+    const c = actor.system?.currency || {};
+    let cp = Math.round((Number(c.pp) || 0) * 1000 + (Number(c.gp) || 0) * 100 + (Number(c.ep) || 0) * 50 + (Number(c.sp) || 0) * 10 + (Number(c.cp) || 0));
+    const take = Math.min(cp, Math.round(gpCost * 100)); cp -= take;
+    const pp = Math.floor(cp / 1000); cp -= pp * 1000; const gp = Math.floor(cp / 100); cp -= gp * 100; const sp = Math.floor(cp / 10); cp -= sp * 10;
+    try { await actor.update({ "system.currency.pp": pp, "system.currency.gp": gp, "system.currency.ep": 0, "system.currency.sp": sp, "system.currency.cp": cp }); } catch (e) { warn("gold deduct failed", e); }
+    return take / 100;
+}
+function cwfResupplyQuote() {
+    const bd = Party.breakdown(); const { ration: rp, water: wp } = cwfResupplyPrices();
+    const rows = (bd?.members || []).map(m => {
+        const rNeed = Math.max(0, (m.capRations || 0) - (m.rations || 0)), wNeed = Math.max(0, (m.capWater || 0) - (m.water || 0));
+        return { id: m.id, name: m.name, rNeed, wNeed, cost: rNeed * rp + wNeed * wp, gp: cwfActorGold(game.actors.get(m.id)) };
+    });
+    return { total: rows.reduce((s, r) => s + r.cost, 0), rows, prices: { ration: rp, water: wp } };
+}
+async function cwfResupply() {
+    if (!game.user?.isGM) return;
+    const q = cwfResupplyQuote();
+    if (!q.rows.length) { ui.notifications?.warn(`${TITLE}: no party members to resupply.`); return; }
+    if (!q.rows.some(r => r.rNeed || r.wNeed)) { ui.notifications?.info(`${TITLE}: every pack is already full.`); return; }
+    const fmt = (g) => `${Math.round(g * 100) / 100}`;
+    const rowsHtml = q.rows.map(r => `<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-top:1px solid #ffffff12${r.cost > r.gp ? ";color:#d6887e" : ""}"><span>${cwfEsc(r.name)}</span><span style="color:#9aa6b2">${r.rNeed ? `+${r.rNeed}${cwfResIcon("rations")}` : ""} ${r.wNeed ? `+${r.wNeed}${cwfResIcon("water")}` : ""}</span><span>${fmt(r.cost)} gp${r.cost > r.gp ? ` <em>(has ${fmt(r.gp)})</em>` : ""}</span></div>`).join("");
+    const content = `<div style="font-size:13px"><p style="color:#cdc6e0;margin:0 0 8px;line-height:1.5">Top every pack to full carrying capacity — each character pays their own share (rations ${fmt(q.prices.ration)} gp · water ${fmt(q.prices.water)} gp per unit).</p>${rowsHtml}<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0 0;margin-top:4px;border-top:1px solid #ffffff33;font-weight:700"><span>Total</span><span>${fmt(q.total)} gp</span></div></div>`;
+    const DialogV2 = foundry.applications?.api?.DialogV2;
+    const go = DialogV2?.confirm ? await DialogV2.confirm({ window: { title: "Resupply the party" }, content, yes: { label: "Replenish & deduct", icon: "fa-solid fa-coins" }, no: { label: "Cancel" }, modal: true }).catch(() => false) : await cwfConfirm("Resupply the party", `Refill all packs for ${fmt(q.total)} gp total?`);
+    if (!go) return;
+    const totR = q.rows.reduce((s, r) => s + r.rNeed, 0), totW = q.rows.reduce((s, r) => s + r.wNeed, 0);
+    try { await Party.addSupplies(totR, totW); } catch (e) { warn("resupply fill failed", e); }   // addSupplies caps each member → everyone reaches full
+    let paid = 0; for (const r of q.rows) if (r.cost > 0) paid += await cwfDeductGold(game.actors.get(r.id), r.cost);
+    try { await ChatMessage.create({ content: cwfCardShell("fa-coins", "Resupplied", cwfRow("Packs topped to full", `${totR}${cwfResIcon("rations")} / ${totW}${cwfResIcon("water")} distributed · ${fmt(paid)} gp deducted across ${q.rows.length} character${q.rows.length === 1 ? "" : "s"}`)) }); } catch (e) { /* card is best-effort */ }
+    WayfarerPanel.render();
 }
 
 // Small number prompt → returns the entered number or null.
@@ -5927,6 +5974,7 @@ const WayfarerPanel = (() => {
                 case "rest-short": await cwfPartyRest("short"); break;
                 case "rest-long": await cwfPartyRest("long", { newDay: true }); break;
                 case "resync": await cwfResyncSheets(); break;
+                case "resupply": await cwfResupply(); break;
                 case "camp": await makeCamp(); break;
                 case "enter-site": await enterSite(); break;
                 case "plan-route": Travel.startPlot(); break;
@@ -6382,6 +6430,7 @@ const WayfarerPanel = (() => {
                         <button class="cwf-btn" data-action="rest-short" title="Short rest — auto-spend hit dice, recover short-rest features"><i class="fa-solid fa-mug-hot"></i></button>
                         <button class="cwf-btn" data-action="rest-long" title="Long rest — HP, spell slots, hit dice"><i class="fa-solid fa-bed"></i></button>
                         <button class="cwf-btn" data-action="resync" title="Re-sync sheets from D&D Beyond (confirms first)"><i class="fa-solid fa-arrows-rotate"></i></button>
+                        <button class="cwf-btn cwf-resupply" data-action="resupply" title="Resupply — the gold to refill every pack to full capacity (total + per-character), then replenish and deduct it from each character"><i class="fa-solid fa-coins"></i> Resupply</button>
                     </div>
                 </div>` : ""}
 
@@ -6752,7 +6801,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
         const SECTIONS = [
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "autoTravelOnResolve", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
-            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "mealsPerDay", "shareProvisions", "foodGraceDays", "carryBase", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
+            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "mealsPerDay", "shareProvisions", "foodGraceDays", "carryBase", "rationCost", "waterCost", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
             ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeForageJSON", "biomeForageWeightsJSON", "gatherIngredients", "biomeGatherJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "travelSfxPath", "musicEnabled", "musicMapJSON", "campMapJSON"]],

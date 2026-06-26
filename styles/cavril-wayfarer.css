@@ -120,6 +120,7 @@
 /* Header chrome — ambience auto-on (no button); day + meals are chips at the left, End Expedition pushed to the right. */
 .cwf-end-exped { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 2px 10px; border-radius: 11px; border: 1px solid #d6665a55; background: #d6665a1a; color: #e8a59e; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .cwf-end-exped:hover { background: #d6665a33; color: #fff; }
+.cwf-actions .cwf-resupply { flex: 2.2; gap: 6px; }   /* Resupply is a labelled button among the icon-only rest/sync ones */
 .cwf-daychoice { flex-direction: row; }
 .cwf-daychoice .cwf-plan { width: auto; flex: 2; }
 .cwf-daychoice .cwf-btn { flex: 1; height: 34px; }
