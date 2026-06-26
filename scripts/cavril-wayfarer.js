@@ -431,6 +431,7 @@ const Store = (() => {
         g.register(MOD, "roadNpcCards", { name: "Whisper road-encounter NPC cards", hint: "On a quiet 'people' travel beat, whisper the GM a hand-crafted road-encounter NPC — a pilgrim, a survivor, or something uncanny, each a scene with a hook that's a choice with a price. Off = just the flavour line. Browse them with CavrilWayfarer.roadNpcs().", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "merchantPortraits", { name: "Merchant portraits (CZEPEKU)", hint: "Give each generated merchant a fitting character portrait pulled from your CZEPEKU token library (matched by trade — a robed alchemist, a hooded fence, a grizzled smith). Needs the CZEPEKU module connected. Off = no portrait.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "merchantTables", { scope: "world", config: false, type: Object, default: {} });   // {merchantTypeKey: RollTable uuid} — per-type SRD stock tables (CavrilWayfarer.buildMerchantTables())
+        g.register(MOD, "arcQuestOrder", { scope: "world", config: false, type: Object, default: {} });   // {arcKey: [member names in order]} — the writing-room chain order per arc (CavrilWayfarer.setArcOrder)
         g.register(MOD, "merchantInteriors", { scope: "world", config: false, type: Object, default: {} });   // {merchantTypeKey: Scene uuid} — per-type CZEPEKU interior staged once + reused as a shop's enterable scene + hero image
         // Per-hex travel events: a roll on every hex entered → mostly mundane flavor,
         // a danger-scaled chance of a real event (combat/puzzle/site) that halts the day.
@@ -4325,12 +4326,12 @@ async function cwfCodexWidget(doc, widgetName, tab, typeKey, widgetData) {
 }
 // A TRACKABLE Campaign Codex quest from this character's hook — given BY them, so it lands on the Quest Board with the NPC
 // as quest-giver and the twist tucked in GM notes. Idempotent by name (a rebuild re-uses the same quest). v0.55.133.
-async function cwfRoadCastQuest(m, npcDoc, assocUuids = []) {
+async function cwfRoadCastQuest(m, npcDoc, assocUuids = [], force = false) {
     if (!m?.hook || typeof game.campaignCodex?.createQuestJournal !== "function") return null;
     const qname = `${m.name} — ${m.title || "a road hook"}`;
     let q = (game.journal || []).find(j => { try { return j.getFlag(CC_NS, "type") === "quest" && j.name === qname; } catch (e) { return false; } });
-    if (q) return q;
-    try { q = await game.campaignCodex.createQuestJournal(qname); } catch (e) { warn("createQuestJournal failed", e); return null; }
+    if (q && !force) return q;
+    if (!q) { try { q = await game.campaignCodex.createQuestJournal(qname); } catch (e) { warn("createQuestJournal failed", e); return null; } }
     if (!q) return null;
     try {
         const data = q.getFlag(CC_NS, "data") || {};
@@ -4353,11 +4354,49 @@ async function cwfRoadCastQuest(m, npcDoc, assocUuids = []) {
         // Suggested REWARDS — arc beats pay more; all editable on the Quests tab.
         if (quest.rewardXP == null || quest.rewardXP === 0) quest.rewardXP = m.arc ? 450 : 150;
         if (quest.rewardCurrency == null || quest.rewardCurrency === 0) quest.rewardCurrency = m.arc ? 100 : 40;
+        if (quest.rewardReputation == null || quest.rewardReputation === 0) quest.rewardReputation = m.arc ? 2 : 1;   // feeds the NPC's Reputation Tracker on completion
         data.quests = [quest];
+        // The quest PAGE body — Ferryman-template style: title + hook + arc, the twist in a GM SECRET block, the giver's read-aloud.
+        const arcK = (String(m.arc || "").match(/Arc [A-Z]/)?.[0]) || "";
+        data.description = `<h1><strong>${cwfEsc(qname)}</strong></h1>`
+            + `<h2><strong>Quest hook${arcK ? ` · ${cwfEsc(arcK)}` : ""}</strong></h2>`
+            + `<p><strong>${cwfEsc(m.hook)}</strong></p>`
+            + ((m.twist || m.lore) ? `<section class="secret" id="secret-${foundry.utils.randomID()}"><p><em>${cwfEsc(m.twist || m.lore)}</em></p></section>` : "")
+            + `<h3>${cwfEsc(m.name)}${m.title ? `, ${cwfEsc(m.title)}` : ""}</h3>`
+            + (m.appearance ? `<p>${cwfEsc(m.appearance)}</p>` : "")
+            + (m.voice ? `<p>${cwfEsc(m.voice)}</p>` : "")
+            + (m.readAloud ? `<blockquote><em>${cwfEsc(m.readAloud)}</em></blockquote>` : "");
         data.notes = `<p><strong>GM.</strong> ${cwfEsc(m.twist || m.lore || "")}</p>`;
         await q.setFlag(CC_NS, "data", data);
     } catch (e) { warn("populate quest failed", e); }
     return q;
+}
+// The arc → ordered-member-names override the GM can set (CavrilWayfarer.setArcOrder); blank = list order.
+function cwfArcOrder() { try { return foundry.utils.duplicate(game.settings.get(MOD, "arcQuestOrder") || {}); } catch (e) { return {}; } }
+// AUTO-CHAIN quests by arc: within each arc, order the members (stored order first, then list order), then wire each quest's
+// dependencies (the prior quest in the arc) ←→ unlocks (the next), so completing one opens the next. Keys = "journalUuid::questId".
+async function cwfWireQuestChains() {
+    if (!game.campaignCodex) return 0;
+    const arcKey = (m) => (String(m.arc || "").match(/Arc [A-Z]/)?.[0]) || null;
+    const all = [...TravelingMerchants.list().map(m => [m, "merchant"]), ...NarrativeNPCs.list().map(n => [n, "npc"])];
+    const order = cwfArcOrder(), byArc = {};
+    for (const [m] of all) { if (!m.hook) continue; const a = arcKey(m); if (a) (byArc[a] ??= []).push(m); }
+    const questFor = (m) => { const qn = `${m.name} — ${m.title || "a road hook"}`; return (game.journal || []).find(j => { try { return j.getFlag(CC_NS, "type") === "quest" && j.name === qn; } catch (e) { return false; } }); };
+    const keyFor = (j) => { try { const q = (j.getFlag(CC_NS, "data")?.quests || [])[0]; return q?.id ? `${j.uuid}::${q.id}` : null; } catch (e) { return null; } };
+    let wired = 0;
+    for (const [a, members] of Object.entries(byArc)) {
+        const ord = order[a] || [];
+        members.sort((x, y) => { const ix = ord.indexOf(x.name), iy = ord.indexOf(y.name); return (ix < 0 ? 1e6 : ix) - (iy < 0 ? 1e6 : iy); });
+        const chain = members.map(questFor).filter(Boolean);
+        for (let i = 0; i < chain.length; i++) {
+            const j = chain[i]; const data = foundry.utils.duplicate(j.getFlag(CC_NS, "data") || {}); const quest = (data.quests || [])[0]; if (!quest) continue;
+            const prevKey = i > 0 ? keyFor(chain[i - 1]) : null, nextKey = i < chain.length - 1 ? keyFor(chain[i + 1]) : null;
+            quest.dependencies = prevKey ? [prevKey] : []; quest.unlocks = nextKey ? [nextKey] : [];
+            data.quests = [quest];
+            try { await j.setFlag(CC_NS, "data", data); wired++; } catch (e) { /* noop */ }
+        }
+    }
+    return wired;
 }
 async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find or CREATE + populate this character's Campaign Codex NPC journal
     if (!game.campaignCodex || !game.user?.isGM || !m) return null;
@@ -4381,7 +4420,7 @@ async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find o
     try {
         const data = doc.getFlag(CC_NS, "data") || {};
         const assoc = cwfRoadCastLinks(m, [m.lore, m.hook, m.readAloud, m.appearance].join(" "));   // linked allies → both the Associates tab AND the quest's related-docs
-        const quest = await cwfRoadCastQuest(m, doc, assoc).catch(() => null);   // hook → a trackable Quest-Board entry, this NPC as giver, links threaded in
+        const quest = await cwfRoadCastQuest(m, doc, assoc, force).catch(() => null);   // hook → a trackable Quest-Board entry, this NPC as giver, links threaded in
         const tags = Array.from(new Set([cwfShortSpecies(m.species || ""), kind === "merchant" ? "merchant" : "road NPC", ...(m.biomes || []), (String(m.arc || "").match(/Arc [A-Z]/)?.[0])].map(t => String(t || "").trim()).filter(Boolean)));
         await doc.setFlag(CC_NS, "data", { ...data, description: desc, notes, tags, associates: assoc, linkedQuests: quest ? [quest.uuid] : (data.linkedQuests || []) });
         const img = (actor?.img && actor.img !== "icons/svg/mystery-man.svg") ? actor.img : cwfRoadCastToken(m); if (img) await doc.setFlag(CC_NS, "image", img);
@@ -4418,7 +4457,8 @@ async function cwfBuildRoadCastCodex() {
     if (!game.user?.isGM) return 0;
     const all = [...TravelingMerchants.list().map(m => [m, "merchant"]), ...NarrativeNPCs.list().map(n => [n, "npc"])];
     let n = 0; for (const [m, kind] of all) { try { if (await cwfRoadCastJournal(m, kind, { force: true })) n++; } catch (e) { /* noop */ } }
-    ui.notifications?.info(`${TITLE}: ${n} road-cast NPC journals rebuilt in Campaign Codex — full City-HUD-style dossiers, hooks, connections + secrets.`);
+    const chained = await cwfWireQuestChains().catch(() => 0);   // SECOND PASS — now every quest exists → wire the arc chains (prereqs ←→ unlocks)
+    ui.notifications?.info(`${TITLE}: ${n} road-cast NPC journals rebuilt + ${chained} quests chained by arc — dossiers, hooks, connections, secrets, progression.`);
     return n;
 }
 const TravelingMerchants = (() => {
@@ -6391,6 +6431,9 @@ Hooks.once("ready", () => {
         roadNpcs: () => { const l = NarrativeNPCs.list().map(n => ({ name: n.name, title: n.title, biomes: (n.biomes || []).join("/"), arc: n.arc })); console.table(l); return l; },   // the hand-crafted road-encounter NPCs
         roadNpcCard: (key) => { const n = NarrativeNPCs.list().find(x => x.key === key || (x.name || "").toLowerCase().includes(String(key || "").toLowerCase())); if (n) cwfRoadCastPost(n, {}, "npc", { open: true }); return n || null; },   // open an NPC's journal + post the compact card
         buildRoadCastCodex: () => cwfBuildRoadCastCodex(),            // build Campaign Codex journals for ALL 30 road-cast at once
+        arcChains: () => cwfWireQuestChains(),                        // re-wire the arc quest chains (each quest's prereqs ←→ unlocks) right now
+        setArcOrder: (arc, names) => { try { const o = cwfArcOrder(); o[arc] = Array.isArray(names) ? names : []; game.settings.set(MOD, "arcQuestOrder", o); return o[arc]; } catch (e) { return null; } },   // define the quest order WITHIN an arc, then call arcChains(): setArcOrder("Arc A", ["Quill","Geddy Half-Coat",…])
+        arcOrder: () => { const o = cwfArcOrder(); console.table(o); return o; },   // view the current per-arc chain order
         buildRoadEncounterTable: () => NarrativeNPCs.buildTable(),     // create the editable "Cavril Road Encounters (NPCs)" RollTable
         buildAllTables: async () => {   // one call: every editable RollTable the system can seed — biome, locations, merchants, road NPCs
             const r = {};
