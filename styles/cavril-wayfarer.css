@@ -154,6 +154,11 @@
 .cwf-seg:hover:not(:disabled) { border-color: var(--cwf-accent); }
 .cwf-seg.on { background: color-mix(in srgb, var(--cwf-accent) 22%, transparent); border-color: var(--cwf-accent); color: #fff; }
 .cwf-seg:disabled { opacity: .4; cursor: not-allowed; }
+/* Pace segments carry their time-cost: the label over a small "~Xh/hex" so switching pace visibly trades time-per-hex, not just reach. */
+.cwf-seg-pace { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; height: 34px; line-height: 1.1; transition: background .08s, border-color .08s; }
+.cwf-seg-pace .cwf-seg-t { font-weight: 700; font-size: 12px; }
+.cwf-seg-pace .cwf-seg-sub { font-size: 8.5px; font-weight: 600; opacity: .65; letter-spacing: .01em; }
+.cwf-seg-pace.on .cwf-seg-sub { opacity: .95; }
 .cwf-x2 { color: var(--cwf-easy); font-weight: 700; margin-left: 4px; }
 .cwf-toggles { display: flex; gap: 5px; }
 .cwf-toggle { flex: 1; height: 26px; border-radius: 8px; border: 1px solid var(--cwf-line); background: var(--cwf-bg2); color: var(--cwf-muted); cursor: pointer; }

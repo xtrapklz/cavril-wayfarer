@@ -1925,6 +1925,12 @@ async function cwfAdvanceHex(auto) {
     // Crossing INTO a day phase that carries a meal (Dawn breakfast / Day midday / Dusk supper) → the party eats one portion
     // here, sharing for anyone short, and takes the toll on the spot. The meal card posts to chat. v0.55.129.
     if (todChanged && tod.meal) { try { await cwfMealBeat(tod); } catch (e) { warn("meal beat failed", e); } }
+    // Crossing INTO night HALTS the trek for a BEAT — bed down before the watch decision, so the dusk supper + making camp get
+    // their own stepped moment instead of gliding straight into the dark. The HUD goes camp-primary; the GM narrates, then camps.
+    if (todChanged && tod.key === "night" && !encounter && !t.halted) {
+        t.halted = true;
+        t.lines.push(cwfHexLineHTML(off, t.idx, biome, weatherLabel, `<i class="fa-solid fa-moon"></i> <b>Night falls.</b> Bed down and set the watch — or press on into the dark.`, true));
+    }
     if (encounter) {
         if (ev.hours) await Store.advanceWorldTime(ev.hours);
         t.lines.push(cwfHexLineHTML(off, t.idx, biome, weatherLabel, `<i class="fa-solid ${ev.icon}"></i> <b>${ev.label}</b>${ev.tag || ""} · +${ev.hours}h<br>${ev.line}`, true));
@@ -3312,7 +3318,7 @@ const Travel = (() => {
         waypoints.push(off); recompute(); WayfarerPanel.render();
     }
     function undo() { if (plotting && waypoints.length) { waypoints.pop(); recompute(); WayfarerPanel.render(); } }
-    async function setPace(p) { pace = p; await Store.setSceneState({ pace: p }); recompute(); WayfarerPanel.render(); }
+    async function setPace(p) { pace = p; recompute(); WayfarerPanel.render(); try { await Store.setSceneState({ pace: p }); } catch (e) { /* render first for snap; persist after */ } }
     function setBoat(b) { boat = !!b; recompute(); WayfarerPanel.render(); }
     function setShortRest(b) { shortRest = !!b; recompute(); WayfarerPanel.render(); }
 
@@ -5573,6 +5579,7 @@ const WayfarerPanel = (() => {
                 case "enter-site": await enterSite(); break;
                 case "plan-route": Travel.startPlot(); break;
                 case "step": await cwfDoHexStep(); break;   // mid-trek "Advance one hex" lives in the HUD too now, not just the chat card / floating button
+                case "replot": cwfTrek = null; Travel.startPlot(); break;   // abandon the current trek and chart a fresh route from here
                 case "travel-pace": await Travel.setPace(btn.dataset.pace); break;
                 case "travel-boat": Travel.setBoat(!Travel.boat); break;
                 case "travel-short": Travel.setShortRest(!Travel.shortRest); break;
@@ -5883,22 +5890,30 @@ const WayfarerPanel = (() => {
         let travelSection = "";
         if (isGM) {
             if (!Travel.plotting) {
-                // Idle = the day's two choices: travel on, or bed down. MID-TREK, the left button becomes "Advance one hex" so
-                // the step action is ALWAYS in the HUD (never depending on the floating Advance button, which clears itself).
+                // Context-aware day choice. MID-TREK → "Advance one hex" + "New route" (abandon & re-plot) so stepping AND
+                // cancelling are always in the HUD. At NIGHT (not mid-trek) → "Make camp" goes primary, because crossing into
+                // night halts the trek for exactly this beat; "Travel on" stays as the press-into-the-dark option. By DAY → plan.
                 const trekOn = !!cwfTrek && !cwfTrek.done && (cwfTrek.idx ?? 0) < (cwfTrek.route?.length ?? 0);
                 const left = trekOn ? (cwfTrek.route.length - cwfTrek.idx) : 0;
-                travelSection = `<div class="cwf-section cwf-daychoice">
-                    ${trekOn
-                        ? `<button class="cwf-btn cwf-primary cwf-plan" data-action="step" title="Advance to the next hex — the clock, weather + any beat resolve as you arrive"><i class="fa-solid fa-shoe-prints"></i> Advance one hex <span class="cwf-muted2">· ${left} left</span></button>`
-                        : `<button class="cwf-btn cwf-primary cwf-plan" data-action="plan-route"><i class="fa-solid fa-route"></i> Plan a route</button>`}
-                    <button class="cwf-btn" data-action="camp" title="Bed down — camp ambience, watch order, then resolve the night to dawn"><i class="fa-solid fa-campground"></i> Make camp</button>
-                </div>`;
+                const night = cwfNightNow();
+                const primary = trekOn
+                    ? `<button class="cwf-btn cwf-primary cwf-plan" data-action="step" title="Advance to the next hex — the clock, weather + any beat resolve as you arrive"><i class="fa-solid fa-shoe-prints"></i> Advance one hex <span class="cwf-muted2">· ${left} left</span></button>`
+                    : night
+                        ? `<button class="cwf-btn cwf-primary cwf-plan" data-action="camp" title="Night has fallen — bed down, set the watch, resolve to dawn"><i class="fa-solid fa-campground"></i> Make camp</button>`
+                        : `<button class="cwf-btn cwf-primary cwf-plan" data-action="plan-route"><i class="fa-solid fa-route"></i> Plan a route</button>`;
+                const secondary = trekOn
+                    ? `<button class="cwf-btn" data-action="replot" title="Abandon this route and chart a new one from here"><i class="fa-solid fa-route"></i> New route</button><button class="cwf-btn" data-action="camp" title="Bed down here for the night"><i class="fa-solid fa-campground"></i> Make camp</button>`
+                    : night
+                        ? `<button class="cwf-btn" data-action="plan-route" title="Press on into the dark — chart a night-travel route"><i class="fa-solid fa-route"></i> Travel on</button>`
+                        : `<button class="cwf-btn" data-action="camp" title="Bed down — camp ambience, watch order, then resolve the night to dawn"><i class="fa-solid fa-campground"></i> Make camp</button>`;
+                travelSection = `<div class="cwf-section cwf-daychoice">${primary}${secondary}</div>`;
             } else {
                 const gov = Travel.governing();
                 const n = Travel.route.length;
                 const tpace = Domain.PACE_ORDER.map(k => {
                     const off = (k === "fast" && gov && Domain.fastProhibited(gov));
-                    return `<button class="cwf-seg ${Travel.pace === k ? "on" : ""}" data-action="travel-pace" data-pace="${k}" ${off ? "disabled" : ""} title="${Domain.PACE[k].note}">${Domain.PACE[k].label}</button>`;
+                    const hph = Math.round(Domain.hoursPerHex(k, Travel.boat));   // the SIGNIFICANCE of pace = time spent per hex, surfaced on the button itself
+                    return `<button class="cwf-seg cwf-seg-pace ${Travel.pace === k ? "on" : ""}" data-action="travel-pace" data-pace="${k}" ${off ? "disabled" : ""} title="${Domain.PACE[k].note} · ~${hph}h per hex"><span class="cwf-seg-t">${Domain.PACE[k].label}</span><span class="cwf-seg-sub">~${hph}h/hex</span></button>`;
                 }).join("");
                 const wps = Travel.waypointCount;
                 const reach = Travel.reach?.size ?? 0;
