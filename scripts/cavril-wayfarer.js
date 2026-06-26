@@ -4181,6 +4181,73 @@ async function cwfRoadCastActor(m, kind) {
     if (items.length) { try { await actor.createEmbeddedDocuments("Item", items); } catch (e) { warn("road-cast items failed", e); } }
     return actor;
 }
+// ── NPC DOSSIER (City-HUD-style depth for a roaming character) ────────────────────────────────────────────────────────
+// A deterministic seeded RNG (mulberry32) so a member's generated dossier is STABLE across rebuilds — same name → same dossier.
+function cwfSeedRng(str) {
+    let h = 1779033703 ^ String(str).length;
+    for (let i = 0; i < String(str).length; i++) { h = Math.imul(h ^ String(str).charCodeAt(i), 3432918353); h = (h << 13) | (h >>> 19); }
+    let a = (h >>> 0);
+    return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+// Generic-but-evocative fill lists (folk-horror Westmarch) — used where there's no hand-authored value, so the GM can keep or rewrite.
+const CWF_ANCESTRY = ["human", "half-elf", "hill dwarf", "stout halfling", "wood elf", "forest gnome", "half-orc", "tiefling", "goliath", "firbolg", "changeling", "human (uncanny)"];
+const CWF_OCCUPATION = ["drover", "tinker", "pilgrim", "deserter", "hedge-witch", "charcoal-burner", "rat-catcher", "ballad-monger", "relic-pedlar", "bonesetter", "toll-keeper", "fugitive"];
+const CWF_HOBBY = ["whittling small animals from deadfall", "pressing flowers they can't name", "memorising the old roadside ballads", "fishing at dusk and throwing it all back", "carving wards into spare wood", "keeping a dream-journal in a cipher", "brewing bitter teas from roadside weeds", "feeding the crows that follow them", "counting milestones aloud", "collecting other people's lost buttons"];
+const CWF_PLACES = ["a drowned village downriver", "the high sheep-pastures", "a city they will not name", "the old cinnabar mine", "a hill monastery, since burned", "the coast, before the storms came", "a border town that changed hands twice", "deep in the wood, with people who are gone", "a garrison that no longer answers musters", "nowhere they'll say twice the same way"];
+const CWF_FAITH = ["the old roadside saints", "no god they'll admit to", "the Drowned Bell, quietly", "the household spirits, with salt at the door", "the Tithe of the Forest, fearfully", "a saint they invented as a child", "whatever's listening, lately"];
+// Loot suited to who they are — drawn off the OCEAN + wealth, so a curious soul carries chapbooks and a hard one carries a too-sharp knife.
+function cwfDossierLoot(ocean, metrics, rng) {
+    const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+    const out = [];
+    if (ocean.openness >= 2) out.push(pick(["a water-stained chapbook of ballads", "a fox skull wrapped in copper wire", "a map to nowhere, lovingly annotated", "three keys to doors they've forgotten"]));
+    if (ocean.conscientiousness >= 2) out.push(pick(["a roll of well-kept tools", "a ledger balanced to the copper", "a whetstone worn to a curve", "a sewing kit, every needle accounted for"]));
+    if (ocean.neuroticism >= 2) out.push(pick(["a charm against the evil eye", "a stoppered vial they won't name", "a lock of someone's hair", "a folded prayer, much-creased"]));
+    if (ocean.agreeableness <= 1) out.push(pick(["a knife kept too sharp for whittling", "a cudgel with a sweat-worn grip", "a coil of garrote-wire", "a hand-axe, recently cleaned"]));
+    if ((metrics.wealth ?? 0) >= 1) out.push(pick(["a purse heavier than it ought to be", "a ring they keep turning", "a coin from a country that no longer exists", "good boots, recently another's"]));
+    if (!out.length) out.push(pick(["the clothes on their back and little else", "a half-loaf, shared if you ask kindly", "a walking-stick and an old grudge"]));
+    return out;
+}
+// The full procedural dossier — every value a SUGGESTION the GM can keep or overwrite. Seeded per member so it never drifts.
+function cwfNpcDossier(m, kind) {
+    const rng = cwfSeedRng(`dossier-${m.key || m.name || "npc"}`);
+    const ri = (a, b) => a + Math.floor(rng() * (b - a + 1)), pick = (arr) => arr[Math.floor(rng() * arr.length)] ?? arr[0];
+    const ocean = { openness: ri(0, 3), conscientiousness: ri(0, 3), extroversion: ri(0, 3), agreeableness: ri(0, 3), neuroticism: ri(0, 3) };
+    const metrics = { health: ri(-2, 2), happiness: ri(-2, 2), wealth: kind === "merchant" ? ri(-1, 2) : ri(-2, 1), favor: ri(-2, 2), attack: ri(-2, 2), ac: ri(-2, 2) };   // favor=Culture · attack=Offense · ac=Defense (City HUD range)
+    const attrs = { str: ri(8, 15), dex: ri(8, 15), con: ri(8, 15), int: ri(8, 15), wis: ri(9, 16), cha: ri(9, 16) };
+    const ancestry = cwfShortSpecies(m.species || "") || pick(CWF_ANCESTRY);
+    const occupation = m.title ? String(m.title).replace(/^(the|a|an)\s+/i, "") : (kind === "merchant" ? "travelling merchant" : pick(CWF_OCCUPATION));
+    return { ocean, metrics, attrs, ancestry, occupation, hobby: pick(CWF_HOBBY), faith: pick(CWF_FAITH), lived: [pick(CWF_PLACES), pick(CWF_PLACES)].filter((v, i, a) => a.indexOf(v) === i), loot: cwfDossierLoot(ocean, metrics, rng) };
+}
+// Render the dossier as a City-HUD-styled description: the metric strip + OCEAN pips + suggested ability scores up top (the
+// HUD's header stack), then color-themed, iconed sections in the HUD's own palette. Raw HTML — CC enriches + injects it as-is.
+function cwfNpcDossierHTML(m, kind, d) {
+    const e = (s) => cwfEsc(s);
+    const ul = (arr) => arr?.length ? `<ul>${arr.map(x => `<li>${e(x)}</li>`).join("")}</ul>` : "";
+    const MET = { health: { l: "Health", i: "fa-heart-pulse", c: "#ef4444" }, happiness: { l: "Happiness", i: "fa-face-smile", c: "#f97316" }, wealth: { l: "Wealth", i: "fa-coins", c: "#fbbf24" }, favor: { l: "Culture", i: "fa-landmark", c: "#22c55e" }, attack: { l: "Offense", i: "fa-khanda", c: "#3b82f6" }, ac: { l: "Defense", i: "fa-shield-halved", c: "#a855f7" } };
+    const OCE = { openness: { a: "OPN", c: "#38bdf8", n: "curiosity" }, conscientiousness: { a: "CON", c: "#22c55e", n: "discipline" }, extroversion: { a: "EXT", c: "#f472b6", n: "sociability" }, agreeableness: { a: "AGR", c: "#fbbf24", n: "warmth" }, neuroticism: { a: "NEU", c: "#ef4444", n: "volatility" } };
+    const mPill = (k) => { const v = d.metrics[k] ?? 0, x = MET[k], s = v > 0 ? `+${v}` : `${v}`; const bg = v === 0 ? "rgba(161,161,170,.14)" : `${x.c}${Math.abs(v) >= 2 ? "33" : "1f"}`, col = v === 0 ? "#a1a1aa" : x.c; return `<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:9px;background:${bg};color:${col};font-weight:700;font-size:11.5px"><i class="fa-solid ${x.i}"></i> ${x.l} ${s}</span>`; };
+    const oPill = (k) => { const v = d.ocean[k] ?? 0, x = OCE[k], dots = "●".repeat(v) + "○".repeat(3 - v); return `<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:9px;background:rgba(255,255,255,.04);font-size:11px"><b style="color:${x.c}">${x.a}</b> <span style="color:${x.c};letter-spacing:1px">${dots}</span> <span style="opacity:.5;font-size:9px">${x.n}</span></span>`; };
+    const mod = (s) => { const v = Math.floor((s - 10) / 2); return v >= 0 ? `+${v}` : `${v}`; };
+    const aCell = (k) => `<span style="display:inline-flex;flex-direction:column;align-items:center;padding:2px 9px;border-radius:8px;background:rgba(255,255,255,.04);min-width:34px"><b style="font-size:9px;color:#a5b4fc;text-transform:uppercase">${k}</b><span style="font-weight:700;font-size:13px">${d.attrs[k]}</span><span style="font-size:9px;opacity:.55">${mod(d.attrs[k])}</span></span>`;
+    const strip = (html) => `<div style="display:flex;flex-wrap:wrap;gap:5px;margin:7px 0">${html}</div>`;
+    const sec = (icon, color, label, body) => body ? `<h3 style="color:${color};border-bottom:2px solid ${color}55;padding-bottom:2px;margin:13px 0 5px"><i class="fa-solid ${icon}"></i> ${label}</h3>${body}` : "";
+    const famRng = cwfSeedRng(`family-${m.key || m.name}`);
+    const FAMILY = ["a sister who still writes, still unanswered", "no one left they'll name", "a child fostered out two towns back", "a debt and a grave, both at home", "an old love on the wrong side of a war", "parents in the ground, the house sold", "a sibling in the same trade, last seen heading the other way"];
+    const family = FAMILY[Math.floor(famRng() * FAMILY.length)];
+
+    return `<p style="font-size:13px;opacity:.85;margin:0 0 2px"><b>${e(d.ancestry)}</b> · ${e(d.occupation)}${m.arc ? ` · <span style="color:#c084fc">${e((String(m.arc).match(/Arc [A-Z]/)?.[0]) || m.arc)}</span>` : ""}</p>`
+        + strip(Object.keys(MET).map(mPill).join(""))
+        + strip(Object.keys(OCE).map(oPill).join(""))
+        + `<div style="display:flex;flex-wrap:wrap;gap:5px;margin:6px 0"><span style="display:inline-flex;align-items:center;font-size:10px;color:#a5b4fc;font-weight:700;text-transform:uppercase;margin-right:2px">Suggested</span>${["str", "dex", "con", "int", "wis", "cha"].map(aCell).join("")}</div>`
+        + (m.readAloud ? sec("fa-scroll", "#22c55e", "Bio", `<blockquote>${e(m.readAloud)}</blockquote>${m.situation ? `<p>${e(m.situation)}</p>` : ""}`) : "")
+        + sec("fa-masks-theater", "#c084fc", "Roleplay cues", [m.voice ? `<p><i class="fa-solid fa-comment-dots" style="color:#38bdf8"></i> <b>Voice.</b> ${e(m.voice)}</p>` : "", m.appearance ? `<p><i class="fa-solid fa-hand-sparkles" style="color:#f472b6"></i> <b>Manner.</b> ${e(m.appearance)}</p>` : "", m.wants ? `<p><i class="fa-solid fa-bullseye" style="color:#fbbf24"></i> <b>Wants.</b> ${e(m.wants)}</p>` : "", (m.twist || m.lore) ? `<p><i class="fa-solid fa-user-secret" style="color:#ef4444"></i> <b>Secret.</b> <span style="opacity:.7">(GM — see Notes.)</span></p>` : ""].join(""))
+        + sec("fa-map-pin", "#38bdf8", "Places & faith", `<p><i class="fa-solid fa-house" style="color:#38bdf8"></i> <b>Has lived:</b> ${e(d.lived.join("; "))}.</p><p><i class="fa-solid fa-pray" style="color:#c084fc"></i> <b>Faith:</b> ${e(d.faith)}.</p><p><i class="fa-solid fa-dice" style="color:#22c55e"></i> <b>Hobby:</b> ${e(d.hobby)}.</p>`)
+        + sec("fa-people-roof", "#f472b6", "Family & friends", `<p><i class="fa-solid fa-people-roof" style="color:#f472b6"></i> <b>Family.</b> ${e(family)}.</p><p style="opacity:.7;font-size:12px"><i class="fa-solid fa-user-group" style="color:#a78bfa"></i> Associates link on the <b>Associates</b> tab; the <b>connections graph</b> visualises them.</p>`)
+        + sec("fa-shop", "#f97316", "Carries / sells", ul(d.loot) + (m.stock?.length ? `<p style="opacity:.8;font-size:12px;margin-top:4px"><b>Wares:</b></p>${ul(m.stock)}` : ""))
+        + (m.buys?.length ? sec("fa-hand-holding-dollar", "#fbbf24", "Pays well for", ul(m.buys)) : "")
+        + (m.rumour ? sec("fa-comment", "#06b6d4", "Rumour", `<p>“${e(m.rumour)}”</p>`) : "")
+        + (m.hook ? sec("fa-flag-checkered", "#ef4444", "Quest hook", `<p>${e(m.hook)}</p><p style="opacity:.7;font-size:12px">→ tracked as a linked quest on the <b>Quests</b> tab.</p>`) : "");
+}
 // Inject (idempotently) a Campaign Codex sheet WIDGET + its data — the verified CC v5.5.3 recipe: a `sheet-widgets` entry
 // { id, widgetName, counter, active, tab } PLUS the widget's own state at `data.widgets.<typeKey>.<id>`. Drives the merchant
 // restock counter and the per-NPC reputation tracker. Re-running updates the SAME widget (matched by name+tab). v0.55.138.
@@ -4230,17 +4297,10 @@ async function cwfRoadCastJournal(m, kind) {   // find or CREATE + populate this
     const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
     const ul = (arr) => (arr?.length) ? `<ul>${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
     const sec = (label, body) => body ? `<h3>${label}</h3>${body}` : "";
-    const fullSp = String(m.species || "").trim();
-    const desc = `<p><em>${esc(m.title || (kind === "merchant" ? "a traveling merchant" : "a wayfarer on the road"))}${m.arc ? ` · ${esc(m.arc)}` : ""}</em></p>`
-        + (fullSp ? `<p><strong>Nature.</strong> ${esc(fullSp)}</p>` : "")
-        + (m.readAloud ? `<blockquote>${esc(m.readAloud)}</blockquote>` : "")
-        + (m.appearance ? `<p><strong>Looks.</strong> ${esc(m.appearance)}</p>` : "")
-        + (m.voice ? `<p><strong>Voice.</strong> ${esc(m.voice)}</p>` : "")
-        + (m.situation ? `<p><strong>Scene.</strong> ${esc(m.situation)}</p>` : "")
-        + (m.wants ? `<p><strong>Wants.</strong> ${esc(m.wants)}</p>` : "")
-        + sec("Sells", ul(m.stock)) + sec("Pays well for", ul(m.buys))
-        + (m.rumour ? sec("Rumour", `<p>“${esc(m.rumour)}”</p>`) : "")
-        + (m.hook ? sec(`Quest hook${m.arc ? ` · ${esc(m.arc)}` : ""}`, `<p>${esc(m.hook)}</p>`) : "");
+    // The description is now the full City-HUD-style DOSSIER (metric strip + OCEAN + attributes + themed sections), generated
+    // from a seeded dossier of editable suggestions woven together with the hand-authored read-aloud / voice / hook / stock.
+    const dossier = cwfNpcDossier(m, kind);
+    const desc = cwfNpcDossierHTML(m, kind, dossier);
     const outc = Array.isArray(m.outcomes) ? m.outcomes.join(" · ") : m.outcomes;
     const notes = `<p><strong>The truth — GM only.</strong></p>`
         + (m.lore ? `<p>${esc(m.lore)}</p>` : "")
@@ -4252,8 +4312,10 @@ async function cwfRoadCastJournal(m, kind) {   // find or CREATE + populate this
         const tags = Array.from(new Set([cwfShortSpecies(m.species || ""), kind === "merchant" ? "merchant" : "road NPC", ...(m.biomes || []), (String(m.arc || "").match(/Arc [A-Z]/)?.[0])].map(t => String(t || "").trim()).filter(Boolean)));
         await doc.setFlag(CC_NS, "data", { ...data, description: desc, notes, tags, associates: cwfRoadCastLinks(m, [m.lore, m.hook, m.readAloud, m.appearance].join(" ")), linkedQuests: quest ? [quest.uuid] : (data.linkedQuests || []) });
         const img = (actor?.img && actor.img !== "icons/svg/mystery-man.svg") ? actor.img : cwfRoadCastToken(m); if (img) await doc.setFlag(CC_NS, "image", img);
-        // A Reputation Tracker on the Info tab → track the party's STANDING with this NPC at a glance (the "alliances" pillar).
+        // A Reputation Tracker on the Info tab → track the party's STANDING with this NPC at a glance (the "alliances" pillar),
+        // plus a connections GRAPH widget that diagrams their associate links (the City HUD's friend-graph, in Codex form).
         await cwfCodexWidget(doc, "Reputation Tracker", "info", "reputationtracker", { useLoyalty: false, reputationValue: 0 });
+        await cwfCodexWidget(doc, "networkGraph", "info", "networkgraph", {});
     } catch (e) { warn("populate road-cast journal failed", e); }
     return doc;
 }
