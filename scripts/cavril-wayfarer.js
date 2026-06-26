@@ -4163,6 +4163,38 @@ function cwfGenericLoot(name, valuable) {
         system: { quantity: 1, price: { value: valuable ? 5 + Math.floor(Math.random() * 20) : 0, denomination: "gp" }, rarity: "", description: { value: "" } } };
 }
 // Draw n items from the hex's PCAG gather table (biome herbs) as real item objects to drop on an NPC's sheet.
+// Roll a biome's PCAG "Gathering: <Env>" table N times → the RESULT REFS (compendium uuid + name + img), deduped.
+async function cwfGatherRefs(biome, n) {
+    const out = [], seen = new Set();
+    try {
+        const table = await cwfFindGatherTable({ biome }); if (!table) return out;
+        for (let i = 0; i < Math.max(0, n); i++) { let res; try { res = await table.roll(); } catch (e) { break; } for (const r of (res?.results || [])) { const uuid = r.documentUuid; if (uuid && !seen.has(uuid)) { seen.add(uuid); out.push({ uuid, name: r.text || r.name || "Find", img: r.img || "icons/svg/item-bag.svg" }); } } }
+    } catch (e) { /* no gather table */ }
+    return out;
+}
+// Per-NPC SATCHEL RollTable — home-biome herbs (common) + an origin-biome rare (the cross-biome find). The Merchant Counter on
+// their sheet restocks from this, so EVERY NPC (merchant or not) has specialized, biome-rooted loot. Cached by name; idempotent.
+async function cwfBuildSatchel(m, home, origin) {
+    if (!m?.name || typeof RollTable?.create !== "function") return null;
+    const tname = `Cavril Satchel: ${m.name}`;
+    let table = (game.tables?.contents || []).find(t => t.name === tname);
+    if (table) return table;
+    const refs = [];
+    for (const r of await cwfGatherRefs(home, 4)) refs.push({ ...r, weight: 3 });                       // home-biome herbs — common
+    for (const r of (await cwfGatherRefs(origin, 2)).slice(0, 1)) refs.push({ ...r, weight: 1 });        // ONE origin-biome rare — the cross-biome find
+    if (!refs.length) return null;   // PCAG gather tables absent → no satchel (best-effort)
+    const CT = (globalThis.CONST?.TABLE_RESULT_TYPES) || {};
+    let lo = 1; const results = refs.map(r => {
+        const hi = lo + r.weight - 1, range = [lo, hi]; lo = hi + 1;
+        const res = { type: CT.DOCUMENT ?? 2, text: r.name, img: r.img, weight: r.weight, range, documentUuid: r.uuid };
+        const cm = String(r.uuid).match(/^Compendium\.(.+)\.Item\.([^.]+)$/); if (cm) { res.documentCollection = cm[1]; res.documentId = cm[2]; }   // also the legacy fields so the table sheet renders
+        return res;
+    });
+    let folder = null; try { folder = (game.folders?.contents || []).find(f => f.type === "RollTable" && f.name === "Cavril Satchels")?.id || (await Folder.create({ name: "Cavril Satchels", type: "RollTable" }))?.id; } catch (e) { /* folder optional */ }
+    try { table = await RollTable.create({ name: tname, folder, formula: `1d${lo - 1}`, replacement: true, results, img: "icons/svg/chest.svg" }); }
+    catch (e) { warn("satchel table failed", e); return null; }
+    return table;
+}
 async function cwfGatherItems(cls, n) {
     const out = [];
     try {
@@ -4255,6 +4287,7 @@ const CWF_OCCUPATION = ["drover", "tinker", "pilgrim", "deserter", "hedge-witch"
 const CWF_HOBBY = ["whittling small animals from deadfall", "pressing flowers they can't name", "memorising the old roadside ballads", "fishing at dusk and throwing it all back", "carving wards into spare wood", "keeping a dream-journal in a cipher", "brewing bitter teas from roadside weeds", "feeding the crows that follow them", "counting milestones aloud", "collecting other people's lost buttons"];
 const CWF_PLACES = ["a drowned village downriver", "the high sheep-pastures", "a city they will not name", "the old cinnabar mine", "a hill monastery, since burned", "the coast, before the storms came", "a border town that changed hands twice", "deep in the wood, with people who are gone", "a garrison that no longer answers musters", "nowhere they'll say twice the same way"];
 const CWF_FAITH = ["the old roadside saints", "no god they'll admit to", "the Drowned Bell, quietly", "the household spirits, with salt at the door", "the Tithe of the Forest, fearfully", "a saint they invented as a child", "whatever's listening, lately"];
+const CWF_DOSSIER_BIOMES = ["temperate", "boreal", "jungle", "savanna", "swamp", "desert", "tundra", "frozen", "volcanic", "wasteland", "tainted", "water"];
 // Loot suited to who they are — drawn off the OCEAN + wealth, so a curious soul carries chapbooks and a hard one carries a too-sharp knife.
 function cwfDossierLoot(ocean, metrics, rng) {
     const pick = (arr) => arr[Math.floor(rng() * arr.length)];
@@ -4276,7 +4309,11 @@ function cwfNpcDossier(m, kind) {
     const attrs = { str: ri(8, 15), dex: ri(8, 15), con: ri(8, 15), int: ri(8, 15), wis: ri(9, 16), cha: ri(9, 16) };
     const ancestry = cwfShortSpecies(m.species || "") || pick(CWF_ANCESTRY);
     const occupation = m.title ? String(m.title).replace(/^(the|a|an)\s+/i, "") : (kind === "merchant" ? "travelling merchant" : pick(CWF_OCCUPATION));
-    return { ocean, metrics, attrs, ancestry, occupation, hobby: pick(CWF_HOBBY), faith: pick(CWF_FAITH), lived: [pick(CWF_PLACES), pick(CWF_PLACES)].filter((v, i, a) => a.indexOf(v) === i), loot: cwfDossierLoot(ocean, metrics, rng) };
+    // Home = where you meet them (their first listed biome); origin = where they came FROM (a different biome → the rare satchel item).
+    const home = (m.biomes && m.biomes[0]) || "temperate";
+    const foreign = CWF_DOSSIER_BIOMES.filter(b => b !== home && !(m.biomes || []).includes(b));
+    const origin = pick(foreign.length ? foreign : CWF_DOSSIER_BIOMES.filter(b => b !== home)) || home;
+    return { ocean, metrics, attrs, ancestry, occupation, home, origin, hobby: pick(CWF_HOBBY), faith: pick(CWF_FAITH), lived: [pick(CWF_PLACES), pick(CWF_PLACES)].filter((v, i, a) => a.indexOf(v) === i), loot: cwfDossierLoot(ocean, metrics, rng) };
 }
 // Render the dossier as a City-HUD-styled description: the metric strip + OCEAN pips + suggested ability scores up top (the
 // HUD's header stack), then color-themed, iconed sections in the HUD's own palette. Raw HTML — CC enriches + injects it as-is.
@@ -4438,6 +4475,9 @@ async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find o
         // plus a connections GRAPH widget that diagrams their associate links (the City HUD's friend-graph, in Codex form).
         await cwfCodexWidget(doc, "Reputation Tracker", "info", "reputationtracker", { useLoyalty: false, reputationValue: 0 });
         await cwfCodexWidget(doc, "networkGraph", "info", "networkgraph", {});
+        // SATCHEL — a per-NPC RollTable (home-biome herbs + an origin-biome rare) wired to a Merchant Counter, so EVERY NPC
+        // (merchant or not) restocks specialized, biome-rooted loot. Best-effort: no PCAG gather tables → no satchel.
+        try { const satchel = await cwfBuildSatchel(m, dossier.home, dossier.origin); if (satchel) await cwfCodexWidget(doc, "Merchant Counter", "inventory", "merchantcounter", { restockTables: [{ uuid: satchel.uuid, multiplier: "1d3", name: satchel.name, img: "icons/svg/chest.svg" }] }); } catch (e) { warn("satchel wire failed", e); }
     } catch (e) { warn("populate road-cast journal failed", e); }
     return doc;
 }
