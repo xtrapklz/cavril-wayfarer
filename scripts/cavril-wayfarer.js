@@ -6241,7 +6241,46 @@ Hooks.once("init", () => {
     log(`${TITLE} initialised.`);
 });
 
+// Make the +/- controls in a Codex NPC DOSSIER live: a delegated click bumps the tagged value (data-cwf-field) inside the
+// journal's description, clamps it, formats it (signed for metrics, ●●○ for OCEAN), and persists — so the Info tab is editable
+// in place without leaving the sheet. Works on ANY Campaign Codex journal whose dossier carries the data-cwf-* tags. v0.55.143.
+let _cwfDossierWired = false;
+function cwfWireDossierButtons() {
+    if (_cwfDossierWired) return; _cwfDossierWired = true;
+    const esc = (s) => (window.CSS?.escape ? CSS.escape(s) : String(s));
+    document.body.addEventListener("click", async (ev) => {
+        const btn = ev.target?.closest?.("[data-cwf-inc]"); if (!btn) return;
+        ev.preventDefault(); ev.stopPropagation();
+        if (!game.user?.isGM) return;
+        const key = btn.dataset.cwfInc, d = Number(btn.dataset.cwfD) || 0;
+        const min = btn.dataset.cwfMin != null ? Number(btn.dataset.cwfMin) : -99, max = btn.dataset.cwfMax != null ? Number(btn.dataset.cwfMax) : 99;
+        const disp = btn.dataset.cwfDisplay || "signed";
+        const journal = cwfJournalFromNode(btn); if (!journal) { ui.notifications?.warn(`${TITLE}: couldn't find this NPC's journal to update.`); return; }
+        try {
+            const data = foundry.utils.duplicate(journal.getFlag("campaign-codex", "data") || {});
+            const box = document.createElement("div"); box.innerHTML = data.description || "";
+            const span = box.querySelector(`[data-cwf-field="${esc(key)}"]`); if (!span) return;
+            const v = Math.max(min, Math.min(max, (Number(span.dataset.cwfVal) || 0) + d));
+            const text = disp === "dots" ? ("●".repeat(Math.max(0, v)) + "○".repeat(Math.max(0, max - v))) : (v > 0 ? `+${v}` : `${v}`);
+            span.dataset.cwfVal = String(v); span.textContent = text;
+            data.description = box.innerHTML;
+            const live = btn.parentElement?.querySelector(`[data-cwf-field="${esc(key)}"]`);   // instant feedback, then persist quietly
+            if (live) { live.dataset.cwfVal = String(v); live.textContent = text; }
+            await journal.update({ flags: { "campaign-codex": { data } } }, { render: false });
+        } catch (e) { warn("dossier button failed", e); }
+    }, true);
+}
+// Resolve the Campaign Codex journal whose sheet contains a clicked node (V2 apps first, then legacy windows).
+function cwfJournalFromNode(node) {
+    try {
+        const apps = foundry.applications?.instances;
+        if (apps) for (const app of apps.values()) { const el = app.element; if (el?.contains?.(node)) { const dc = app.document; if (dc?.getFlag?.("campaign-codex", "type")) return dc; if (dc?.parent?.getFlag?.("campaign-codex", "type")) return dc.parent; } }
+        for (const app of Object.values(ui.windows || {})) { const el = app.element?.[0] || app.element; if (el?.contains?.(node)) { const dc = app.document || app.object; if (dc?.getFlag?.("campaign-codex", "type")) return dc; } }
+    } catch (e) { /* noop */ }
+    return null;
+}
 Hooks.once("ready", () => {
+    try { cwfWireDossierButtons(); } catch (e) { /* noop */ }
     // Public surface for macros: window.CavrilWayfarer.toggle()
     // Automation presets — ONE switch between FULLY AUTOMATED (the flow runs itself) and FULLY MANUAL (you click every
     // step on the Advance button). Flips the high-impact toggles across Cavril: Core + Wayfarer. CavrilWayfarer.automation()
