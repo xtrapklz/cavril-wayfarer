@@ -4266,7 +4266,7 @@ async function cwfCodexWidget(doc, widgetName, tab, typeKey, widgetData) {
 }
 // A TRACKABLE Campaign Codex quest from this character's hook — given BY them, so it lands on the Quest Board with the NPC
 // as quest-giver and the twist tucked in GM notes. Idempotent by name (a rebuild re-uses the same quest). v0.55.133.
-async function cwfRoadCastQuest(m, npcDoc) {
+async function cwfRoadCastQuest(m, npcDoc, assocUuids = []) {
     if (!m?.hook || typeof game.campaignCodex?.createQuestJournal !== "function") return null;
     const qname = `${m.name} — ${m.title || "a road hook"}`;
     let q = (game.journal || []).find(j => { try { return j.getFlag(CC_NS, "type") === "quest" && j.name === qname; } catch (e) { return false; } });
@@ -4277,10 +4277,23 @@ async function cwfRoadCastQuest(m, npcDoc) {
         const data = q.getFlag(CC_NS, "data") || {};
         const quest = (Array.isArray(data.quests) && data.quests[0]) ? data.quests[0] : {};
         quest.title = m.title ? `${m.name}, ${m.title}` : m.name;
-        quest.description = `<p>${cwfEsc(m.hook)}</p>`;
+        // Fuller body: the hook, then the choice-with-a-price + the rumour, so the quest reads complete on its own.
+        quest.description = `<p>${cwfEsc(m.hook)}</p>${m.wants ? `<p><strong>They want:</strong> ${cwfEsc(m.wants)}</p>` : ""}${m.rumour ? `<p><em>“${cwfEsc(m.rumour)}”</em></p>` : ""}`;
         quest.questGiverUuid = npcDoc?.uuid || quest.questGiverUuid || "";
         quest.inactive = true; quest.visible = false; quest.completed = false; quest.failed = false;
         quest.urgency = m.arc ? "high" : "medium";
+        quest.boardColumn = quest.boardColumn || "active";
+        // Suggested OBJECTIVES (editable) so the quest isn't a bare hook line.
+        quest.objectives = (quest.objectives?.length) ? quest.objectives : [
+            { id: foundry.utils.randomID(), title: `Hear ${m.name} out`, completed: false, visible: true, objectives: [] },
+            { id: foundry.utils.randomID(), title: m.wants ? `Help with: ${m.wants}`.slice(0, 90) : "Decide: help, refuse, or exploit — each has a price", completed: false, visible: true, objectives: [] },
+        ];
+        // LINKS to real documents: the NPC giver (+ any allies they're linked to), so the quest threads into the web.
+        const rel = [npcDoc?.uuid, ...(Array.isArray(assocUuids) ? assocUuids : [])].filter(Boolean);
+        quest.relatedUuids = Array.from(new Set([...(quest.relatedUuids || []), ...rel]));
+        // Suggested REWARDS — arc beats pay more; all editable on the Quests tab.
+        if (quest.rewardXP == null || quest.rewardXP === 0) quest.rewardXP = m.arc ? 450 : 150;
+        if (quest.rewardCurrency == null || quest.rewardCurrency === 0) quest.rewardCurrency = m.arc ? 100 : 40;
         data.quests = [quest];
         data.notes = `<p><strong>GM.</strong> ${cwfEsc(m.twist || m.lore || "")}</p>`;
         await q.setFlag(CC_NS, "data", data);
@@ -4308,9 +4321,10 @@ async function cwfRoadCastJournal(m, kind) {   // find or CREATE + populate this
         + (outc ? `<p><strong>If the party helps / refuses / exploits.</strong> ${esc(outc)}</p>` : "");
     try {
         const data = doc.getFlag(CC_NS, "data") || {};
-        const quest = await cwfRoadCastQuest(m, doc).catch(() => null);   // hook → a trackable Quest-Board entry, this NPC as giver
+        const assoc = cwfRoadCastLinks(m, [m.lore, m.hook, m.readAloud, m.appearance].join(" "));   // linked allies → both the Associates tab AND the quest's related-docs
+        const quest = await cwfRoadCastQuest(m, doc, assoc).catch(() => null);   // hook → a trackable Quest-Board entry, this NPC as giver, links threaded in
         const tags = Array.from(new Set([cwfShortSpecies(m.species || ""), kind === "merchant" ? "merchant" : "road NPC", ...(m.biomes || []), (String(m.arc || "").match(/Arc [A-Z]/)?.[0])].map(t => String(t || "").trim()).filter(Boolean)));
-        await doc.setFlag(CC_NS, "data", { ...data, description: desc, notes, tags, associates: cwfRoadCastLinks(m, [m.lore, m.hook, m.readAloud, m.appearance].join(" ")), linkedQuests: quest ? [quest.uuid] : (data.linkedQuests || []) });
+        await doc.setFlag(CC_NS, "data", { ...data, description: desc, notes, tags, associates: assoc, linkedQuests: quest ? [quest.uuid] : (data.linkedQuests || []) });
         const img = (actor?.img && actor.img !== "icons/svg/mystery-man.svg") ? actor.img : cwfRoadCastToken(m); if (img) await doc.setFlag(CC_NS, "image", img);
         // A Reputation Tracker on the Info tab → track the party's STANDING with this NPC at a glance (the "alliances" pillar),
         // plus a connections GRAPH widget that diagrams their associate links (the City HUD's friend-graph, in Codex form).
