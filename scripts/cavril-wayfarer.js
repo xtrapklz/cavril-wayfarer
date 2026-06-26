@@ -4178,6 +4178,36 @@ async function cwfGatherItems(cls, n) {
 // Create (once) a linked NPC ACTOR for a road-cast character — durable artwork + a TIERED inventory so the Campaign Codex
 // journal has a real sheet behind it: merchants carry their wares, named NPCs a signature effect, everyone a herb or two
 // from the biome they're met in plus pocket sundries. Idempotent via the roadCast flag. v0.55.124.
+// CR-appropriate SRD statblock by occupation — the base each NPC's real actor is built on (dossier abilities layer on top).
+const CWF_STATBLOCK_BY_JOB = [
+    [/guard|toll|warden|sentinel|\bgate\b|watch/i, "Guard"],
+    [/knight|captain|veteran|mercenary|sellsword|soldier/i, "Veteran"],
+    [/cardinal|bishop|high\s*priest|\bpriest\b/i, "Priest"],
+    [/acolyte|pilgrim|monk|friar|\bnun\b|devout|cleric/i, "Acolyte"],
+    [/\bmage\b|wizard|sorcer|witch|alchemist|hedge/i, "Mage"],
+    [/cult|fanatic|zealot|tithe/i, "Cult Fanatic"],
+    [/\bspy\b|fence|informant|smuggler/i, "Spy"],
+    [/bandit|brigand|outlaw|raider|deserter|fugitive/i, "Bandit"],
+    [/thug|enforcer|brute|tough/i, "Thug"],
+    [/scout|hunter|trapper|forester|ranger|tracker|drover/i, "Scout"],
+    [/noble|\blord\b|\blady\b|regent|magnate/i, "Noble"],
+    [/assassin|killer|poisoner/i, "Assassin"],
+];
+function cwfStatblockFor(m, kind) {
+    const hay = `${m.title || ""} ${m.occupation || ""} ${m.name || ""} ${kind || ""}`.toLowerCase();
+    for (const [re, npc] of CWF_STATBLOCK_BY_JOB) if (re.test(hay)) return npc;
+    return "Commoner";
+}
+// Find the SRD statblock actor by name across every Actor compendium (cached by uuid). Returns the compendium doc or null.
+async function cwfFindStatblock(name) {
+    cwfFindStatblock._cache = cwfFindStatblock._cache || {};
+    const key = String(name).toLowerCase();
+    if (key in cwfFindStatblock._cache) { const u = cwfFindStatblock._cache[key]; return u ? await fromUuid(u).catch(() => null) : null; }
+    for (const pack of game.packs.filter(p => p.documentName === "Actor")) {
+        try { const idx = await pack.getIndex(); const e = idx.find(x => String(x.name).toLowerCase() === key) || idx.find(x => String(x.name).toLowerCase().includes(key)); if (e) { const doc = await pack.getDocument(e._id); cwfFindStatblock._cache[key] = doc?.uuid || null; return doc; } } catch (err) { /* next pack */ }
+    }
+    cwfFindStatblock._cache[key] = null; return null;
+}
 async function cwfRoadCastActor(m, kind) {
     if (!game.user?.isGM || !m?.name) return null;
     let actor = (game.actors || []).find(a => { try { return a.getFlag(MOD, "roadCast") === m.name; } catch (e) { return false; } }) || null;
@@ -4187,7 +4217,16 @@ async function cwfRoadCastActor(m, kind) {
     if (img === "icons/svg/mystery-man.svg") { const bm = cwfRoadCastToken(m); if (bm) img = bm; }
     let folder = game.folders?.find(f => f.type === "Actor" && f.name === "Cavril Road Cast");
     try { if (!folder) folder = await Folder.create({ name: "Cavril Road Cast", type: "Actor" }); } catch (e) { /* folder optional */ }
-    try { actor = await Actor.create({ name: m.name, type: "npc", img, folder: folder?.id, prototypeToken: { name: m.name, texture: { src: img }, actorLink: false }, flags: { [MOD]: { roadCast: m.name } } }); }
+    // Build the actor on a CR-appropriate SRD statblock chosen by occupation, then layer the dossier's ability scores on top.
+    const dossier = cwfNpcDossier(m, kind), sbName = cwfStatblockFor(m, kind);
+    let createData = null;
+    try { const base = await cwfFindStatblock(sbName); if (base) { createData = base.toObject(); delete createData._id; } } catch (e) { warn("statblock lookup failed", e); }
+    if (!createData) createData = { type: "npc", system: {} };
+    createData.name = m.name; createData.type = "npc"; createData.img = img; createData.folder = folder?.id;
+    createData.prototypeToken = foundry.utils.mergeObject(createData.prototypeToken || {}, { name: m.name, texture: { src: img }, actorLink: false });
+    createData.flags = foundry.utils.mergeObject(createData.flags || {}, { [MOD]: { roadCast: m.name, statblock: sbName } });
+    try { const ab = (createData.system = createData.system || {}).abilities = createData.system.abilities || {}; for (const [k, v] of Object.entries(dossier.attrs)) ab[k] = foundry.utils.mergeObject(ab[k] || {}, { value: v }); } catch (e) { /* abilities best-effort */ }
+    try { actor = await Actor.create(createData); }
     catch (e) { warn("road-cast actor create failed", e); return null; }
     if (!actor) return null;
     const cls = (() => { try { const tok = Canvasry.activeToken(); return tok ? Canvasry.biomeForToken(tok) : null; } catch (e) { return null; } })();
