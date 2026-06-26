@@ -1787,12 +1787,28 @@ function cwfClockLabel() {
     catch { return ""; }
 }
 // Coarse time-of-day phase (for the "every time change gets a cinematic" rule).
-function cwfTimeOfDay() {
-    const h = (Math.floor((game.time?.worldTime ?? 0) / 3600) % 24 + 24) % 24;
+function cwfTimeOfDay(hour) {
+    const h = (hour == null) ? (Math.floor((game.time?.worldTime ?? 0) / 3600) % 24 + 24) % 24 : ((Math.floor(hour) % 24) + 24) % 24;
     if (h >= 5 && h < 12) return { key: "morning", label: "Dawn", meal: "Breakfast", icon: "fa-sun-haze", tone: "dawn" };
     if (h >= 12 && h < 17) return { key: "afternoon", label: "Day", meal: "Midday meal", icon: "fa-sun", tone: "weather" };
     if (h >= 17 && h < 21) return { key: "evening", label: "Dusk", meal: "Supper", icon: "fa-cloud-sun", tone: "dusk" };
     return { key: "night", label: "Night", meal: "", icon: "fa-moon", tone: "night" };
+}
+// Every meal-phase boundary CROSSED in (beforeWT, afterWT] world-seconds — so a single long hex that blows THROUGH a phase
+// (Normal pace is 6h/hex and the Day window is only 5h wide, so midday is routinely skipped) still triggers each meal it passed,
+// not just the one it landed in. Returns the crossed meals in chronological order (handles multi-phase + day rollover). v0.55.151.
+const CWF_MEAL_START_HOURS = [5, 12, 17];   // Breakfast · Midday · Supper — the meal phases' start hours (Night, 21, carries none)
+function cwfMealsCrossed(beforeWT, afterWT) {
+    const out = [], b = (beforeWT ?? 0) / 3600, a = (afterWT ?? 0) / 3600;   // absolute world-HOURS
+    if (!(a > b)) return out;
+    for (const sh of CWF_MEAL_START_HOURS) {
+        for (let d = Math.floor((b - sh) / 24); d * 24 + sh <= a; d++) {
+            const t = d * 24 + sh;
+            if (t > b && t <= a) out.push({ at: t, tod: cwfTimeOfDay(sh) });
+            if (out.length > 12) break;   // safety: a pathological time jump shouldn't spam dozens of meal cards
+        }
+    }
+    return out.sort((x, y) => x.at - y.at);   // chronological → Breakfast, Midday, Supper in order across any day rollover
 }
 // A travel-log line that links back to its hex — click pings/pans the map there so the
 // GM can retrace the party's steps. Records biome · weather · time at that hex.
@@ -1916,6 +1932,7 @@ async function cwfAdvanceHex(auto) {
     const hexHours = Hex.stepCost(off, cls, { boat: t.boat }, t.prev) * hpH;   // stepCost folds in road/river (÷2, ÷3 w/ vehicle) + rugged-terrain penalty
     t.lastHexHours = hexHours; t.acc += hexHours;   // remember this hex's cost so the card can show "+Xh" per hex
     t.prev = off;
+    const wtBefore = game.time?.worldTime ?? 0;   // BEFORE the advance → so we can fire a meal for EVERY phase the step crosses, not just the one it lands in
     const whole = Math.floor(t.acc); if (whole >= 1) { t.acc -= whole; await Store.advanceWorldTime(whole); }
     t.idx++;
     const todBefore = t.tod, wxBefore = MiniCal.key();
@@ -1923,6 +1940,7 @@ async function cwfAdvanceHex(auto) {
     Music.syncWeather();
     const wxAfter = MiniCal.key(), tod = cwfTimeOfDay();
     t.tod = tod.key;
+    const mealsCrossed = cwfMealsCrossed(wtBefore, game.time?.worldTime ?? 0);   // EVERY meal phase passed this step, not just the one we landed in
     const weatherLabel = MiniCal.label() || Domain.WEATHER[wxAfter]?.label || "";
     const biomeChanged = !!(t.lastBiome && t.lastBiome !== biome);
     const weatherChanged = !!(wxAfter && wxBefore && wxAfter !== wxBefore);
@@ -1930,7 +1948,7 @@ async function cwfAdvanceHex(auto) {
     t.lastBiome = biome;
     const ev = await cwfHexEvent(cls, { scoutGood: t.scoutGood, pace: t.pace, encUsed: !!t.encUsed });
     const encounter = !!ev?.halt;
-    const isSignal = biomeChanged || weatherChanged || todChanged || encounter;
+    const isSignal = biomeChanged || weatherChanged || todChanged || encounter || mealsCrossed.length > 0;
     // AUTO + nothing notable → keep gliding, growing the current leg.
     if (auto && !isSignal) {
         if (!t.leg || t.leg.biome !== biome) { cwfFlushLeg(); t.leg = { count: 0, biome, from: fromClock, to: fromClock, hours: 0 }; }
@@ -1949,9 +1967,10 @@ async function cwfAdvanceHex(auto) {
         Cinematic.broadcast({ icon, title: bits[0] || "The road turns", subtitle: bits.slice(1).join(" · ") || `${cls?.detail ? cwfEsc(cls.detail) + " · " : ""}${t.pace} pace`, tone: todChanged ? tod.tone : "weather" });
         t.lines.push(`<div class="cwf-night-h cwf-ln-turn"><i class="fa-solid ${icon}"></i> ${cwfEsc(bits.join(" · "))}.</div>`);
     }
-    // Crossing INTO a day phase that carries a meal (Dawn breakfast / Day midday / Dusk supper) → the party eats one portion
-    // here, sharing for anyone short, and takes the toll on the spot. The meal card posts to chat. v0.55.129.
-    if (todChanged && tod.meal) { try { await cwfMealBeat(tod); } catch (e) { warn("meal beat failed", e); } }
+    // EVERY meal phase the step CROSSED (Dawn breakfast / Day midday / Dusk supper) → the party eats one portion each, sharing
+    // for anyone short, taking the toll on the spot. So a long hex that blows past midday still eats it, not just the phase it
+    // landed in — the "felt like two meals" gap. One meal card per crossing posts to chat. v0.55.151.
+    for (const mc of mealsCrossed) { try { await cwfMealBeat(mc.tod); } catch (e) { warn("meal beat failed", e); } }
     // Crossing INTO night HALTS the trek for a BEAT — bed down before the watch decision, so the dusk supper + making camp get
     // their own stepped moment instead of gliding straight into the dark. The HUD goes camp-primary; the GM narrates, then camps.
     if (todChanged && tod.key === "night" && !encounter && !t.halted) {
