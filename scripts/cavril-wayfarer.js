@@ -512,7 +512,8 @@ const Store = (() => {
         g.register(MOD, "moveAnimMs", { name: "Hex move duration (ms)", hint: "How long the token takes to glide between hexes during travel. Higher = more gradual. Default 900.", scope: "world", config: true, type: Number, default: 900, range: { min: 100, max: 3000, step: 100 } });
         g.register(MOD, "lockToken", { name: "Lock the party token", hint: "Prevent the party token from being dragged manually — only Wayfarer (travel/encounter moves) can reposition it. GM can still hold it; players are blocked.", scope: "world", config: true, type: Boolean, default: false });
         // Travel SFX — one-shot sound as the token enters each hex, by how it's moving.
-        g.register(MOD, "travelSfx", { name: "Travel movement sounds", hint: "Play a one-shot sound (via Maestro) as the party crosses each hex — footsteps, cart, or boat depending on the route. Set the sound paths below.", scope: "world", config: true, type: Boolean, default: false });
+        g.register(MOD, "travelSfx", { name: "Travel movement sounds", hint: "Play a one-shot movement sound (via Maestro) as the party crosses each hex — foot, cart, or boat matched to the terrain + your boat/cart toggle. Point it at your sound FOLDER below.", scope: "world", config: true, type: Boolean, default: false });
+        g.register(MOD, "travelSfxPath", { name: "Travel sound folder (terrain-aware)", hint: 'The FOLDER holding your foot-/cart-/boat- movement sounds — foot-grass.ogg, foot-rocks.ogg, foot-city.ogg, foot-water.ogg, foot-water-shallow.ogg, cart-grass/-city/-rocks/-water.ogg, boat-water.ogg. Wayfarer plays the right one per hex by mode + terrain. On The Forge: right-click a file → Copy URL and paste up to the folder (drop the filename). Blank = use the three single paths below instead.', scope: "world", config: true, type: String, default: "Sounds/library/effects/party" });
         g.register(MOD, "sfxFoot", { name: "Footsteps sound", hint: "Sound file (or a Maestro soundboard folder ending in /) for travel on foot. Blank = silent.", scope: "world", config: false, type: String, default: "" });
         g.register(MOD, "sfxCart", { name: "Cart sound", hint: "Sound for a cart on a road (Boat/Cart on + road). Blank = silent.", scope: "world", config: false, type: String, default: "" });
         g.register(MOD, "sfxBoat", { name: "Boat sound", hint: "Sound for a boat on a river (Boat/Cart on + river). Blank = silent.", scope: "world", config: false, type: String, default: "" });
@@ -1501,6 +1502,21 @@ function cwfChallenge() {
 // EFFECTIVE challenge used in play: the dial + a NIGHT bump. Travelling in the dark makes EVERYTHING harder (skill DCs +
 // encounter budget) — the dial keeps showing the base value, but encounters and route DCs read this. +1 at night.
 const cwfNightNow = () => { try { return cwfTimeOfDay().key === "night"; } catch (e) { return false; } };
+// Pick the travel movement-SFX filename (no extension) for a hex: {mode}-{surface}. MODE = boat on water, cart on land while
+// the boat/cart toggle is on, else foot. SURFACE = water / water-shallow (a foot ford of a river) / city (road) / rocks (high
+// elevation · volcanic · barren · desert) / grass (default). Matches a foot/cart/boat × grass/city/rocks/water(-shallow) library.
+function cwfTravelSfxFile(cls, boat) {
+    const deepWater = cls?.terrainKey === "water" || !!cls?.coast, river = !!cls?.river, onWater = deepWater || river;
+    const mode = boat ? (onWater ? "boat" : "cart") : "foot";
+    if (mode === "boat") return "boat-water";
+    let surf;
+    if (onWater) surf = "water";
+    else if (cls?.infrastructure) surf = "city";
+    else if (cls?.elevation === "high" || ["volcanic", "wasteland", "tainted", "desert"].includes(cls?.biome || "")) surf = "rocks";
+    else surf = "grass";
+    if (mode === "foot" && surf === "water") return (river && !deepWater) ? "foot-water-shallow" : "foot-water";   // a ford on foot vs deep water
+    return `${mode}-${surf}`;   // foot-grass · foot-city · foot-rocks · cart-grass · cart-city · cart-rocks
+}
 const cwfChallengeEff = () => Math.max(0, Math.min(5, cwfChallenge() + (cwfNightNow() ? 1 : 0)));
 // Route DC the travel roles check against: the worst biome's DC, +2 when travelling at NIGHT (everything's harder in the dark).
 const cwfRouteDc = (gov) => (gov?.dc ?? 10) + (cwfNightNow() ? 2 : 0);
@@ -2691,6 +2707,10 @@ const Music = (() => {
     async function travelSfx(cls, boat) {
         if (!game.user.isGM || !game.settings.get(MOD, "travelSfx") || !globalThis.Maestro) return;
         const M = globalThis.Maestro;
+        // TERRAIN-AWARE: a folder of {mode}-{surface}.ogg files → play the one matching THIS hex + the boat/cart toggle.
+        const base = String(game.settings.get(MOD, "travelSfxPath") || "").trim().replace(/\/+$/, "");
+        if (base) { try { if (M.playOneShot) await M.playOneShot(`${base}/${cwfTravelSfxFile(cls, boat)}.ogg`, {}); } catch (e) { warn("travel sfx failed", e); } return; }
+        // LEGACY: three single paths (sfxFoot / sfxCart / sfxBoat), each a file OR a Maestro ref.
         const key = (boat && (cls?.river || cls?.terrainKey === "water")) ? "sfxBoat" : (boat && cls?.infrastructure) ? "sfxCart" : "sfxFoot";
         const path = String(game.settings.get(MOD, key) || "").trim();
         if (!path) return;
@@ -6303,6 +6323,7 @@ Hooks.once("ready", () => {
         meetSomeone: (opts = {}) => { const tok = Canvasry.activeToken(); return meetRoadCast(opts.cls || (tok ? Canvasry.biomeForToken(tok) : {}), opts); },   // drop a road-cast member (merchant or NPC) for the current hex on demand ({merchant:true} to force a merchant)
         // Inspect the draw-based forage: forage.draws(total, dc) → draw count · forage.weights({biome,river,…}) → {food,water,herb} odds · forage.draw(weights) → one pick.
         forage: { draws: cwfForageDraws, weights: cwfForageWeights, draw: cwfForageDraw, WEIGHTS: CWF_FORAGE_WEIGHTS },
+        travelSfxFile: (cls, boat) => cwfTravelSfxFile(cls, boat),   // which movement sound a hex+toggle plays, e.g. travelSfxFile({biome:"temperate",river:true}, false) → "foot-water-shallow"
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, TravelingMerchants, NarrativeNPCs, _installed: true
     };
     // Phase-transition cinematics broadcast from the GM → every client plays them.
@@ -6458,7 +6479,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
             ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "mealsPerDay", "shareProvisions", "foodGraceDays", "carryBase", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
             ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeForageJSON", "biomeForageWeightsJSON", "gatherIngredients", "biomeGatherJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
-            ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "musicEnabled", "musicMapJSON", "campMapJSON"]],
+            ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "travelSfxPath", "musicEnabled", "musicMapJSON", "campMapJSON"]],
         ];
         const anchor = rowFor("dangerDefault"); if (!anchor?.parentNode) return;   // not the Wayfarer section → bail
         const parent = anchor.parentNode;
