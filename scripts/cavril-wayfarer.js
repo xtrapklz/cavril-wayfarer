@@ -5567,6 +5567,9 @@ const Camp = (() => {
         // Reset the "hours since last long rest" clock to the WAKE time — not the bed-down time cwfPartyRest's mark may have
         // read before MiniCal's clock update propagated (the bug that made the HUD start at ~10h). Only on a real long rest.
         if (rest !== "short" && !noLongRest()) { const nowWT = game.time?.worldTime ?? 0; try { await game.settings.set(MOD, "lastRestTime", nowWT > bedDownWT ? nowWT : bedDownWT + Math.round(nightHours()) * 3600); } catch (e) { /* noop */ } }
+        // The party rises and breaks its fast → fire the WAKE meal beat (Breakfast at dawn) so the morning resource tax actually
+        // lands. Without this, waking jumped straight past Dawn and Midday was the first meal you saw. v0.55.144.
+        try { const tod = cwfTimeOfDay(); if (tod.meal) await cwfMealBeat(tod); } catch (e) { warn("wake meal beat failed", e); }
         active = false;
         if (pendingMsg) { const m = game.messages.get(pendingMsg); if (m) { try { await m.update({ content: cwfCardShell("fa-moon", "Night Watch", `<div class="cwf-muted2">Resolved — dawn breaks on Day ${nextDay}.</div>`) }); } catch { /* noop */ } } }
         await cwfCampFinalize(`Resolved — dawn breaks on Day ${nextDay}.`);
