@@ -6300,8 +6300,7 @@ const WayfarerPanel = (() => {
         const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
         root.innerHTML = `
             <div class="cwf-head" data-drag>
-                <i class="fa-solid fa-mountain-sun"></i>
-                <span class="cwf-title">${TITLE}</span>
+                <i class="fa-solid fa-mountain-sun" title="${TITLE} — drag to move"></i>
                 <span class="cwf-day" title="Days travelling this journey"><i class="fa-solid fa-calendar-day"></i> Day ${st.day}</span>
                 ${cwfMealTrackerHTML()}
                 ${isGM ? `<button class="cwf-end-exped" data-action="reset-journey" title="End this expedition — reset the day counter for a fresh journey"><i class="fa-solid fa-flag-checkered"></i> End Expedition</button>` : ""}
@@ -6314,7 +6313,9 @@ const WayfarerPanel = (() => {
                     <div class="cwf-label">${isGM ? `<button class="cwf-tiny" data-action="set-party" title="Set the selected token as the party marker" style="margin-right:5px"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}Current hex</div>
                     <div class="cwf-here">${here}</div>
                     ${isGM ? `<div class="cwf-chips">
-                        <button class="cwf-chip chip-region ${_dialsOpen ? "on" : ""}" data-action="toggle-dials" title="Region dials — Danger · Challenge · Wanted. Click to tune."><i class="fa-solid fa-sliders"></i> Region <span class="cwf-chip-v"><span style="color:#d8665a">${dangerNow}</span> <span style="color:#4f9fe6">${cwfChallenge()}</span> <span style="color:#f2c64b">${cwfWanted()}</span></span></button>
+                        <button class="cwf-chip chip-danger ${_dialsOpen ? "on" : ""}" data-action="toggle-dials" title="DANGER — how OFTEN combat fires (doubled by day; biome adds). Click to tune the region dials."><i class="fa-solid fa-skull" style="color:#d8665a"></i> Danger ${dangerNow}</button>
+                        <button class="cwf-chip chip-challenge ${_dialsOpen ? "on" : ""}" data-action="toggle-dials" title="CHALLENGE — how HARD it is: skill-check DCs + encounter XP budget. Click to tune the region dials."><i class="fa-solid fa-gauge-high" style="color:#4f9fe6"></i> Challenge ${cwfChallenge()}</button>
+                        <button class="cwf-chip chip-wanted ${_dialsOpen ? "on" : ""}" data-action="toggle-dials" title="WANTED — your notoriety / Heat; roads & rivers expose, deadly biomes hide. Click to tune the region dials."><i class="fa-solid fa-star" style="color:#f2c64b"></i> Wanted ${cwfWanted()}</button>
                         <button class="cwf-chip chip-party" data-action="open-party" title="Open the party marker's character sheet"><i class="fa-solid fa-users"></i> Party</button>
                         ${cls && globalThis.CavrilEncounterStage ? `<button class="cwf-chip chip-encounter" data-action="encounter-test" title="Force a combat encounter now — a Challenge-scaled fight rolled from this biome's roster, auto-staged on a matched battlemap. (Travel turns already roll one via Danger.)"><i class="fa-solid fa-dragon"></i> Encounter</button>` : ""}
                         ${cls && globalThis.CavrilEncounterStage ? `<button class="cwf-chip chip-scene" data-action="stage-scene" title="Stage a best-match SCENE for a roleplay beat here (a built place — tavern, shrine, ruin — no foes)"><i class="fa-solid fa-masks-theater"></i> Scene</button>` : ""}
@@ -6348,7 +6349,7 @@ const WayfarerPanel = (() => {
                             <span class="cwf-sup ${rLow ? "low" : ""}" title="Rations the party carries — ${sup.rations} of ${sumCapR} total capacity. The party eats ${size}/day. Expand for per-character bars."><i class="fa-solid fa-drumstick-bite"></i> ${sup.rations}<span class="cwf-sup-max">/${sumCapR}</span></span>
                             <span class="cwf-sup ${wLow ? "low" : ""}" title="Waterskin charges the party carries — ${sup.water} of ${sumCapW} total capacity. Drinks ${size}/day; a found water source refills everyone. Expand for per-character bars."><i class="fa-solid fa-bottle-water"></i> ${sup.water}<span class="cwf-sup-max">/${sumCapW}</span></span>
                             <span class="cwf-sup ${exhCls}" title="Total party exhaustion — the sum of all ${bd.members.length} members' levels, of ${maxExh} possible. Expand to see who carries it."><i class="fa-solid fa-face-dizzy"></i> ${sumExh}<span class="cwf-sup-max">/${maxExh}</span></span>
-                            <span class="cwf-sup ${tired ? "low" : ""}" title="Hours since the party's last long rest. Past ${thr}h, each leg adds +1 exhaustion until they camp."><i class="fa-solid fa-moon"></i> ${awake}h</span>
+                            <span class="cwf-sup ${tired ? "low" : ""}" title="Hours awake since the party's last long rest — they can push to ${thr}h before fatigue. Past ${thr}h, each travel leg adds +1 exhaustion until they camp."><i class="fa-solid fa-moon"></i> ${awake}<span class="cwf-sup-max">/${thr}h</span></span>
                             <button class="cwf-sup-toggle ${_partyOpen ? "on" : ""}" data-action="toggle-party" title="Per-character rations / water / exhaustion"><i class="fa-solid fa-users"></i> ${size} <i class="fa-solid fa-chevron-${_partyOpen ? "up" : "down"}"></i></button>
                         </div>`;
                     })()}
