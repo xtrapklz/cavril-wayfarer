@@ -1075,6 +1075,10 @@ const Party = (() => {
             const donor = rows.find(r => r.m.id === donorId); if (!donor) continue;
             const pulled = await take(donor.m, s.re, s.amt);
             if (s.kind === "rations") s.row.foodGot += pulled; else s.row.waterGot += pulled;
+            // GENEROSITY HAS TEETH (v0.55.150): the donor also gives up a meal-worth of their OWN — a second unit out of their pack
+            // on top of what reaches the recipient. So sharing isn't free redistribution; you can't keep everyone topped up by
+            // shuffling one surplus around forever. Best-effort: if the donor hasn't a spare unit, the gift still goes through.
+            if (pulled > 0) await take(donor.m, s.re, 1);
         }
     }
     // ONE meal (a Dawn/Day/Dusk beat): each member eats 1 ration + 1 water from their OWN pack, shares for shortfalls, and
@@ -1537,18 +1541,20 @@ function cwfBiomeForage(biome) {
     try { const raw = game.settings.get(MOD, "biomeForageJSON"); if (raw && String(raw).trim()) { const p = JSON.parse(raw); if (p && typeof p === "object") map = { ...CWF_BIOME_FORAGE, ...p }; } } catch (e) { /* keep defaults */ }
     return map[biome] || map.temperate || { food: 13, water: 13 };
 }
-// Per-biome forage-draw WEIGHTS — the relative odds each DRAW yields food / water / a herb. Lusher biomes weight food up,
-// wet biomes water up, barren ones thin to herbs-or-nothing. A river / coast / water hex adds a big water bump on top, and
-// dense vegetation nudges food (both applied in cwfForageWeights). This is what makes a forage VARY instead of always topping
-// off both food AND water. Overridable via biomeForageWeightsJSON. v0.55.135.
+// Per-biome forage-draw WEIGHTS — the relative odds each single-unit DRAW turns up a ration / a water charge / a herb / NOTHING.
+// Food weight is the master dial: at a ~14-draw forage (margin 14) a lush biome (jungle ~80% food) nearly provisions a party of
+// 4's day (~12 meals), an average one (temperate 50%) covers ~half, and harsh country (desert/frozen/waste ~15%) yields only a
+// couple — barely slowing the depletion of finite supplies. The "none" bucket is what makes barren land actually bite (you
+// search and find nothing). A river/coast/water hex adds a big water bump (and turns one water draw into a full refill); dense
+// vegetation nudges food (both in cwfForageWeights). Overridable via biomeForageWeightsJSON. v0.55.150.
 const CWF_FORAGE_WEIGHTS = {
-    temperate: { food: 6, water: 3, herb: 3 }, boreal: { food: 5, water: 3, herb: 4 }, jungle: { food: 7, water: 4, herb: 5 },
-    savanna:   { food: 5, water: 2, herb: 2 }, swamp:  { food: 4, water: 6, herb: 4 }, desert: { food: 2, water: 1, herb: 2 },
-    tundra:    { food: 3, water: 3, herb: 1 }, frozen: { food: 2, water: 3, herb: 1 }, volcanic: { food: 2, water: 1, herb: 2 },
-    wasteland: { food: 2, water: 1, herb: 2 }, tainted: { food: 2, water: 1, herb: 3 }, void: { food: 1, water: 1, herb: 1 },
-    water:     { food: 3, water: 6, herb: 2 }
+    temperate: { food: 7, water: 3, herb: 2, none: 2 }, boreal: { food: 5, water: 3, herb: 2, none: 3 }, jungle: { food: 13, water: 2, herb: 1, none: 0 },
+    savanna:   { food: 5, water: 2, herb: 2, none: 4 }, swamp:  { food: 6, water: 7, herb: 2, none: 1 }, desert:  { food: 2, water: 1, herb: 2, none: 8 },
+    tundra:    { food: 3, water: 2, herb: 1, none: 6 }, frozen: { food: 2, water: 2, herb: 1, none: 8 }, volcanic: { food: 1, water: 1, herb: 2, none: 9 },
+    wasteland: { food: 2, water: 1, herb: 2, none: 8 }, tainted: { food: 2, water: 1, herb: 3, none: 7 }, void:    { food: 1, water: 1, herb: 1, none: 10 },
+    water:     { food: 4, water: 8, herb: 1, none: 1 }
 };
-const CWF_FORAGE_WEIGHTS_DEFAULT = { food: 5, water: 3, herb: 3 };
+const CWF_FORAGE_WEIGHTS_DEFAULT = { food: 5, water: 3, herb: 2, none: 3 };
 function cwfForageWeights(gov) {
     let map = CWF_FORAGE_WEIGHTS;
     try { const raw = game.settings.get(MOD, "biomeForageWeightsJSON"); if (raw && String(raw).trim()) { const p = JSON.parse(raw); if (p && typeof p === "object") map = { ...CWF_FORAGE_WEIGHTS, ...p }; } } catch (e) { /* keep defaults */ }
@@ -1560,15 +1566,17 @@ function cwfForageWeights(gov) {
 }
 // One weighted draw → "food" | "water" | "herb". Deterministic-friendly: a caller can pre-roll if it needs a seed.
 function cwfForageDraw(weights, roll = Math.random()) {
-    const entries = [["food", weights.food || 0], ["water", weights.water || 0], ["herb", weights.herb || 0]];
+    const entries = [["food", weights.food || 0], ["water", weights.water || 0], ["herb", weights.herb || 0], ["none", weights.none || 0]];
     const total = entries.reduce((s, [, w]) => s + w, 0);
-    if (total <= 0) return "food";
+    if (total <= 0) return "none";
     let r = roll * total;
     for (const [k, w] of entries) { if ((r -= w) < 0) return k; }
-    return "food";
+    return "none";
 }
-// Draws scale with success: meeting the forage DC = 1 draw, +1 per 2 points clear (the same curve the herb haul used).
-const cwfForageDraws = (total, dc) => 1 + Math.floor(Math.max(0, (total ?? 0) - (dc ?? 0)) / 2);
+// Draws scale with the MARGIN: each point you clear the forage DC by buys one weighted draw from the biome's table (min 1 on a
+// bare success). Single-unit draws (1 food draw = 1 ration = 1 meal), so the biome's food WEIGHT is what decides how many draws
+// become rations. DC 10, rolled 24 → 14 draws; a lush biome turns most into food, a harsh one mostly into nothing. v0.55.150.
+const cwfForageDraws = (total, dc) => Math.max(1, Math.floor((total ?? 0) - (dc ?? 0)));
 // Each travel role faces its OWN DC, shaped by the governing hex's biome: navigation by how legible the ground is, scouting
 // by how much cover blocks sightlines, foraging by how scarce food / water are. Returns { dc, food?, water? } — dc is the
 // success threshold (forage: the EASIER of food / water → you find SOMETHING), food/water the per-resource thresholds.
@@ -5361,35 +5369,40 @@ const Turn = (() => {
             v.result = drawn.text;
             if (k === "navigate") navEffect = drawn.effect || (tier === "fail" || tier === "critfail" ? "dead" : "arrive");
             if (k === "forage") {
-                // Forage PRODUCES food/water into the party's packs (capped at carry capacity — no infinite stockpile),
-                // scaled to the biome's separate food/water thresholds: clear the food DC → find food, clear the water DC →
-                // find water. A clean success ≈ covers the party's day; margin + a crit build a small reserve. The packs are
-                // then drawn down normally at camp, so a good forage nets flat-or-up and a poor one leaves them eating reserves.
+                // Forage PRODUCES food/water into the party's packs (capped at carry capacity — no infinite stockpile). Each draw
+                // is a SINGLE unit and the biome's food weight sets the yield, so a forage SUPPLEMENTS the packs rather than topping
+                // them off: a good roll in lush country can nearly cover the day, a poor one or harsh terrain leaves them eating
+                // into reserves. The packs are then drawn down normally at the day's meals.
                 if (tier === "success" || tier === "crit") {
                     const rdc = cwfRoleDc("forage", governing);
-                    const size = Party.size() || 1, crit = tier === "crit";
-                    // DRAW-BASED forage: success buys DRAWS (1 at the DC, +1 per 2 points clear — the same curve the herb haul
-                    // used; a crit adds one more), and each draw rolls the biome's WEIGHTED table → food (1–3× party size), a
-                    // water source (full refill), or a herb from the gather table. So a forage VARIES by biome + roll instead of
-                    // always topping off both food AND water — a wet biome / river leans water, a lush one leans food, a barren
-                    // one mostly turns up herbs or nothing.
-                    const draws = cwfForageDraws(v.total, rdc.dc) + (crit ? 1 : 0);
+                    const crit = tier === "crit";
+                    // DRAW-BASED forage (v0.55.150): each point you clear the forage DC by buys one weighted draw (a crit adds two),
+                    // and each draw yields a SINGLE unit — one ration (= one meal), one waterskin charge, a herb, or nothing. The
+                    // biome's food WEIGHT decides how many draws become rations, so a lush biome nearly provisions the party's day
+                    // (~12 meals for 4) while harsh country yields a couple — supplementing, rarely replacing, the pack. Water is a
+                    // partial sip per draw UNLESS you're at a real source (river/coast/open water), where one draw tops off every skin.
+                    const draws = cwfForageDraws(v.total, rdc.dc) + (crit ? 2 : 0);
                     const weights = cwfForageWeights(governing);
-                    let foodGot = 0, watered = 0, herbDraws = 0;
+                    const atSource = !!(governing?.river || governing?.coast || governing?.terrainKey === "water" || governing?.biome === "water");
+                    let foodGot = 0, waterGot = 0, herbDraws = 0, waterFull = false, empties = 0;
                     for (let d = 0; d < draws; d++) {
-                        let kind = cwfForageDraw(weights);
-                        if (kind === "water" && watered) kind = "food";   // already a full skin → a duplicate water draw becomes food
-                        if (kind === "food") { const amt = size * (1 + Math.floor(Math.random() * 3)); const got = await Party.addSupplies(amt, 0); foodGot += got.rations || 0; }
-                        else if (kind === "water") watered += await Party.refillWater();
-                        else herbDraws++;
+                        const kind = cwfForageDraw(weights);
+                        if (kind === "food") { const got = await Party.addSupplies(1, 0); foodGot += got.rations || 0; }   // ONE ration = one meal
+                        else if (kind === "water") {
+                            if (atSource && !waterFull) { waterGot += await Party.refillWater(); waterFull = true; }       // a real source → fill every skin, once
+                            else { const got = await Party.addSupplies(0, 1); waterGot += got.water || 0; }                // otherwise a partial sip — one charge
+                        }
+                        else if (kind === "herb") herbDraws++;
+                        else empties++;                                                                                     // "none" → searched, found nothing
                     }
                     let herbTxt = "";
                     if (herbDraws > 0) { const g = await cwfForageGather(v.actorId, governing, { count: herbDraws }); if (g) herbTxt = g; }
                     const bits = [];
                     if (foodGot) bits.push(`+${foodGot}${cwfResIcon("rations")}`);
-                    if (watered) bits.push(`${cwfResIcon("water")} water source — all skins topped off`);
+                    if (waterFull) bits.push(`${cwfResIcon("water")} water source — all skins topped off`);
+                    else if (waterGot) bits.push(`+${waterGot}${cwfResIcon("water")}`);
                     if (herbTxt) bits.push(herbTxt);
-                    v.result += bits.length ? ` <em>— ${draws} draw${draws === 1 ? "" : "s"}: ${bits.join(" · ")}.</em>` : ` <em>— ${draws} draw${draws === 1 ? "" : "s"}, nothing usable here.</em>`;
+                    v.result += bits.length ? ` <em>— ${draws} draw${draws === 1 ? "" : "s"}: ${bits.join(" · ")}${empties ? ` · ${empties} empty` : ""}.</em>` : ` <em>— ${draws} draw${draws === 1 ? "" : "s"}, nothing usable here.</em>`;
                     if (crit) { const eased = await cwfForageMedicinal(); if (eased) v.result += ` <em>${eased}</em>`; }
                 } else if (tier === "critfail") {
                     forageMishap = v.actorId;   // tainted flora or a roused beast → sickness OR a surprise wildlife fight
