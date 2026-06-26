@@ -1919,7 +1919,9 @@ async function cwfAdvanceHex(auto) {
         await new Promise(res => setTimeout(res, 2 * (Number(game.settings.get(MOD, "moveAnimMs")) || 900)));   // wait TWICE the move-animation time so the token fully settles on the new hex before the transition cinematic (the time-of-day shift) covers it
         const bits = []; if (biomeChanged) bits.push(biome); if (todChanged) bits.push(tod.label); if (weatherChanged && weatherLabel) bits.push(weatherLabel);
         const icon = todChanged ? tod.icon : weatherChanged ? (Domain.WEATHER[wxAfter]?.icon || "fa-cloud") : (cls?.icon || "fa-mountain-sun");
-        Cinematic.broadcast({ icon, title: bits[0] || "The road turns", subtitle: bits.slice(1).join(" · ") || `${biome} · ${t.pace} pace`, tone: todChanged ? tod.tone : "weather" });
+        // Subtitle = the OTHER turn bits, or (when the biome is the only change and is already the title) its detail + pace —
+        // NOT the biome word again, which was the "temperate showing up twice" duplication (title "Temperate" + sub "Temperate · pace").
+        Cinematic.broadcast({ icon, title: bits[0] || "The road turns", subtitle: bits.slice(1).join(" · ") || `${cls?.detail ? cwfEsc(cls.detail) + " · " : ""}${t.pace} pace`, tone: todChanged ? tod.tone : "weather" });
         t.lines.push(`<div class="cwf-night-h cwf-ln-turn"><i class="fa-solid ${icon}"></i> ${cwfEsc(bits.join(" · "))}.</div>`);
     }
     // Crossing INTO a day phase that carries a meal (Dawn breakfast / Day midday / Dusk supper) → the party eats one portion

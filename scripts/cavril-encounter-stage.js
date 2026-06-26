@@ -343,12 +343,15 @@
     }
     return null;
   }
-  async function swapSceneMap(scene, item) {
+  async function swapSceneMap(scene, item, variantKey = null) {
     if (!scene) { ui.notifications?.warn("Cavril: no scene to swap."); return null; }
-    if (!item?.variants?.length) { ui.notifications?.warn("Cavril: that map has no importable variants."); return null; }
-    ui.notifications?.info(`Cavril: fetching "${item.name}"…`);
-    const found = await resolveSwapResp(item);
-    if (!found) { ui.notifications?.warn(`Cavril: couldn't fetch an authored scene for "${item.name}".`); return null; }
+    if (!item?.variants?.length && !variantKey) { ui.notifications?.warn("Cavril: that map has no importable variants."); return null; }
+    ui.notifications?.info(`Cavril: fetching "${item?.name || "map"}"…`);
+    let found = null;
+    // A specific variant was picked (the new per-variant grid) → fetch exactly that cut; otherwise auto-pick the cleanest one.
+    if (variantKey) { try { const resp = await scenePayload(variantKey); if (resp?.sceneData) found = { resp, variant: (item?.variants || []).find(v => v.key === variantKey), variantKey }; } catch (e) { /* fall through to auto-pick */ } }
+    if (!found) found = await resolveSwapResp(item);
+    if (!found) { ui.notifications?.warn(`Cavril: couldn't fetch an authored scene for "${item?.name || "that map"}".`); return null; }
     const { sd } = await buildSceneData(found.resp);
     const oldW = scene.width || sd.width, oldH = scene.height || sd.height;
     // 1 · strip the OLD map's geometry/art docs — but NEVER the tokens
@@ -362,7 +365,7 @@
     if (sd.initial !== undefined) upd.initial = sd.initial;
     if (sd.background) upd.background = sd.background;
     if (sd.levels) upd.levels = sd.levels;
-    upd.flags = foundry.utils.mergeObject(foundry.utils.deepClone(scene.flags || {}), { "cavril-wayfarer": { esGenerated: true, esSwappedAt: Date.now() }, czepeku: sd.flags?.czepeku || {} });
+    upd.flags = foundry.utils.mergeObject(foundry.utils.deepClone(scene.flags || {}), { "cavril-wayfarer": { esGenerated: true, esSwappedAt: Date.now(), esDataKey: item?.dataKey || "maps" }, czepeku: sd.flags?.czepeku || {} });
     await scene.update(upd);
     // 3 · lay down the NEW map's geometry/art docs
     for (const [cls, arr] of [["Wall", sd.walls], ["AmbientLight", sd.lights], ["Tile", sd.tiles], ["AmbientSound", sd.sounds], ["Note", sd.notes], ["Drawing", sd.drawings]]) {
@@ -386,7 +389,8 @@
     const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
     const go = await foundry.applications.api.DialogV2.confirm({ window: { title: "Cavril — Swap Map" }, content: `<p>Pick a new battlemap for <b>${esc(target.name)}</b>.</p><p style="color:#9aa6b2;font-size:12px">Its walls, lights, tiles &amp; background are replaced — <b>every token stays where it is</b> (re-scaled if the new map is a different size).</p>` }).catch(() => false);
     if (!go) return;
-    await openMapGrid({ onPick: async (id, item) => { try { await swapSceneMap(target, item); } catch (e) { warn("swapMap failed", e); ui.notifications?.error("Cavril: map swap failed — see console (F12)."); } } });
+    const defaultKind = target.getFlag?.("cavril-wayfarer", "esDataKey") || "maps";   // re-skinning an interior → open on Scenes; a battlemap → Maps
+    await openMapGrid({ defaultKind, onPick: async (id, item, variantKey) => { try { await swapSceneMap(target, item, variantKey); } catch (e) { warn("swapMap failed", e); ui.notifications?.error("Cavril: map swap failed — see console (F12)."); } } });
   }
 
   // Fallback: no authored scene → download the raw map image and build a basic,
@@ -780,8 +784,9 @@
   // LIGHTROOM-STYLE CURATION GRID: large map thumbnails grouped by biome. Click a thumb to toggle it IN/OUT of that biome's
   // generic random-encounter pool; right-click to exclude entirely. Persists to esBiomeOverrides (same as the text review
   // panel) so pickMap honours it immediately. CavrilEncounterStage.openMapGrid(). v0.55.72.
-  async function openMapGrid({ onPick = null } = {}) {
+  async function openMapGrid({ onPick = null, defaultKind = "maps" } = {}) {
     if (!game.user.isGM) return;
+    const mapsOn = defaultKind !== "scenes";   // pick-mode swap of an interior opens on the Scenes tab; everything else on Maps
     const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
     let mapRows = biomeIndexRows("maps");
     if (!mapRows) {
@@ -820,12 +825,26 @@
         + `<button class="cmg-tag" data-id="${esc(m.id)}" title="Edit tags"><i class="fa-solid fa-tag"></i></button>`
         + `</div>`;
     };
+    // PICK MODE (swap) shows one card per VARIANT (Day / Night / Flooded / Natural…) so each individual cut is selectable — the
+    // swap cares WHICH variant, not just which map. Thumb + variantKey are per-variant; the map name + the variant name both show.
+    const variantThumb = (v) => { try { if (!tmpl || !v?.id) return ""; return cfLoader(tmpl.replace("<MAP_ID>", v.id)); } catch (e) { return ""; } };
+    const variantCard = (m, v) => {
+      const url = variantThumb(v), vname = String(v?.name || "Variant"), vtags = (v?.tags || []).map(t => String(t).toLowerCase());
+      if (url) _withUrl++;
+      return `<div class="cmg-card var" data-id="${esc(m.id)}" data-variant="${esc(v?.key || "")}" data-name="${esc((String(m.name) + " " + vname).toLowerCase())}" data-tags="${esc(Array.from(new Set([...tagsFor(m), ...vtags])).join("|"))}" title="${esc(m.name)} — ${esc(vname)}">`
+        + `<div class="cmg-thumb">${url ? `<img class="cmg-img" src="${esc(url)}" loading="lazy" alt="">` : ""}</div>`
+        + `<div class="cmg-vbadge">${esc(vname)}</div>`
+        + `<div class="cmg-nm">${esc(m.name)}</div>`
+        + `</div>`;
+    };
+    const cardsForMap = (m) => { if (!onPick) return card(m); const vs = byId[m.id]?.variants || []; return vs.length ? vs.map(v => variantCard(m, v)).join("") : card(m); };
     const sectionsFor = (rows) => {
       const byBiome = {}; for (const m of rows) (byBiome[m.biome] ??= []).push(m);
       return BIOMES.filter(b => byBiome[b]?.length).map(b => {
         const ms = byBiome[b].slice().sort((a, c) => (Number(c.generic) - Number(a.generic)) || String(a.name).localeCompare(String(c.name)));
         const g = ms.filter(m => m.generic && !m.exclude).length;
-        return `<details open data-biome="${esc(b)}"><summary><b>${esc(b)}</b> <span class="cmg-c">${g}/${ms.length} generic</span></summary><div class="cmg-grid">${ms.map(card).join("")}</div></details>`;
+        const label = onPick ? `${ms.reduce((s, m) => s + Math.max(1, (byId[m.id]?.variants || []).length), 0)} variants` : `${g}/${ms.length} generic`;
+        return `<details open data-biome="${esc(b)}"><summary><b>${esc(b)}</b> <span class="cmg-c">${label}</span></summary><div class="cmg-grid">${ms.map(cardsForMap).join("")}</div></details>`;
       }).join("");
     };
     // Filter bar for one kind: every tag in use (with counts) as toggle chips + a search box + a live "showing X / Y" count.
@@ -839,19 +858,19 @@
     const sceneSections = sceneRows ? (sectionsFor(sceneRows) || "<p style='padding:12px;color:#9aa6b2'>No scenes classified.</p>")
       : "<p style='padding:12px;color:#9aa6b2'>No interior scenes indexed yet — click <b>Rebuild index</b> to scan them, then reopen.</p>";
     // NOTE: DialogV2 strips <style> tags out of the `content` string, so we inject the stylesheet as a real DOM node AFTER render.
-    const cmgCss = `.cmg{max-height:74vh;overflow:auto;padding-right:4px}.cmg details{border:1px solid #ffffff1f;border-radius:8px;margin:8px 0;padding:6px 10px;background:#ffffff08}.cmg summary{cursor:pointer;padding:5px 2px;font-size:15px;font-weight:600;letter-spacing:.02em;text-transform:capitalize}.cmg-c{color:#9aa6b2;margin-left:8px;font-size:12px;font-weight:400}.cmg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;padding:10px 2px}.cmg-card{position:relative;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid transparent;background:#0006;opacity:.45;transition:opacity .12s,border-color .12s,transform .08s,box-shadow .12s}.cmg-card:hover{transform:translateY(-2px);box-shadow:0 4px 14px #000a}.cmg-card.on{opacity:1;border-color:#8fd98f}.cmg-card.ex{opacity:.32;border-color:#d65a5a}.cmg-thumb{height:124px;background:repeating-linear-gradient(45deg,#2c2c34,#2c2c34 9px,#24242b 9px,#24242b 18px)}.cmg-img{width:100%;height:100%;object-fit:cover;display:block}.cmg-nm{font-size:11.5px;padding:5px 28px 5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#000b;font-weight:500}.cmg-badge,.cmg-x{position:absolute;top:7px;width:24px;height:24px;border-radius:50%;display:none;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px #000b}.cmg-badge{right:7px;background:#8fd98f;color:#0a0a0a}.cmg-x{left:7px;background:#d65a5a;color:#fff}.cmg-card.on .cmg-badge{display:flex}.cmg-card.ex .cmg-x{display:flex}.cmg-hint{font-size:11px;color:#9aa6b2;padding:2px 2px 8px;line-height:1.5}.cmg-top{position:sticky;top:0;z-index:4;background:#1c1c24;padding:2px 0 6px}.cmg-tabs{display:flex;gap:6px;margin-bottom:4px}.cmg-tab{padding:4px 16px;border-radius:14px;border:1px solid #ffffff24;background:#ffffff10;color:#cdd;cursor:pointer;font-size:13px;font-weight:600}.cmg-tab.on{background:#8fd98f;color:#0a0a0a;border-color:#8fd98f}.cmg-hidden{display:none}.cmg-off{display:none}.cmg-tag{position:absolute;bottom:4px;right:5px;width:22px;height:22px;border-radius:6px;border:none;background:#000a;color:#e9c46a;display:flex;align-items:center;justify-content:center;font-size:10px;cursor:pointer;z-index:3;opacity:.85}.cmg-tag:hover{background:#e9c46a;color:#0a0a0a;opacity:1}.cmg-card.tagged .cmg-tag{background:#e9c46a;color:#0a0a0a;opacity:1}.cmg-ribbon{position:absolute;left:0;right:0;bottom:26px;background:#e9c46aee;color:#1a1208;font-size:10px;font-weight:700;padding:2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none}.cmg-card.tagged .cmg-ribbon{display:block}.cmg-filter{padding:4px 0 8px}.cmg-frow{display:flex;align-items:center;gap:8px;margin-bottom:6px}.cmg-search{flex:1;min-width:120px;background:#0006;border:1px solid #ffffff24;border-radius:8px;color:#dde;padding:5px 10px;font-size:12px}.cmg-count{font-size:11px;color:#9aa6b2;white-space:nowrap}.cmg-fclear{font-size:11px;color:#9aa6b2;background:none;border:none;cursor:pointer;text-decoration:underline}.cmg-chips{display:flex;flex-wrap:wrap;gap:4px;max-height:96px;overflow:auto}.cmg-fchip{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:11px;border:1px solid #ffffff20;background:#ffffff0d;color:#ccd;cursor:pointer;font-size:11px}.cmg-fchip:hover{background:#ffffff1a}.cmg-fchip.on{background:#6aa9e0;color:#08121e;border-color:#6aa9e0;font-weight:700}.cmg-fn{font-size:9.5px;opacity:.65}.cmg.pick .cmg-card{opacity:.92;cursor:pointer}.cmg.pick .cmg-card:hover{opacity:1;border-color:#6aa9e0;box-shadow:0 4px 16px #000c;transform:translateY(-2px)}.cmg.pick .cmg-badge,.cmg.pick .cmg-x,.cmg.pick .cmg-tag{display:none!important}`;
+    const cmgCss = `.cmg{max-height:74vh;overflow:auto;padding-right:4px}.cmg details{border:1px solid #ffffff1f;border-radius:8px;margin:8px 0;padding:6px 10px;background:#ffffff08}.cmg summary{cursor:pointer;padding:5px 2px;font-size:15px;font-weight:600;letter-spacing:.02em;text-transform:capitalize}.cmg-c{color:#9aa6b2;margin-left:8px;font-size:12px;font-weight:400}.cmg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;padding:10px 2px}.cmg-card{position:relative;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid transparent;background:#0006;opacity:.45;transition:opacity .12s,border-color .12s,transform .08s,box-shadow .12s}.cmg-card:hover{transform:translateY(-2px);box-shadow:0 4px 14px #000a}.cmg-card.on{opacity:1;border-color:#8fd98f}.cmg-card.ex{opacity:.32;border-color:#d65a5a}.cmg-thumb{height:124px;background:repeating-linear-gradient(45deg,#2c2c34,#2c2c34 9px,#24242b 9px,#24242b 18px)}.cmg-img{width:100%;height:100%;object-fit:cover;display:block}.cmg-nm{font-size:11.5px;padding:5px 28px 5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#000b;font-weight:500}.cmg-badge,.cmg-x{position:absolute;top:7px;width:24px;height:24px;border-radius:50%;display:none;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px #000b}.cmg-badge{right:7px;background:#8fd98f;color:#0a0a0a}.cmg-x{left:7px;background:#d65a5a;color:#fff}.cmg-card.on .cmg-badge{display:flex}.cmg-card.ex .cmg-x{display:flex}.cmg-hint{font-size:11px;color:#9aa6b2;padding:2px 2px 8px;line-height:1.5}.cmg-top{position:sticky;top:0;z-index:4;background:#1c1c24;padding:2px 0 6px}.cmg-tabs{display:flex;gap:6px;margin-bottom:4px}.cmg-tab{padding:4px 16px;border-radius:14px;border:1px solid #ffffff24;background:#ffffff10;color:#cdd;cursor:pointer;font-size:13px;font-weight:600}.cmg-tab.on{background:#8fd98f;color:#0a0a0a;border-color:#8fd98f}.cmg-hidden{display:none}.cmg-off{display:none}.cmg-tag{position:absolute;bottom:4px;right:5px;width:22px;height:22px;border-radius:6px;border:none;background:#000a;color:#e9c46a;display:flex;align-items:center;justify-content:center;font-size:10px;cursor:pointer;z-index:3;opacity:.85}.cmg-tag:hover{background:#e9c46a;color:#0a0a0a;opacity:1}.cmg-card.tagged .cmg-tag{background:#e9c46a;color:#0a0a0a;opacity:1}.cmg-ribbon{position:absolute;left:0;right:0;bottom:26px;background:#e9c46aee;color:#1a1208;font-size:10px;font-weight:700;padding:2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none}.cmg-card.tagged .cmg-ribbon{display:block}.cmg-filter{padding:4px 0 8px}.cmg-frow{display:flex;align-items:center;gap:8px;margin-bottom:6px}.cmg-search{flex:1;min-width:120px;background:#0006;border:1px solid #ffffff24;border-radius:8px;color:#dde;padding:5px 10px;font-size:12px}.cmg-count{font-size:11px;color:#9aa6b2;white-space:nowrap}.cmg-fclear{font-size:11px;color:#9aa6b2;background:none;border:none;cursor:pointer;text-decoration:underline}.cmg-chips{display:flex;flex-wrap:wrap;gap:4px;max-height:96px;overflow:auto}.cmg-fchip{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:11px;border:1px solid #ffffff20;background:#ffffff0d;color:#ccd;cursor:pointer;font-size:11px}.cmg-fchip:hover{background:#ffffff1a}.cmg-fchip.on{background:#6aa9e0;color:#08121e;border-color:#6aa9e0;font-weight:700}.cmg-fn{font-size:9.5px;opacity:.65}.cmg.pick .cmg-card{opacity:.92;cursor:pointer}.cmg.pick .cmg-card:hover{opacity:1;border-color:#6aa9e0;box-shadow:0 4px 16px #000c;transform:translateY(-2px)}.cmg.pick .cmg-badge,.cmg.pick .cmg-x,.cmg.pick .cmg-tag{display:none!important}.cmg-vbadge{position:absolute;top:6px;left:6px;background:#6aa9e0ee;color:#08121e;font-size:10px;font-weight:700;padding:1px 8px;border-radius:8px;max-width:calc(100% - 12px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;z-index:3;box-shadow:0 1px 4px #0008}.cmg-card.var{opacity:1}`;
     const content = `<div class="cmg${onPick ? " pick" : ""}">`
-      + `<div class="cmg-top"><div class="cmg-tabs"><button class="cmg-tab on" data-kind="maps">Maps · ${mapRows.length}</button><button class="cmg-tab" data-kind="scenes">Scenes${sceneRows ? ` · ${sceneRows.length}` : ""}</button></div>`
+      + `<div class="cmg-top"><div class="cmg-tabs"><button class="cmg-tab ${mapsOn ? "on" : ""}" data-kind="maps">Maps · ${mapRows.length}</button><button class="cmg-tab ${mapsOn ? "" : "on"}" data-kind="scenes">Scenes${sceneRows ? ` · ${sceneRows.length}` : ""}</button></div>`
       + `<div class="cmg-hint">${onPick ? "Click a map to <b>swap this scene to it</b> — every token stays where it is. Filter by tag or search to narrow the catalog." : "Click a tile = toggle into the generic random pool · right-click = exclude · <i class=\"fa-solid fa-tag\"></i> = edit tags · click tag chips / type to filter · Save to apply."}</div></div>`
-      + `<div class="cmg-kind" data-kind="maps">${filterBar(mapRows)}${mapSections}</div>`
-      + `<div class="cmg-kind cmg-hidden" data-kind="scenes">${sceneRows ? filterBar(sceneRows) : ""}${sceneSections}</div>`
+      + `<div class="cmg-kind ${mapsOn ? "" : "cmg-hidden"}" data-kind="maps">${filterBar(mapRows)}${mapSections}</div>`
+      + `<div class="cmg-kind ${mapsOn ? "cmg-hidden" : ""}" data-kind="scenes">${sceneRows ? filterBar(sceneRows) : ""}${sceneSections}</div>`
       + `</div>`;
     const ov = foundry.utils.deepClone(game.settings.get(MOD, "esBiomeOverrides") || {});
     const setOv = (id, patch) => { const b0 = base[id] || {}; const cur = { biome: b0.biome, generic: b0.generic, exclude: false, ...(ov[id] || {}), ...patch }; const o = {}; if (cur.biome !== b0.biome) o.biome = cur.biome; if (cur.generic !== b0.generic) o.generic = cur.generic; if (cur.exclude) o.exclude = true; if (Object.keys(o).length) ov[id] = o; else delete ov[id]; return cur; };
     const dlg = new foundry.applications.api.DialogV2({
       window: { title: onPick ? "Cavril — Pick a Map to Swap In · filter by tag" : "Cavril — Map & Scene Curation · biomes · tags · filter", resizable: true },
-      position: { width: 940, height: 760 }, content,
-      buttons: onPick ? [{ action: "close", label: "Cancel", icon: "fa-solid fa-xmark" }] : [
+      position: { width: 940, height: Math.min(760, (globalThis.innerHeight || 900) - 90) }, content,   // never taller than the viewport, so the sticky tabs + filter bar are always reachable at the top
+      buttons: onPick ? [{ action: "rebuild", label: "Rebuild index", icon: "fa-solid fa-arrows-rotate", callback: async () => { await buildBiomeIndex(); ui.notifications?.info("Cavril: rebuilt maps + scenes — reopen the swap picker to see them."); } }, { action: "close", label: "Cancel", icon: "fa-solid fa-xmark" }] : [
         { action: "save", label: "Save", icon: "fa-solid fa-floppy-disk", default: true, callback: () => { try { game.settings.set(MOD, "esBiomeOverrides", ov); game.settings.set(MOD, "esTags", tags); game.settings.set(MOD, "esStoryTags", {}); } catch (e) {} ui.notifications?.info("Cavril: saved — encounters use your map choices + tags immediately."); } },   // clear the legacy single-tag store: it's now fully migrated into esTags (so a removed legacy tag stays removed)
         { action: "rebuild", label: "Rebuild index", icon: "fa-solid fa-arrows-rotate", callback: async () => { await buildBiomeIndex(); ui.notifications?.info("Cavril: rebuilt (maps + scenes) — reopen the grid."); } },
         { action: "dump", label: "Copy for Claude", icon: "fa-solid fa-clipboard", callback: async () => { await dumpCatalog(); } },
@@ -861,6 +880,7 @@
     await dlg.render({ force: true });
     // DialogV2 sanitizes <style> out of `content`; inject the stylesheet as a real DOM node so the grid/tiles actually style.
     try { const st = document.createElement("style"); st.textContent = cmgCss; dlg.element.prepend(st); } catch (e) {}
+    try { dlg.element.querySelector(".cmg")?.scrollTo(0, 0); dlg.element.querySelectorAll(".cmg-kind").forEach(k => { k.scrollTop = 0; }); } catch (e) {}   // open at the TOP so the tabs + filter/search bar are visible, never mid-scroll
     // Any thumbnail that 404s collapses to the placeholder stripe rather than showing a broken-image glyph.
     let _broke = 0; for (const img of dlg.element.querySelectorAll("img.cmg-img")) { const hide = () => { _broke++; try { img.remove(); } catch (e) {} }; img.addEventListener("error", hide); if (img.complete && img.naturalWidth === 0) hide(); }
     log(`map grid: ${_withUrl} tiles have preview URLs${_broke ? `, ${_broke} failed to load` : ""}`);
@@ -909,8 +929,8 @@
     }
     for (const cardEl of dlg.element.querySelectorAll(".cmg-card")) {
       const id = cardEl.dataset.id;
-      if (onPick) {   // PICK MODE (swap-map): a click chooses this map + closes, instead of toggling the curation pool
-        cardEl.addEventListener("click", () => { try { dlg.close(); } catch (e) {} onPick(id, byId[id]); });
+      if (onPick) {   // PICK MODE (swap-map): a click chooses this VARIANT + closes, instead of toggling the curation pool
+        cardEl.addEventListener("click", () => { try { dlg.close(); } catch (e) {} onPick(id, byId[id], cardEl.dataset.variant || null); });
         continue;
       }
       cardEl.addEventListener("click", () => { const cur = setOv(id, { generic: !cardEl.classList.contains("on"), exclude: false }); cardEl.classList.toggle("on", !!cur.generic && !cur.exclude); cardEl.classList.remove("ex"); });
