@@ -3318,7 +3318,7 @@ const Travel = (() => {
         CourseOverlay.start(onPick);
         recompute();
         try { const c = tok.center; cwfPanAll(c.x, c.y, 600); } catch { /* noop */ }   // bring the whole table's view to the party so players see the course being plotted
-        WayfarerPanel.render();
+        if (!WayfarerPanel.isOpen()) WayfarerPanel.open(); else WayfarerPanel.render();   // OPEN the HUD if it's shut — otherwise render() bails (it returns early when closed) and the course/plotting interface never appears, which is why the floating "Travel on" button looked dead
     }
     // Selected a different token while plotting (e.g. you started on the wrong one) →
     // re-anchor the course to it and recompute from scratch. Ignores deselects (so
@@ -5719,6 +5719,21 @@ const Camp = (() => {
 /* =========================================================================
  * UI — WayfarerPanel (day / weather / pace / supplies / actions)
  * ========================================================================= */
+// The single most-relevant NEXT action for the persistent HUD advance button — computed from the same state CavrilAdvance
+// reads, so the GM never depends on the floating button: night encounter → wake · ready turn → resolve · mid-trek → advance ·
+// plotting w/ a route → move · camped → resolve night · night idle → make camp · else → plan a route. v0.55.149.
+function cwfPrimaryAction() {
+    try {
+        if (Camp.nightEncounterPending) return { label: "Wake at dawn", icon: "fa-sun", action: "camp-dawn-long" };
+        if (Turn.active) return (Turn.step === "active" && Turn.allRolled?.()) ? { label: "Resolve turn", icon: "fa-gavel", action: "turn-resolve" } : null;
+        if (Camp.active) return { label: "Resolve night", icon: "fa-moon", action: "camp-resolve" };
+        const t = cwfTrek;
+        if (t && !t.done && !t.halted && (t.idx ?? 0) < (t.route?.length ?? 0)) return { label: "Advance one hex", icon: "fa-shoe-prints", action: "step" };
+        if (Travel.plotting) return (Travel.route?.length) ? { label: "Move the party", icon: "fa-shoe-prints", action: "travel-move" } : null;
+        if (cwfNightNow()) return { label: "Make camp", icon: "fa-campground", action: "camp" };
+        return { label: "Plan a route", icon: "fa-route", action: "plan-route" };
+    } catch (e) { return null; }
+}
 const WayfarerPanel = (() => {
     let root = null;
     let collapsedRef = false;
@@ -6210,6 +6225,7 @@ const WayfarerPanel = (() => {
                 <button class="cwf-icon" data-action="close" title="Close"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="cwf-body" ${collapsedRef ? 'style="display:none"' : ""}>
+                ${(() => { const pa = isGM ? cwfPrimaryAction() : null; return pa ? `<div class="cwf-section cwf-advance"><button class="cwf-btn cwf-primary cwf-advance-btn" data-action="${pa.action}" ${dis}><i class="fa-solid ${pa.icon}"></i> ${pa.label}</button></div>` : ""; })()}
                 <div class="cwf-section">
                     <div class="cwf-label">${isGM ? `<button class="cwf-tiny" data-action="set-party" title="Set the selected token as the party marker" style="margin-right:5px"><i class="fa-solid fa-location-crosshairs"></i></button>` : ""}Current hex</div>
                     <div class="cwf-here">${here}</div>
