@@ -4300,12 +4300,12 @@ async function cwfRoadCastQuest(m, npcDoc, assocUuids = []) {
     } catch (e) { warn("populate quest failed", e); }
     return q;
 }
-async function cwfRoadCastJournal(m, kind) {   // find or CREATE + populate this character's Campaign Codex NPC journal
+async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find or CREATE + populate this character's Campaign Codex NPC journal
     if (!game.campaignCodex || !game.user?.isGM || !m) return null;
     let doc = (game.journal || []).find(j => { try { return j.getFlag(CC_NS, "type") === "npc" && j.name === m.name; } catch (e) { return false; } });
-    if (doc) return doc;
+    if (doc && !force) return doc;   // force = re-populate an existing journal (so a rebuild upgrades the WHOLE cast to the latest dossier)
     const actor = await cwfRoadCastActor(m, kind);   // a real linked sheet behind the journal — durable art + tiered inventory
-    try { doc = await game.campaignCodex.createNPCJournal(actor || null, m.name, false); } catch (e) { warn("createNPCJournal failed", e); return null; }
+    if (!doc) { try { doc = await game.campaignCodex.createNPCJournal(actor || null, m.name, false); } catch (e) { warn("createNPCJournal failed", e); return null; } }
     if (!doc) return null;
     const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
     const ul = (arr) => (arr?.length) ? `<ul>${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
@@ -4358,8 +4358,8 @@ async function cwfBuildRoadCastCodex() {
     if (!game.campaignCodex) { ui.notifications?.warn(`${TITLE}: Campaign Codex isn't installed — no journals to build.`); return 0; }
     if (!game.user?.isGM) return 0;
     const all = [...TravelingMerchants.list().map(m => [m, "merchant"]), ...NarrativeNPCs.list().map(n => [n, "npc"])];
-    let n = 0; for (const [m, kind] of all) { try { if (await cwfRoadCastJournal(m, kind)) n++; } catch (e) { /* noop */ } }
-    ui.notifications?.info(`${TITLE}: ${n} road-cast NPC journals in Campaign Codex — bios, hooks, connections + secrets. (Run again after meeting more to refresh.)`);
+    let n = 0; for (const [m, kind] of all) { try { if (await cwfRoadCastJournal(m, kind, { force: true })) n++; } catch (e) { /* noop */ } }
+    ui.notifications?.info(`${TITLE}: ${n} road-cast NPC journals rebuilt in Campaign Codex — full City-HUD-style dossiers, hooks, connections + secrets.`);
     return n;
 }
 const TravelingMerchants = (() => {
