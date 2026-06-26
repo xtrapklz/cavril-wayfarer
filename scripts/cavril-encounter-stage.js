@@ -1973,6 +1973,134 @@
     catch (e) { warn("token drop failed", e); return []; }
   }
 
+  // ========================================================================
+  // AoE TEMPLATE → SAVE — the tedious half of every fireball / breath / burst,
+  // automated: drop a measured template, auto-collect every creature inside, roll
+  // each one's save, apply full / half damage + an optional condition on a fail,
+  // then REMOVE the template. Self-contained on dnd5e (no MidiQOL required) and
+  // defensive across dnd5e versions. GM-only. Call CavrilEncounterStage.aoeSave(). v0.55.153
+  // ========================================================================
+  const AOE_ABILITIES = { str: "Strength", dex: "Dexterity", con: "Constitution", int: "Intelligence", wis: "Wisdom", cha: "Charisma" };
+  const AOE_SHAPES = { circle: "Circle (burst)", cone: "Cone", ray: "Line", rect: "Square / Rect" };
+
+  // Tokens whose centre — or, for a big token, any of its occupied cell centres — lies inside the template's shape.
+  function aoeTokensIn(templateDoc) {
+    const shape = templateDoc?.object?.shape; if (!shape) return [];
+    const gs = canvas.grid?.size || 100, out = [];
+    for (const tok of (canvas.tokens?.placeables || [])) {
+      if (!tok.actor) continue;
+      const pts = [{ x: tok.center.x, y: tok.center.y }];
+      const w = Math.max(1, Math.round(tok.document.width || 1)), h = Math.max(1, Math.round(tok.document.height || 1));
+      if (w > 1 || h > 1) for (let a = 0; a < w; a++) for (let b = 0; b < h; b++) pts.push({ x: tok.x + (a + 0.5) * gs, y: tok.y + (b + 0.5) * gs });
+      if (pts.some(p => { try { return shape.contains(p.x - templateDoc.x, p.y - templateDoc.y); } catch (e) { return false; } })) out.push(tok);
+    }
+    return out;
+  }
+
+  // Roll one actor's save → numeric total (defensive across dnd5e v3/v4 APIs).
+  async function aoeRollSave(actor, ability, dc) {
+    try {
+      const o = { chatMessage: true, fastForward: true, ability, target: dc, targetValue: dc, isSave: true };
+      let r = null;
+      if (typeof actor.rollSavingThrow === "function") r = await actor.rollSavingThrow({ ability, ...o });
+      else if (typeof actor.rollAbilitySave === "function") r = await actor.rollAbilitySave(ability, o);
+      const rr = Array.isArray(r) ? r[0] : r;
+      const total = rr?.total ?? rr?.rolls?.[0]?.total ?? rr?._total ?? null;
+      return (typeof total === "number") ? total : null;
+    } catch (e) { warn(`save roll failed for ${actor?.name}`, e); return null; }
+  }
+
+  // Apply damage at `multiplier` (1 full / 0.5 half / 0 none). Passes the type so dnd5e resistances still apply; falls back to
+  // a flat number, then a manual HP update, on older builds.
+  async function aoeApplyDamage(actor, amount, type, multiplier) {
+    if (!(amount > 0) || multiplier <= 0) return 0;
+    const final = Math.floor(amount * multiplier);
+    try {
+      if (typeof actor.applyDamage === "function") {
+        try { await actor.applyDamage([{ value: amount, type: type || undefined }], { multiplier }); return final; }
+        catch (e1) { try { await actor.applyDamage(final); return final; } catch (e2) { /* manual below */ } }
+      }
+      const hp = actor.system?.attributes?.hp || {}, fromTemp = Math.min(hp.temp || 0, final), rem = final - fromTemp;
+      await actor.update({ "system.attributes.hp.temp": (hp.temp || 0) - fromTemp, "system.attributes.hp.value": Math.max(0, (hp.value || 0) - rem) });
+      return final;
+    } catch (e) { warn(`damage apply failed for ${actor?.name}`, e); return 0; }
+  }
+
+  // Setup dialog → { shape, size, ability, dc, formula, dtype, onsave, cond } or null.
+  async function aoeDialog(pre = {}) {
+    const ab = Object.entries(AOE_ABILITIES).map(([k, v]) => `<option value="${k}" ${pre.ability === k ? "selected" : ""}>${v}</option>`).join("");
+    const sh = Object.entries(AOE_SHAPES).map(([k, v]) => `<option value="${k}" ${(pre.shape || "circle") === k ? "selected" : ""}>${v}</option>`).join("");
+    const content = `<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;font-size:13px">
+      <label>Template</label><select name="shape">${sh}</select>
+      <label>Size (ft)</label><input name="size" type="number" value="${pre.size ?? 20}" min="1" step="1">
+      <label>Save</label><select name="ability">${ab}</select>
+      <label>DC</label><input name="dc" type="number" value="${pre.dc ?? 13}" min="1" step="1">
+      <label>Damage</label><input name="formula" type="text" value="${esc(pre.formula ?? "")}" placeholder="e.g. 8d6 — blank = save only">
+      <label>Type</label><input name="dtype" type="text" value="${esc(pre.dtype ?? "fire")}" placeholder="fire, cold, force…">
+      <label>On save</label><select name="onsave"><option value="half">Half damage</option><option value="none">No damage</option></select>
+      <label>Condition</label><input name="cond" type="text" value="${esc(pre.cond ?? "")}" placeholder="status id on FAIL — e.g. prone, blinded">
+    </div><p style="font-size:11px;color:#9aa6b2;margin:8px 0 0">Failed saves take full damage; saves take half or none. A condition (if set) lands on those who fail. The template is removed when it resolves.</p>`;
+    return await foundry.applications.api.DialogV2.prompt({
+      window: { title: "Cavril — AoE Template Save" }, content,
+      ok: { label: "Place template", icon: "fa-solid fa-burst", callback: (_e, btn) => { const f = btn.form; return { shape: f.shape.value, size: Number(f.size.value) || 20, ability: f.ability.value, dc: Number(f.dc.value) || 10, formula: f.formula.value.trim(), dtype: f.dtype.value.trim(), onsave: f.onsave.value, cond: f.cond.value.trim() }; } },
+    }).catch(() => null);
+  }
+
+  // Place the template — dnd5e's drag-to-place preview if present, else create at view centre for the GM to drag + confirm.
+  async function aoePlaceTemplate(cfg) {
+    const dist = canvas.dimensions?.distance || 5, scene = canvas.scene;
+    const base = { t: cfg.shape === "rect" ? "rect" : cfg.shape, user: game.user.id, distance: cfg.size, direction: 0, x: 0, y: 0, fillColor: game.user?.color?.toString?.() || "#cc3333" };
+    if (cfg.shape === "cone") base.angle = CONFIG.MeasuredTemplate?.defaults?.angle ?? 53.13;
+    if (cfg.shape === "ray") base.width = dist;
+    if (cfg.shape === "rect") base.direction = 45;
+    const AT = game.dnd5e?.canvas?.AbilityTemplate;
+    if (AT) {
+      try {
+        const before = new Set((scene.templates?.contents || []).map(t => t.id));
+        const doc = new CONFIG.MeasuredTemplate.documentClass(base, { parent: scene });
+        await new AT(doc).drawPreview();
+        const placed = (scene.templates?.contents || []).find(t => !before.has(t.id));
+        if (placed) return placed;
+      } catch (e) { warn("dnd5e template preview failed — using fallback placement", e); }
+    }
+    const cx = Math.round(canvas.stage?.pivot?.x ?? scene.width / 2), cy = Math.round(canvas.stage?.pivot?.y ?? scene.height / 2);
+    let created = null; try { [created] = await scene.createEmbeddedDocuments("MeasuredTemplate", [{ ...base, x: cx, y: cy }]); } catch (e) { warn("template create failed", e); }
+    if (!created) { ui.notifications?.warn("Cavril: couldn't create a template."); return null; }
+    const go = await foundry.applications.api.DialogV2.confirm({ window: { title: "Cavril — Position the template" }, content: `<p>Drag the template over your targets, then click <b>Yes</b> to roll saves &amp; apply.</p>` }).catch(() => false);
+    if (!go) { try { await created.delete(); } catch (e) {} return null; }
+    return created;
+  }
+
+  // Collect → roll the AoE damage once → per-target save + apply + condition → post a summary card.
+  async function aoeResolve(tmplDoc, cfg) {
+    const toks = aoeTokensIn(tmplDoc);
+    if (!toks.length) { ui.notifications?.info("Cavril: no creatures inside the template."); return; }
+    let dmg = 0, dmgFlavor = "";
+    if (cfg.formula) { try { const roll = await new Roll(cfg.formula).evaluate(); dmg = roll.total; dmgFlavor = `${cfg.formula} → ${dmg}${cfg.dtype ? " " + cfg.dtype : ""}`; try { await roll.toMessage({ flavor: `AoE damage${cfg.dtype ? " (" + cfg.dtype + ")" : ""}` }); } catch (e) {} } catch (e) { warn("damage roll failed", e); } }
+    const rows = [];
+    for (const tok of toks) {
+      const actor = tok.actor; if (!actor) continue;
+      const save = await aoeRollSave(actor, cfg.ability, cfg.dc);
+      const saved = (typeof save === "number") && save >= cfg.dc;
+      const dealt = dmg > 0 ? await aoeApplyDamage(actor, dmg, cfg.dtype, saved ? (cfg.onsave === "half" ? 0.5 : 0) : 1) : 0;
+      let cond = "";
+      if (!saved && cfg.cond) { try { await actor.toggleStatusEffect?.(cfg.cond, { active: true }); cond = ` · +${cfg.cond}`; } catch (e) {} }
+      rows.push({ name: tok.name, save, saved, dealt, cond });
+    }
+    const body = rows.map(r => `<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0"><span>${esc(r.name)}</span><span style="color:${r.saved ? "#8fd98f" : "#d65a5a"}">${r.save ?? "—"} ${r.saved ? "save" : "fail"}${r.dealt ? ` · ${r.dealt}` : ""}${esc(r.cond)}</span></div>`).join("");
+    try { await ChatMessage.create({ content: `<div style="font:13px Signika;border:1px solid #ffffff1f;border-radius:8px;padding:9px 11px"><div style="font-weight:700;margin-bottom:5px"><i class="fa-solid fa-burst" style="color:#e9a13b"></i> AoE — DC ${cfg.dc} ${esc(AOE_ABILITIES[cfg.ability] || cfg.ability)}${dmgFlavor ? ` · ${esc(dmgFlavor)}` : ""} · ${toks.length} caught</div>${body}</div>` }); } catch (e) {}
+  }
+
+  // The one call: dialog → place → resolve → ALWAYS remove the template.
+  async function aoeSave(opts = {}) {
+    if (!game.user?.isGM) { ui.notifications?.warn("Cavril: the AoE save tool is GM-only."); return; }
+    if (!canvas?.scene) { ui.notifications?.warn("Cavril: no active scene."); return; }
+    const cfg = await aoeDialog(opts); if (!cfg) return;
+    const tmpl = await aoePlaceTemplate(cfg); if (!tmpl) return;
+    try { await aoeResolve(tmpl, cfg); }
+    finally { try { await tmpl.delete(); } catch (e) { /* already gone */ } }
+  }
+
   // feet → pixels using the scene's grid distance (default 5 ft / square).
   const ftToPx = (scene, ft) => { const gs = scene.grid?.size || CFG.fallbackGridSize; const d = scene.grid?.distance || 5; return (ft / d) * gs; };
   // Scatter N points around a centre within radiusPx, keeping a minimum separation.
@@ -3073,6 +3201,8 @@
     stageBattlemap: (opts = {}) => stageBackdrop({ ...opts, battle: true }),
     stageBackdrop, stageStoryMap,
     rollMonsters, dropTokens, playCombatMusic, currentSeason, timeOfDay, partyContext, diagnoseMonsters, diagnoseParty,
+    // AoE template → save: drop a template, auto-collect everyone inside, roll saves, apply full/half + a condition, remove it.
+    aoeSave,
     BIOME_CREATURES, TYPE_MUSIC,
     // Per-biome diagnostics: which mapped tags actually exist + how many maps carry them.
     async audit() {
