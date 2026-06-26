@@ -1810,6 +1810,23 @@ function cwfMealsCrossed(beforeWT, afterWT) {
     }
     return out.sort((x, y) => x.at - y.at);   // chronological → Breakfast, Midday, Supper in order across any day rollover
 }
+// Which of TODAY's three meals have actually been EATEN — the glanceable HUD tracker. Keyed to a "meal day" that rolls at 5am
+// (breakfast), persisted on the scene so it survives reload + syncs to players; reset lazily when the meal-day turns over. v0.55.152.
+const cwfMealDay = () => Math.floor(((game.time?.worldTime ?? 0) / 3600 - 5) / 24);
+function cwfMealsToday() {
+    try { const f = canvas?.scene?.getFlag?.(MOD, "mealsToday"); if (f && f.day === cwfMealDay() && Array.isArray(f.keys)) return f; } catch (e) { /* fresh below */ }
+    return { day: cwfMealDay(), keys: [] };
+}
+async function cwfRecordMeal(todKey) {
+    if (!game.user?.isGM || !todKey || todKey === "night") return;
+    try { const m = cwfMealsToday(); if (!m.keys.includes(todKey)) { m.keys.push(todKey); await canvas?.scene?.setFlag?.(MOD, "mealsToday", { day: cwfMealDay(), keys: m.keys }); } } catch (e) { /* tracker is best-effort */ }
+}
+const CWF_MEAL_PIPS = [{ k: "morning", icon: "fa-mug-hot", label: "Breakfast" }, { k: "afternoon", icon: "fa-drumstick-bite", label: "Midday meal" }, { k: "evening", icon: "fa-utensils", label: "Supper" }];
+function cwfMealTrackerHTML() {
+    const eaten = new Set(cwfMealsToday().keys);
+    const pips = CWF_MEAL_PIPS.map(m => `<i class="fa-solid ${m.icon} cwf-meal-pip ${eaten.has(m.k) ? "done" : ""}" title="${m.label} — ${eaten.has(m.k) ? "eaten" : "not yet"}"></i>`).join("");
+    return `<span class="cwf-meals" title="Today's meals — Breakfast · Midday · Supper (lit = eaten)">${pips}</span>`;
+}
 // A travel-log line that links back to its hex — click pings/pans the map there so the
 // GM can retrace the party's steps. Records biome · weather · time at that hex.
 function cwfHexLineHTML(off, idx, biome, weatherLabel, content, hit, extraCls = "") {
@@ -2443,6 +2460,7 @@ async function cwfForageCritFail(actorId, cls) {
 async function cwfMealBeat(tod) {
     if (!game.user?.isGM) return;
     let res; try { res = await Party.eatMeal(); } catch (e) { warn("meal beat failed", e); return; }
+    try { await cwfRecordMeal(tod?.key); } catch (e) { /* tracker is best-effort */ }
     const pm = res?.perMember || []; if (!pm.length) return;
     const rows = pm.map(p => {
         const chips = [];
@@ -6251,6 +6269,7 @@ const WayfarerPanel = (() => {
                 <i class="fa-solid fa-mountain-sun"></i>
                 <span class="cwf-title">${TITLE}</span>
                 <span class="cwf-day" title="Days travelling this journey">Day ${st.day}</span>
+                ${cwfMealTrackerHTML()}
                 ${isGM && hasMaestro ? `<button class="cwf-icon ${musicOn ? "cwf-on" : ""}" data-action="toggle-music" title="${musicOn ? "Maestro ambience ON — biome drives the music. Click to mute · right-click to assign biomes." : "Maestro ambience OFF. Click to enable · right-click to assign biomes."}"><i class="fa-solid ${musicOn ? "fa-music" : "fa-volume-xmark"}"></i></button>` : ""}
                 ${isGM ? `<button class="cwf-icon" data-action="reset-journey" title="New journey — reset the day counter"><i class="fa-solid fa-rotate-left"></i></button>` : ""}
                 <button class="cwf-icon" data-action="collapse" title="Collapse/expand"><i class="fa-solid ${collapsedRef ? "fa-chevron-down" : "fa-chevron-up"}"></i></button>

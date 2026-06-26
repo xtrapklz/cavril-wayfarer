@@ -1943,11 +1943,27 @@
     if (!actors.length) return [];
     const gs = sceneDoc.grid?.size || sceneDoc.grid || CFG.fallbackGridSize;
     const cx = Math.round(anchor?.x ?? sceneDoc.width * 0.5), cy = Math.round(anchor?.y ?? sceneDoc.height * 0.5);
-    const data = [];
+    const data = [], usedCells = new Set();
+    // Snap each spawn to a WHOLE grid cell (and de-collide by spiralling to the nearest free one) so tokens start grid-LOCKED.
+    // Before this they landed on arbitrary pixels and "jumped" to the grid on their first move (centre-of-circle math, not snapped). v0.55.152.
+    const snapFree = (rawX, rawY, span) => {
+      let gx = Math.round(rawX / gs), gy = Math.round(rawY / gs);
+      const key = (x, y) => `${x},${y}`;
+      const free = (x, y) => { for (let a = 0; a < span; a++) for (let b = 0; b < span; b++) if (usedCells.has(key(x + a, y + b))) return false; return true; };
+      const take = (x, y) => { for (let a = 0; a < span; a++) for (let b = 0; b < span; b++) usedCells.add(key(x + a, y + b)); };
+      if (!free(gx, gy)) {
+        outer: for (let ring = 1; ring < 16; ring++) for (let dx = -ring; dx <= ring; dx++) for (let dy = -ring; dy <= ring; dy++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) === ring && free(gx + dx, gy + dy)) { gx += dx; gy += dy; break outer; }
+        }
+      }
+      take(gx, gy);
+      return { x: gx * gs, y: gy * gs };
+    };
     for (let i = 0; i < actors.length; i++) {
       const ang = (i / actors.length) * Math.PI * 2;
       const r = gs * (1.2 + 1.6 * (i % 2));
-      const x = Math.round(cx + Math.cos(ang) * r), y = Math.round(cy + Math.sin(ang) * r);
+      const span = Math.max(1, Math.round(Math.max(actors[i].prototypeToken?.width || 1, actors[i].prototypeToken?.height || 1)));   // a large token reserves its whole NxN footprint so foes don't overlap
+      const { x, y } = snapFree(cx + Math.cos(ang) * r, cy + Math.sin(ang) * r, span);
       try {
         const td = await actors[i].getTokenDocument({ x, y, hidden: false });
         const obj = td.toObject(); obj.x = x; obj.y = y; data.push(obj);

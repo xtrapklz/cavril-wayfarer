@@ -113,6 +113,10 @@
 /* Persistent primary-advance button — always the single most-relevant next action, pinned to the top of the HUD body. */
 .cwf-advance { padding: 0 0 6px; margin-bottom: 6px; border-bottom: 1px solid var(--cwf-line); }
 .cwf-advance-btn { width: 100%; height: 36px; font-size: 14px; font-weight: 700; letter-spacing: .01em; }
+/* Meal tracker — three pips beside the day counter; lit (gold) = that meal has been eaten today, dim = still to come. */
+.cwf-meals { display: inline-flex; gap: 5px; align-items: center; margin-left: 4px; }
+.cwf-meal-pip { font-size: 11px; color: #7a8290; opacity: .45; transition: color .15s, opacity .15s; }
+.cwf-meal-pip.done { color: #f2c64b; opacity: 1; }
 .cwf-daychoice { flex-direction: row; }
 .cwf-daychoice .cwf-plan { width: auto; flex: 2; }
 .cwf-daychoice .cwf-btn { flex: 1; height: 34px; }
