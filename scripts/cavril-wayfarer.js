@@ -1013,9 +1013,9 @@ const Party = (() => {
     // rations and for waterskin charges alike. No shared stockpile — the party total is
     // just the sum of these. Floor of 1 so a feeble character still carries something.
     function capacity(a) {
-        const base = Math.max(1, Number(game.settings.get(MOD, "carryBase")) || 6);
-        const str = a?.system?.abilities?.str?.mod ?? 0;
-        const c = Math.max(1, base + str);
+        // Capacity = the character's Strength SCORE (travel-loop contract): str 16 → 16 rations + 16 water. No shared
+        // stockpile — the party's totals are just the sum. Floor of 1 so a feeble character still carries something.
+        const c = Math.max(1, Number(a?.system?.abilities?.str?.value) || 10);
         return { rations: c, water: c };
     }
     // Per-member breakdown (own exhaustion / rations / water / carry capacity), for the
