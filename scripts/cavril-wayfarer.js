@@ -1186,7 +1186,29 @@ const Party = (() => {
         if (delta > 0) await addItem(a, re, type === "water" ? "Waterskin" : "Rations", delta);
         else if (delta < 0) await take(a, re, -delta);
     }
-    return { groupActor, members, size, supplies, breakdown, capacity, countItems, consume, eatMeal, addSupplies, refillWater, adjustStash, setMemberSupply, RATION_RE, WATER_RE };
+    // PER-DAY consumption (travel-loop contract): each character spends `cost` rations + `cost` water from their OWN pack (cost =
+    // pace: 1 slow / 2 normal / 3 fast). A shortfall they can't cover → a CON save vs the biome DC; a fail adds +1 exhaustion.
+    // This REPLACES the retired 3-meals model — it is the only consumption now. Returns a per-character breakdown for the card. v0.55.160.
+    async function consumeDay(cost, biomeDC) {
+        if (!game.user.isGM) return [];
+        cost = Math.max(0, Math.round(Number(cost) || 0));
+        const dc = Math.max(1, Math.round(Number(biomeDC) || 10));
+        const rows = [];
+        for (const a of members()) {
+            const rTake = await take(a, RATION_RE, cost), wTake = await take(a, WATER_RE, cost);   // spend up to cost from this character's own pack
+            const rShort = cost - rTake, wShort = cost - wTake, saves = []; let exh = 0;
+            for (const [short, kind] of [[wShort, "thirst"], [rShort, "hunger"]]) {
+                if (short <= 0) continue;
+                const con = a.system?.abilities?.con?.save ?? a.system?.abilities?.con?.mod ?? 0;
+                let roll; try { roll = await cwfRollD20(`1d20 + ${con}`); } catch (e) { roll = 10 + con; }
+                const ok = roll >= dc; if (!ok) exh++; saves.push({ kind, roll, ok });
+            }
+            if (exh > 0) { const lvl = Math.min(6, (a.system?.attributes?.exhaustion ?? 0) + exh); try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { /* noop */ } }
+            rows.push({ id: a.id, name: a.name, cost, rTake, wTake, rShort, wShort, exh, saves });
+        }
+        return rows;
+    }
+    return { groupActor, members, size, supplies, breakdown, capacity, countItems, consume, consumeDay, eatMeal, addSupplies, refillWater, adjustStash, setMemberSupply, RATION_RE, WATER_RE };
 })();
 
 /* =========================================================================
@@ -1947,7 +1969,6 @@ async function cwfAdvanceHex(auto) {
     const hexHours = Hex.stepCost(off, cls, { boat: t.boat }, t.prev) * hpH;   // stepCost folds in road/river (÷2, ÷3 w/ vehicle) + rugged-terrain penalty
     t.lastHexHours = hexHours; t.acc += hexHours;   // remember this hex's cost so the card can show "+Xh" per hex
     t.prev = off;
-    const wtBefore = game.time?.worldTime ?? 0;   // BEFORE the advance → so we can fire a meal for EVERY phase the step crosses, not just the one it lands in
     const whole = Math.floor(t.acc); if (whole >= 1) { t.acc -= whole; await Store.advanceWorldTime(whole); }
     t.idx++;
     const todBefore = t.tod, wxBefore = MiniCal.key();
@@ -1955,7 +1976,6 @@ async function cwfAdvanceHex(auto) {
     Music.syncWeather();
     const wxAfter = MiniCal.key(), tod = cwfTimeOfDay();
     t.tod = tod.key;
-    const mealsCrossed = cwfMealsCrossed(wtBefore, game.time?.worldTime ?? 0);   // EVERY meal phase passed this step, not just the one we landed in
     const weatherLabel = MiniCal.label() || Domain.WEATHER[wxAfter]?.label || "";
     const biomeChanged = !!(t.lastBiome && t.lastBiome !== biome);
     const weatherChanged = !!(wxAfter && wxBefore && wxAfter !== wxBefore);
@@ -1963,7 +1983,7 @@ async function cwfAdvanceHex(auto) {
     t.lastBiome = biome;
     const ev = await cwfHexEvent(cls, { scoutGood: t.scoutGood, pace: t.pace, encUsed: !!t.encUsed });
     const encounter = !!ev?.halt;
-    const isSignal = biomeChanged || weatherChanged || todChanged || encounter || mealsCrossed.length > 0;
+    const isSignal = biomeChanged || weatherChanged || todChanged || encounter;
     // AUTO + nothing notable → keep gliding, growing the current leg.
     if (auto && !isSignal) {
         if (!t.leg || t.leg.biome !== biome) { cwfFlushLeg(); t.leg = { count: 0, biome, from: fromClock, to: fromClock, hours: 0 }; }
@@ -1982,10 +2002,7 @@ async function cwfAdvanceHex(auto) {
         Cinematic.broadcast({ icon, title: bits[0] || "The road turns", subtitle: bits.slice(1).join(" · ") || `${cls?.detail ? cwfEsc(cls.detail) + " · " : ""}${t.pace} pace`, tone: todChanged ? tod.tone : "weather" });
         t.lines.push(`<div class="cwf-night-h cwf-ln-turn"><i class="fa-solid ${icon}"></i> ${cwfEsc(bits.join(" · "))}.</div>`);
     }
-    // EVERY meal phase the step CROSSED (Dawn breakfast / Day midday / Dusk supper) → the party eats one portion each, sharing
-    // for anyone short, taking the toll on the spot. So a long hex that blows past midday still eats it, not just the phase it
-    // landed in — the "felt like two meals" gap. One meal card per crossing posts to chat. v0.55.151.
-    for (const mc of mealsCrossed) { try { await cwfMealBeat(mc.tod); } catch (e) { warn("meal beat failed", e); } }
+    // (No per-hex meal beats — consumption is the per-day upkeep at the travel turn's resolve. Travel-loop contract v0.55.160.)
     // Crossing INTO night HALTS the trek for a BEAT — bed down before the watch decision, so the dusk supper + making camp get
     // their own stepped moment instead of gliding straight into the dark. The HUD goes camp-primary; the GM narrates, then camps.
     if (todChanged && tod.key === "night" && !encounter && !t.halted) {
@@ -5535,6 +5552,21 @@ const Turn = (() => {
         }
         if (!body) body = `<div class="cwf-card-row"><span class="cwf-card-v">No roles were claimed.</span></div>`;
 
+        // DAILY UPKEEP (travel-loop contract): each character spends pace-worth of rations + water; a shortfall they can't cover
+        // is a CON save vs the biome DC → exhaustion. This is the ONLY consumption now — there are no meals. v0.55.160.
+        try {
+            const paceCost = { slow: 1, normal: 2, fast: 3 }[pace] ?? 2;
+            const supRows = await Party.consumeDay(paceCost, dc);
+            if (supRows.length) {
+                const items = supRows.map(r => {
+                    const short = (r.rShort || r.wShort) ? ` <span style="color:#d6887e">short${r.rShort ? ` ${r.rShort}${cwfResIcon("rations")}` : ""}${r.wShort ? ` ${r.wShort}${cwfResIcon("water")}` : ""}</span>` : "";
+                    const saveTxt = r.saves.map(s => `${s.kind} CON ${s.roll}${s.ok ? "✓" : "✗"}`).join(" · ");
+                    return `<div class="cwf-sv-row ${r.exh ? "hit" : ""}"><span class="cwf-sv-name">${cwfEsc(r.name)}</span><span class="cwf-sv-chips">−${r.rTake}${cwfResIcon("rations")} −${r.wTake}${cwfResIcon("water")}${short}${saveTxt ? ` · ${saveTxt}` : ""}</span>${r.exh ? `<span class="cwf-sv-exh up">▲ +${r.exh}</span>` : `<span class="cwf-sv-exh ok">ok</span>`}</div>`;
+                }).join("");
+                body += `<div class="cwf-rr"><div class="cwf-rr-head"><span class="cwf-rr-icon"><i class="fa-solid fa-utensils"></i></span><span class="cwf-rr-id"><span class="cwf-rr-role">Daily upkeep</span><span class="cwf-rr-sub">−${paceCost} ration · −${paceCost} water each (${pace} pace)</span></span></div><div class="cwf-rr-b">${items}</div></div>`;
+            }
+        } catch (e) { warn("daily upkeep failed", e); }
+
         // Scout success eases the per-hex event odds and keeps the party unsurprised.
         const sc = roles.scout, scActor = sc.actorId ? game.actors.get(sc.actorId) : null;
         const scoutGood = !!(scActor && (sc.outcome === "success" || sc.outcome === "crit"));
@@ -5814,9 +5846,7 @@ const Camp = (() => {
         // Reset the "hours since last long rest" clock to the WAKE time — not the bed-down time cwfPartyRest's mark may have
         // read before MiniCal's clock update propagated (the bug that made the HUD start at ~10h). Only on a real long rest.
         if (rest !== "short" && !noLongRest()) { const nowWT = game.time?.worldTime ?? 0; try { await game.settings.set(MOD, "lastRestTime", nowWT > bedDownWT ? nowWT : bedDownWT + Math.round(nightHours()) * 3600); } catch (e) { /* noop */ } }
-        // The party rises and breaks its fast → fire the WAKE meal beat (Breakfast at dawn) so the morning resource tax actually
-        // lands. Without this, waking jumped straight past Dawn and Midday was the first meal you saw. v0.55.144.
-        try { const tod = cwfTimeOfDay(); if (tod.meal) await cwfMealBeat(tod); } catch (e) { warn("wake meal beat failed", e); }
+        // (No wake meal beat — consumption is the per-day upkeep at the travel turn's resolve, not at dawn. Travel-loop contract v0.55.160.)
         active = false;
         if (pendingMsg) { const m = game.messages.get(pendingMsg); if (m) { try { await m.update({ content: cwfCardShell("fa-moon", "Night Watch", `<div class="cwf-muted2">Resolved — dawn breaks on Day ${nextDay}.</div>`) }); } catch { /* noop */ } } }
         await cwfCampFinalize(`Resolved — dawn breaks on Day ${nextDay}.`);
@@ -6337,7 +6367,6 @@ const WayfarerPanel = (() => {
             <div class="cwf-head" data-drag>
                 <i class="fa-solid fa-mountain-sun" title="${TITLE} — drag to move"></i>
                 <span class="cwf-day" title="Days travelling this journey"><i class="fa-solid fa-calendar-day"></i> Day ${st.day}</span>
-                ${cwfMealTrackerHTML()}
                 ${isGM ? `<button class="cwf-end-exped" data-action="reset-journey" title="End this expedition — reset the day counter for a fresh journey"><i class="fa-solid fa-flag-checkered"></i> End Expedition</button>` : ""}
                 <button class="cwf-icon" data-action="collapse" title="Collapse/expand"><i class="fa-solid ${collapsedRef ? "fa-chevron-down" : "fa-chevron-up"}"></i></button>
                 <button class="cwf-icon" data-action="close" title="Close"><i class="fa-solid fa-xmark"></i></button>
