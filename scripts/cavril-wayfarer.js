@@ -328,7 +328,8 @@ const Domain = (() => {
 
     function fastProhibited(cls) {
         const r = cls?.restriction;
-        return r === "noFast" || r === "water" || r === "block";
+        if (r === "noFast") return !cls?.infrastructure;   // +Road negates difficult terrain → Fast is allowed again (contract)
+        return r === "water" || r === "block";
     }
 
     // Hours of travel a single hex consumes. A full day of travel = 12h, so
@@ -349,11 +350,12 @@ const Domain = (() => {
 
     // Net advantage state for a role given pace + weather (for the reference card
     // and the optional one-click manual roll).
-    function rollState(roleKey, state) {
+    function rollState(roleKey, state, cls) {
         const pace = PACE[state.pace] || PACE.normal;
         const weather = WEATHER[state.weather] || WEATHER.clear;
-        let adv = pace.mod === "advantage";
-        let dis = pace.mod === "disadvantage";
+        const rough = !!(cls && cls.restriction === "noFast" && !cls.infrastructure);   // difficult terrain w/o a road → Cautious Crawl / Brutal Push (contract)
+        let adv = pace.mod === "advantage" && !rough;                          // rough STRIPS Slow's advantage (Cautious Crawl → straight)
+        let dis = pace.mod === "disadvantage" || (rough && pace.mod === null); // rough makes Normal a Brutal Push → disadvantage
         if (weather.hits.includes(roleKey)) dis = true; // weather disadvantage stacks
         // adv + dis cancel to a straight roll (5e rule)
         if (adv && dis) { adv = false; dis = false; return { mode: "normal", adv, dis }; }
@@ -364,12 +366,15 @@ const Domain = (() => {
     // icon + label, so the turn card can show a tiny glanceable "because…" instead of a bare ADV/DIS tag. When a role has
     // both an adv and a dis source they cancel to a straight roll (rollState handles the net) but BOTH are still reported
     // here, so the GM can see "Slow pace + Fog → cancels out" rather than an unexplained normal roll.
-    function rollWhy(roleKey, state) {
+    function rollWhy(roleKey, state, cls) {
         const pace = PACE[state.pace] || PACE.normal;
         const weather = WEATHER[state.weather] || WEATHER.clear;
+        const rough = !!(cls && cls.restriction === "noFast" && !cls.infrastructure);
         const why = [];
-        if (pace.mod === "advantage") why.push({ kind: "adv", label: `${pace.label} pace`, icon: "fa-gauge-simple-low" });
+        if (pace.mod === "advantage" && !rough) why.push({ kind: "adv", label: `${pace.label} pace`, icon: "fa-gauge-simple-low" });
         if (pace.mod === "disadvantage") why.push({ kind: "dis", label: `${pace.label} pace`, icon: "fa-gauge-simple-high" });
+        if (rough && pace.mod === "advantage") why.push({ kind: "dis", label: "Cautious crawl — difficult terrain", icon: "fa-person-hiking" });
+        if (rough && pace.mod === null) why.push({ kind: "dis", label: "Brutal push — difficult terrain", icon: "fa-person-hiking" });
         if (weather.hits.includes(roleKey)) why.push({ kind: "dis", label: weather.label, icon: weather.icon });
         return why;
     }
@@ -1619,7 +1624,7 @@ function cwfRoleDc(role, gov) {
     }
     let d = base;                                      // navigate (and any default)
     if (open || dense) d += 2;                         // no landmarks / no sightlines → easy to drift
-    if (road) d -= 3;                                  // a road navigates itself
+    if (road) d -= 1;                                  // +Road → navigation +1 (the road is legible; travel-loop contract)
     else if (nearWater) d -= 1;                        // follow the watercourse
     return { dc: Math.max(5, d) };
 }
@@ -5386,13 +5391,13 @@ const Turn = (() => {
         // Off by default → clean single rolls. When on, Slow gives advantage, Fast
         // disadvantage, and weather can hamper a role (the 5e-flavored mechanic).
         if (!game.settings.get(MOD, "travelRollMods")) return { mode: "normal", adv: false, dis: false };
-        return Domain.rollState(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() });
+        return Domain.rollState(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() }, governing);
     }
     // The sources behind this role's adv/dis (pace, weather) for the turn card's tiny "why" icons. Empty when the
     // pace/weather modifier rule is off, so the card stays clean unless the mechanic is actually in play.
     function rollWhy(roleKey) {
         if (!game.settings.get(MOD, "travelRollMods")) return [];
-        return Domain.rollWhy(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() });
+        return Domain.rollWhy(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() }, governing);
     }
 
     function natOf(roll) {
