@@ -3537,6 +3537,7 @@ const Tables = (() => {
     const DEFS = {
         navigate: {
             crit:     { name: "Navigator — Critical Success", entries: ["A shortcut or vantage point — you arrive with no extra movement, and one adjacent hidden hex is revealed."] },
+            major:    { name: "Navigator — Major Success", entries: [{ text: "A clean line through — you reach your destination and read the country beyond; your next navigation roll gains +1d4.", effect: "arrive" }] },
             success:  { name: "Navigator — Success", entries: ["You hold your course and reach your destination — and read the ground ahead: the next hex's terrain is yours to know before you commit."] },
             fail:     { name: "Navigator — Failure (d4)", formula: "1d4", entries: [
                 { text: "The Long Way Round — you still reach the destination, but the detour eats extra hours; the day runs late.", effect: "late" },
@@ -3547,14 +3548,16 @@ const Tables = (() => {
         },
         scout: {
             crit:     { name: "Scout — Critical Success", entries: ["You spot the encounter first — take a solo Sabotage, Steal, or Spy action before rejoining the party."] },
+            major:    { name: "Scout — Major Success", entries: ["You range ahead and seize the advantage — the party can bypass the next encounter, or strike first with an ambush."] },
             success:  { name: "Scout — Success", entries: ["You spot hazards and encounters in time. The party cannot be Surprised."] },
             fail:     { name: "Scout — Failure", entries: ["You miss the signs. If an encounter occurs, the party is Surprised."] },
             critfail: { name: "Scout — Critical Failure", entries: ["Spotted while ranging too far ahead — trapped alone for 1d4 rounds before the party reaches you. Forward movement stops."] }
         },
         forage: {
             crit:     { name: "Forager — Critical Success", entries: ["A rich find — the day's food and water are covered, and a medicinal herb eases the party's weariest member."] },
-            success:  { name: "Forager — Success", entries: ["You scavenge enough to feed everyone — the day's food and water are covered; no supplies consumed tonight."] },
-            fail:     { name: "Forager — Failure", entries: ["You turn up nothing worth eating. The party draws on its own packs tonight — each character spends a ration and a drink."] },
+            major:    { name: "Forager — Major Success", entries: ["A bountiful haul — a real surplus of food, or enough clean water to top off every skin."] },
+            success:  { name: "Forager — Success", entries: ["You scavenge a solid haul — fresh rations go into the party's packs."] },
+            fail:     { name: "Forager — Failure", entries: ["You turn up nothing worth eating — the packs gain nothing on this stretch."] },
             critfail: { name: "Forager — Critical Failure", entries: ["A botched forage — tainted flora sickens you, or you blunder into a territorial beast. A nasty surprise either way."] }
         }
     };
@@ -5268,7 +5271,7 @@ async function cwfSuggestSounds() {
     ui.notifications?.info(`Cavril: set ${set.length}/${CATS.length} travel sounds from your Maestro library.`);
     return { set, miss, scanned: files.length };
 }
-const TIER_LABEL = { crit: "Critical Success", success: "Success", fail: "Failure", critfail: "Critical Failure" };
+const TIER_LABEL = { crit: "Critical Success", major: "Major Success", success: "Success", fail: "Failure", critfail: "Critical Failure" };
 // Per-role skill options the GM can switch between for the situation. First = default.
 const ROLE_SKILLS = {
     navigate: ["sur", "inv", "prc", "nat"],
@@ -5445,12 +5448,12 @@ const Turn = (() => {
     function outcomeFor(s, roleKey) {
         if (s.total == null) return null;
         const dc = roleKey ? cwfRoleDc(roleKey, governing).dc : cwfRouteDc(governing);   // per-role biome DC; helpers (no role) use the route baseline
+        // The shared 5-band bracket (travel-loop contract): nat-1 critfail · < DC fail · DC..DC+4 success · DC+5+ major ·
+        // nat-20 crit. Crit is a NATURAL 20 only (a big margin is a MAJOR success, not a crit); a fumble is a natural 1 only.
         if (s.nat === 20) return "crit";
-        if (s.nat === 1) return "critfail";           // a fumble is a natural 1 — not just a low total
-        if (s.total >= dc + 10) return "crit";
-        // NOTE: removed "total <= dc - 10 → critfail". The governing DC is the route's WORST hex, so on hard
-        // terrain a perfectly ordinary low roll was constantly a critical failure. A big miss is now a normal fail.
-        return s.total >= dc ? "success" : "fail";
+        if (s.nat === 1) return "critfail";
+        if (s.total < dc) return "fail";
+        return s.total >= dc + 5 ? "major" : "success";
     }
     const claimedRoles = () => Object.entries(roles).filter(([, v]) => v.actorId);
     const allRolled = () => { const c = claimedRoles(); return c.length > 0 && c.every(([, v]) => v.total != null) && claimedHelpers().every(h => h.total != null); };
@@ -5495,41 +5498,25 @@ const Turn = (() => {
             v.result = drawn.text;
             if (k === "navigate") navEffect = drawn.effect || (tier === "fail" || tier === "critfail" ? "dead" : "arrive");
             if (k === "forage") {
-                // Forage PRODUCES food/water into the party's packs (capped at carry capacity — no infinite stockpile). Each draw
-                // is a SINGLE unit and the biome's food weight sets the yield, so a forage SUPPLEMENTS the packs rather than topping
-                // them off: a good roll in lush country can nearly cover the day, a poor one or harsh terrain leaves them eating
-                // into reserves. The packs are then drawn down normally at the day's meals.
-                if (tier === "success" || tier === "crit") {
-                    const rdc = cwfRoleDc("forage", governing);
-                    const crit = tier === "crit";
-                    // DRAW-BASED forage (v0.55.150): each point you clear the forage DC by buys one weighted draw (a crit adds two),
-                    // and each draw yields a SINGLE unit — one ration (= one meal), one waterskin charge, a herb, or nothing. The
-                    // biome's food WEIGHT decides how many draws become rations, so a lush biome nearly provisions the party's day
-                    // (~12 meals for 4) while harsh country yields a couple — supplementing, rarely replacing, the pack. Water is a
-                    // partial sip per draw UNLESS you're at a real source (river/coast/open water), where one draw tops off every skin.
-                    const draws = cwfForageDraws(v.total, rdc.dc) + (crit ? 2 : 0);
-                    const weights = cwfForageWeights(governing);
+                // Forage PRODUCES food into the party's packs by SUCCESS TIER (travel-loop contract): success +2 rations, major
+                // +4, crit +6 + a medicinal boon. Yields distribute to each character up to their own Strength-score max — no
+                // stockpile. Water auto-fills to max at a real source (river/lake/coast). The herb satchel (Provenance) rides a
+                // good roll. Replaces the old margin-scaled draw model. (Food / Water / Both targeting lands next.) v0.55.162.
+                if (tier === "success" || tier === "major" || tier === "crit") {
                     const atSource = !!(governing?.river || governing?.coast || governing?.terrainKey === "water" || governing?.biome === "water");
-                    let foodGot = 0, waterGot = 0, herbDraws = 0, waterFull = false, empties = 0;
-                    for (let d = 0; d < draws; d++) {
-                        const kind = cwfForageDraw(weights);
-                        if (kind === "food") { const got = await Party.addSupplies(1, 0); foodGot += got.rations || 0; }   // ONE ration = one meal
-                        else if (kind === "water") {
-                            if (atSource && !waterFull) { waterGot += await Party.refillWater(); waterFull = true; }       // a real source → fill every skin, once
-                            else { const got = await Party.addSupplies(0, 1); waterGot += got.water || 0; }                // otherwise a partial sip — one charge
-                        }
-                        else if (kind === "herb") herbDraws++;
-                        else empties++;                                                                                     // "none" → searched, found nothing
-                    }
-                    let herbTxt = "";
-                    if (herbDraws > 0) { const g = await cwfForageGather(v.actorId, governing, { count: herbDraws }); if (g) herbTxt = g; }
+                    const foodYield = tier === "crit" ? 6 : tier === "major" ? 4 : 2;
+                    const fg = await Party.addSupplies(foodYield, 0);
+                    const foodGot = fg.rations || 0;
+                    let waterGot = 0, waterFull = false;
+                    if (atSource) { waterGot = await Party.refillWater(); waterFull = waterGot > 0; }   // a real source tops off every skin, every tier
+                    let herbTxt = ""; const herbN = tier === "crit" ? 2 : tier === "major" ? 1 : 0;
+                    if (herbN > 0) { const g = await cwfForageGather(v.actorId, governing, { count: herbN }); if (g) herbTxt = g; }
                     const bits = [];
                     if (foodGot) bits.push(`+${foodGot}${cwfResIcon("rations")}`);
                     if (waterFull) bits.push(`${cwfResIcon("water")} water source — all skins topped off`);
-                    else if (waterGot) bits.push(`+${waterGot}${cwfResIcon("water")}`);
                     if (herbTxt) bits.push(herbTxt);
-                    v.result += bits.length ? ` <em>— ${draws} draw${draws === 1 ? "" : "s"}: ${bits.join(" · ")}${empties ? ` · ${empties} empty` : ""}.</em>` : ` <em>— ${draws} draw${draws === 1 ? "" : "s"}, nothing usable here.</em>`;
-                    if (crit) { const eased = await cwfForageMedicinal(); if (eased) v.result += ` <em>${eased}</em>`; }
+                    v.result += bits.length ? ` <em>— ${bits.join(" · ")}.</em>` : ` <em>— but every pack is already full.</em>`;
+                    if (tier === "crit") { const eased = await cwfForageMedicinal(); if (eased) v.result += ` <em>${eased}</em>`; }
                 } else if (tier === "critfail") {
                     forageMishap = v.actorId;   // tainted flora or a roused beast → sickness OR a surprise wildlife fight
                 }
@@ -5574,7 +5561,7 @@ const Turn = (() => {
 
         // Scout success eases the per-hex event odds and keeps the party unsurprised.
         const sc = roles.scout, scActor = sc.actorId ? game.actors.get(sc.actorId) : null;
-        const scoutGood = !!(scActor && (sc.outcome === "success" || sc.outcome === "crit"));
+        const scoutGood = !!(scActor && (sc.outcome === "success" || sc.outcome === "major" || sc.outcome === "crit"));
 
         // Path from the Navigator's result → start the stepped travel card.
         const tok = turnTok || Canvasry.activeToken();

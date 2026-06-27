@@ -348,6 +348,7 @@
 .cwf-rr-out .cwf-tier-badge { width: 100%; white-space: normal; line-height: 1.15; padding: 3px 4px; letter-spacing: .02em; word-break: break-word; }   /* fill the outcome column + WRAP so "Critical Success" fits instead of clipping (compact + nowrap when used inline elsewhere) */
 .cwf-tier-crit { background: var(--cwf-easy); color: #063; }
 .cwf-tier-success { background: color-mix(in srgb, var(--cwf-easy) 50%, transparent); color: #dffbe6; }
+.cwf-tier-major { background: color-mix(in srgb, var(--cwf-easy) 72%, transparent); color: #eafff0; }
 .cwf-tier-fail { background: color-mix(in srgb, var(--cwf-hard) 75%, transparent); color: #fff; }
 .cwf-tier-critfail { background: var(--cwf-severe); color: #fff; }
 /* outcome accent — the left rail, icon disc + total pick up the tier colour */
@@ -356,6 +357,8 @@
 .cwf-rr-crit .cwf-rr-total { color: var(--cwf-easy); }
 .cwf-rr-success { border-left-color: color-mix(in srgb, var(--cwf-easy) 65%, transparent); }
 .cwf-rr-success .cwf-rr-total { color: color-mix(in srgb, var(--cwf-easy) 85%, #fff); }
+.cwf-rr-major { border-left-color: color-mix(in srgb, var(--cwf-easy) 78%, transparent); }
+.cwf-rr-major .cwf-rr-total { color: color-mix(in srgb, var(--cwf-easy) 92%, #fff); }
 .cwf-rr-fail { border-left-color: var(--cwf-hard); }
 .cwf-rr-fail .cwf-rr-icon { background: color-mix(in srgb, var(--cwf-hard) 20%, transparent); color: var(--cwf-hard); }
 .cwf-rr-fail .cwf-rr-total { color: var(--cwf-hard); }
