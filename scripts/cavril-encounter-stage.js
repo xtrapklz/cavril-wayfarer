@@ -1972,10 +1972,24 @@
     const gs = sceneDoc.grid?.size || sceneDoc.grid || CFG.fallbackGridSize;
     const cx = Math.round(anchor?.x ?? sceneDoc.width * 0.5), cy = Math.round(anchor?.y ?? sceneDoc.height * 0.5);
     const data = [], usedCells = new Set();
-    // Snap each spawn to a WHOLE grid cell (and de-collide by spiralling to the nearest free one) so tokens start grid-LOCKED.
-    // Before this they landed on arbitrary pixels and "jumped" to the grid on their first move (centre-of-circle math, not snapped). v0.55.152.
+    // Snap each spawn to a WHOLE grid cell + de-collide by spiralling to the nearest free one, so tokens start grid-LOCKED.
+    // Uses the scene's NATIVE grid (getOffset/getCenterPoint) so it's correct on HEX maps (our staged gridType is Hexagonal) +
+    // offset grids — the old square Math.round(x/gs) landed off-grid on hexes. Falls back to square only if no live grid. v0.55.198.
+    const liveGrid = (canvas?.ready && canvas.scene?.id === sceneDoc.id && canvas.grid?.getOffset && canvas.grid?.getCenterPoint) ? canvas.grid : null;
     const snapFree = (rawX, rawY, span) => {
-      let gx = Math.round(rawX / gs), gy = Math.round(rawY / gs);
+      if (liveGrid) {
+        let off = liveGrid.getOffset({ x: rawX, y: rawY });                  // → {i, j} cell, grid-type-aware (hex or square)
+        const key = (o) => `${o.i},${o.j}`;
+        if (usedCells.has(key(off))) {
+          outer: for (let ring = 1; ring < 16; ring++) for (let di = -ring; di <= ring; di++) for (let dj = -ring; dj <= ring; dj++) {
+            if (Math.max(Math.abs(di), Math.abs(dj)) === ring) { const o = { i: off.i + di, j: off.j + dj }; if (!usedCells.has(key(o))) { off = o; break outer; } }
+          }
+        }
+        usedCells.add(key(off));
+        const c = liveGrid.getCenterPoint(off);                              // cell centre → token TOP-LEFT for an NxN footprint
+        return { x: Math.round(c.x - span * gs / 2), y: Math.round(c.y - span * gs / 2) };
+      }
+      let gx = Math.round(rawX / gs), gy = Math.round(rawY / gs);            // fallback: origin-aligned square snap (no live grid)
       const key = (x, y) => `${x},${y}`;
       const free = (x, y) => { for (let a = 0; a < span; a++) for (let b = 0; b < span; b++) if (usedCells.has(key(x + a, y + b))) return false; return true; };
       const take = (x, y) => { for (let a = 0; a < span; a++) for (let b = 0; b < span; b++) usedCells.add(key(x + a, y + b)); };
