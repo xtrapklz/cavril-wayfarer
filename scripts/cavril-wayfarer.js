@@ -530,6 +530,7 @@ const Store = (() => {
         g.register(MOD, "biomeGatherJSON", { name: "Biome → gather table (advanced)", hint: 'Optional JSON to remap a biome to a specific RollTable name or id, e.g. {"jungle":"Gathering: Swamp"}. Blank uses the built-in map to Potion-Crafting-&-Gathering\'s "Gathering: <Environment>" tables (searched in world AND compendiums): temperate→Grasslands, boreal/jungle→Forests, savanna→Savannahs, swamp→Swamp, desert→Desert, tundra/frozen→Arctic, volcanic→Volcanos, wasteland/tainted→Blightshore, void→Underground, water & coast→Coast, high elevation→Mountains.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "combatRostersJSON", { name: "Combat encounter rosters (advanced)", hint: 'Optional JSON to override the themed APL combat builds, e.g. {"predators":{"apl":{"5":"1 Bulette | 2 Manticore"}}}. Cell format: "N Name, N Name"; use " | " for alternative builds (one is rolled). Themes: soldiers, fey, predators, undead, deepwater, caves, titans. Names match the dnd5e SRD. Blank uses the built-in 7-theme deck.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "deckIds", { scope: "world", config: false, type: Object, default: {} });   // cached RollTable ids for the d20 encounter decks (built from data/encounter-decks.json)
+        g.register(MOD, "questIds", { scope: "world", config: false, type: Object, default: {} });   // cached Campaign Codex quest refs (nodeId → {uuid, questId}) for the arc graph (data/quest-arcs.json)
         // Cavril: Maestro biome → environment soundscape.
         g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Set this visually with the “Assign biome ambience…” button above (or right-click the ♪ on the travel HUD). Advanced: raw JSON of biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay"}. Blank = defaults; "" = silence for that biome.', scope: "world", config: true, type: String, default: "" });
@@ -4600,6 +4601,71 @@ async function cwfRollHexFeature() {
     if (res.kind === "combat") { try { Cinematic.broadcast({ icon: "fa-dragon", title: "Trouble ahead", subtitle: res.text.replace(/^\([^)]+\)\s*/, "").split(/[:.]/)[0].slice(0, 60), tone: "encounter" }); } catch (e) { /* noop */ } }
     return res;
 }
+/* =========================================================================
+ * QUEST WEB — the interwoven arcs (data/quest-arcs.json) → Campaign Codex `quest` journals.
+ * buildQuests() creates one quest journal per arc node, writes its situation/objective/outcomes +
+ * the quest-giver cue, then wires CC's native dependency/unlock graph from the unlocks (a target
+ * with a single unlocker gets a hard dependency so CC blocks it until its prereq completes; OR-gated
+ * nodes get the unlock link only). Open the board: game.campaignCodex.openQuestBoard(). v0.55.174.
+ * ========================================================================= */
+async function cwfQuestData() {
+    if (cwfQuestData._cache) return cwfQuestData._cache;
+    const path = `modules/${MOD}/data/quest-arcs.json`;
+    let json = null;
+    try { json = await foundry.utils.fetchJsonWithTimeout(path); }
+    catch (e) { try { json = await (await fetch(path)).json(); } catch (e2) { warn("quest-arcs.json fetch failed", e2); } }
+    cwfQuestData._cache = json; return json;
+}
+function cwfQuestBody(node, data) {
+    const npc = node.npc ? data.npcs[node.npc] : null;
+    const outs = node.outcomes.map(o => `<li><b>${cwfEsc(o.label)}:</b> ${cwfEsc(o.reward || "")}${o.unlocks?.length ? ` <em>→ unlocks ${cwfEsc(o.unlocks.join(", "))}</em>` : ""}${o.sets?.length ? ` <em>[world-state: ${cwfEsc(o.sets.join(", "))}]</em>` : ""}</li>`).join("");
+    return `${npc ? `<p><b>${cwfEsc(npc.name)}</b> <em>(${cwfEsc(npc.role)})</em> — ${cwfEsc(npc.cue)}</p>` : ""}<p><b>Situation.</b> ${cwfEsc(node.situation)}</p><p><b>Objective.</b> ${cwfEsc(node.objective)}</p>${node.prereqFlags?.length ? `<p><b>Prerequisite:</b> ${cwfEsc(node.prereqFlags.join(node.prereqAny ? " OR " : " AND "))}.</p>` : ""}<p><b>Outcomes</b></p><ul>${outs}</ul>`;
+}
+async function cwfBuildQuests({ rebuild = false } = {}) {
+    if (!game.user.isGM) return null;
+    const cc = game.campaignCodex; if (!cc?.createQuestJournal) { ui.notifications?.error(`${TITLE}: Campaign Codex not found — enable the campaign-codex module first.`); return null; }
+    const data = await cwfQuestData(); if (!data) { ui.notifications?.error(`${TITLE}: quest-arcs.json not found.`); return null; }
+    const nodes = {}; for (const [ak, arc] of Object.entries(data.arcs)) for (const n of arc.nodes) nodes[n.id] = { ...n, arc: ak, arcTitle: arc.title };
+    const unlockerCount = {}; for (const id in nodes) for (const o of nodes[id].outcomes) for (const u of (o.unlocks || [])) unlockerCount[u] = (unlockerCount[u] || 0) + 1;
+    const ids = foundry.utils.deepClone(game.settings.get(MOD, "questIds") || {});
+    let made = 0, kept = 0;
+    for (const id in nodes) {   // PASS 1 — create / fill the quest journals
+        if (ids[id] && !rebuild) { const j = await fromUuid(ids[id].uuid).catch(() => null); if (j) { kept++; continue; } }
+        const n = nodes[id], name = `${id} · ${n.title}`;
+        let jrnl; try { jrnl = await cc.createQuestJournal(name); } catch (e) { warn(`quest create failed: ${id}`, e); }
+        if (!jrnl) jrnl = game.journal.find(j => j.getFlag("campaign-codex", "type") === "quest" && j.name === name);
+        if (!jrnl) continue;
+        const qd = foundry.utils.duplicate(jrnl.getFlag("campaign-codex", "data") || {});
+        qd.quests = Array.isArray(qd.quests) ? qd.quests : [];
+        const q = qd.quests[0] || { id: foundry.utils.randomID(), objectives: [] };
+        q.title = name; q.description = cwfQuestBody(n, data);
+        q.urgency = n.kind === "terminal" ? "high" : n.kind === "entry" ? "medium" : "low";
+        q.boardColumn = "active"; q.visible = true;
+        q.objectives = [{ id: foundry.utils.randomID(), title: n.objective, description: "", completed: false, visible: true, objectives: [] }];
+        qd.quests[0] = q; qd.cavrilArc = n.arc; qd.cavrilNode = id;
+        try { await jrnl.setFlag("campaign-codex", "data", qd); } catch (e) { warn(`quest data set failed: ${id}`, e); }
+        ids[id] = { uuid: jrnl.uuid, questId: q.id }; made++;
+    }
+    for (const id in nodes) {   // PASS 2 — wire the dependency / unlock graph
+        const ref = ids[id]; if (!ref) continue;
+        const j = await fromUuid(ref.uuid).catch(() => null); if (!j) continue;
+        const qd = foundry.utils.duplicate(j.getFlag("campaign-codex", "data") || {}); const q = qd.quests?.[0]; if (!q) continue;
+        const unlocks = new Set(q.unlocks || []);
+        for (const o of nodes[id].outcomes) for (const u of (o.unlocks || [])) { const t = ids[u]; if (t) unlocks.add(`${t.uuid}::${t.questId}`); }
+        q.unlocks = [...unlocks];
+        try { await j.setFlag("campaign-codex", "data", qd); } catch (e) { /* noop */ }
+        for (const o of nodes[id].outcomes) for (const u of (o.unlocks || [])) {   // single-unlocker target → a hard dependency (CC blocks it)
+            if (unlockerCount[u] !== 1 || !ids[u]) continue;
+            const tj = await fromUuid(ids[u].uuid).catch(() => null); if (!tj) continue;
+            const td = foundry.utils.duplicate(tj.getFlag("campaign-codex", "data") || {}); const tq = td.quests?.[0]; if (!tq) continue;
+            const deps = new Set(tq.dependencies || []); deps.add(`${ref.uuid}::${ref.questId}`); tq.dependencies = [...deps];
+            try { await tj.setFlag("campaign-codex", "data", td); } catch (e) { /* noop */ }
+        }
+    }
+    try { await game.settings.set(MOD, "questIds", ids); } catch (e) { /* noop */ }
+    ui.notifications?.info(`${TITLE}: quest web built — ${made} created${kept ? `, ${kept} kept` : ""}. Open game.campaignCodex.openQuestBoard().`);
+    return { made, kept, nodes: Object.keys(nodes).length };
+}
 async function cwfRoadCastActor(m, kind) {
     if (!game.user?.isGM || !m?.name) return null;
     let actor = (game.actors || []).find(a => { try { return a.getFlag(MOD, "roadCast") === m.name; } catch (e) { return false; } }) || null;
@@ -6904,6 +6970,7 @@ Hooks.once("ready", () => {
         buildDecks: (opts = {}) => cwfBuildDecks(opts),   // create the native d20 encounter RollTables from data/encounter-decks.json ({rebuild:true} re-seeds)
         rollDeck: (deckKey = "forest") => cwfRollDeck(deckKey),   // roll a deck: forest/grassland/swamp/hills/mountains/desert/jungle/coastal/urban/feywild/underdark/road/river/lake/universal
         deckFor: (gov = {}) => cwfDeckFor(gov),   // which deck a hex maps to (features > elevation > biome)
+        buildQuests: (opts = {}) => cwfBuildQuests(opts),   // build the interwoven arc quests as Campaign Codex journals, wired by dependency/unlock ({rebuild:true} re-fills)
         roleDc: (biome, role = "forage", extra = {}) => cwfRoleDc(role, { biome, dc: 13, ...extra }),
         wanted: (d) => (d == null ? cwfWanted() : cwfWantedAdjust(d)),   // .wanted() reads · .wanted(1)/.wanted(-1) adjusts the Heat/Wanted score
         setWanted: (n) => cwfSetWanted(n),                                // .setWanted(3) sets it directly (0-5)
