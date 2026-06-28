@@ -1861,6 +1861,7 @@ async function cwfHeatBeat(cls, biome, { surprised = false, night = false } = {}
 // Discovery (roll 20) — a clue, a way down, a glint of treasure. Non-halting; the GM acts on it when they choose. NOT capped.
 async function cwfDiscoveryBeat(cls) {
     const biome = cls?.biome || "unknown";
+    cwfNotify();   // a discovery (the nat-20 "you found something") is a notable "look here" beat → the notification ping
     return { halt: false, kind: "discovery", line: `<i class="fa-solid fa-gem"></i> ${await Tables.drawTerrain(cls, "site", () => Tables.drawEvent("site", cls))}` };
 }
 // The biome TABLE (the non-combat/non-heat/non-discovery rolls): mostly flavour, sometimes an arc beat, sometimes a
@@ -2143,6 +2144,7 @@ async function cwfFinishTravel() {
     try { const fm = await cwfForcedMarch(t.pace); if (fm?.html) { t.marchHTML = fm.html; t.marchSub = fm.sub || ""; } } catch (e) { warn("forced march failed", e); }
     if (t.idx > 0) { try { await cwfTravelHealthCheck({ toLines: t.lines, applyExhaustion: !t.halted }); } catch (e) { warn("travel health check failed", e); } }   // end of leg → tired / low-supply notices (exhaustion applies on a peaceful finish)
     t.done = true;
+    if (!t.halted && t.idx > 0) cwfNotify();   // a PEACEFUL arrival → the notification ping (an encounter halt has its own cinematic, so it's skipped there)
     await cwfTrekRefresh();
     // Players get a clean, public, spoiler-free arrival card — only on a PEACEFUL arrival (a halt = an encounter, which the cinematic/map reveals).
     // (the public journey card was posted at trek start + just updated to its "arrives" state by cwfTrekRefresh above)
@@ -4266,6 +4268,7 @@ const Tables = (() => {
         const t = trophies(); if (t.map(x => String(x).toLowerCase()).includes(k.toLowerCase())) return;
         t.push(k); await game.settings.set(MOD, "esTrophies", t);
         ui.notifications?.info(`${TITLE}: trophy claimed — "${k}". Quest beats gated on it can now advance.`);
+        cwfNotify();   // claiming a combat trophy is a notable beat → the notification ping
     }
     async function dropTrophy(key) { if (!game.user.isGM || !key) return; await game.settings.set(MOD, "esTrophies", trophies().filter(x => String(x).toLowerCase() !== String(key).toLowerCase())); }
 
