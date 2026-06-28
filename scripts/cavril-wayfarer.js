@@ -6272,11 +6272,16 @@ const Camp = (() => {
             WayfarerPanel.render();
             return;   // dawn waits for the button (and, later, the encounter resolution)
         }
-        ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "" }) });
-        await wakeAtDawn(nextDay);
+        // A QUIET night now PAUSES on a beat too — the GM narrates how the night resolved, THEN clicks "Wake at dawn". No more
+        // auto-advancing the clock the instant the watch resolves; the resolution gets its own narrated moment first. v0.55.185.
+        const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-moon"></i> The watch held</span><button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn-long" title="Narrated the night — wake the party to a long rest and dawn"><i class="fa-solid fa-sun"></i> Wake at dawn</button></div>`;
+        const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "", footerHTML: foot }) }).catch(() => null);
+        nightDawnPending = { nextDay, msgId: msg?.id };
+        cwfCampFinalize("Night watch — narrate the night, then wake at dawn.");   // collapse the camp card so Resolve can't re-fire
+        WayfarerPanel.render();
     }
-    // Advance to the following dawn — automatically on a quiet night, or from the
-    // "wake at dawn" button once a night encounter has been run.
+    // Advance to the following dawn — always from the "Wake at dawn" button now (quiet night OR after a night encounter is
+    // run), so the GM gets a beat to narrate the night's resolution before the clock jumps to morning. v0.55.185.
     async function wakeAtDawn(nextDay, { rest = "long" } = {}) {
         if (!game.user.isGM) return;
         if (nextDay == null) nextDay = nightDawnPending?.nextDay ?? (Store.sceneState().day || 1);
