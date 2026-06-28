@@ -1658,8 +1658,12 @@ function cwfTravelSfxFile(cls, boat) {
     return `${mode}-${surf}`;   // foot-grass · foot-city · foot-rocks · cart-grass · cart-city · cart-rocks
 }
 const cwfChallengeEff = () => Math.max(0, Math.min(5, cwfChallenge() + (cwfNightNow() ? 1 : 0)));
-// Route DC the travel roles check against: the worst biome's DC, +2 when travelling at NIGHT (everything's harder in the dark).
-const cwfRouteDc = (gov) => (gov?.dc ?? 10) + (cwfNightNow() ? 2 : 0);
+// The effective biome travel DC: the raw terrain DC shifted DOWN 2, with the Challenge dial adding back — so Challenge 2 =
+// the original baseline, Challenge 0 = two easier, Challenge 5 = three harder. ONE shaping point so the route DC, per-role
+// DCs, the biome badge, the route breakdown, and the current-hex pill all SHOW and ROLL the same number.
+const cwfEffBiomeDc = (rawDc) => Math.max(5, (Number(rawDc) || 10) - 2 + cwfChallenge());
+// Route DC the travel roles check against: the (Challenge-shifted) worst biome's DC, +2 when travelling at NIGHT.
+const cwfRouteDc = (gov) => cwfEffBiomeDc(gov?.dc ?? 10) + (cwfNightNow() ? 2 : 0);
 // Per-biome forage difficulty — how hard food / water are to FIND, decoupled from terrain ruggedness (a desert is flat and
 // easy to cross but brutal to forage; a jungle is hard to cross but lush). Lower = easier. Overridable via biomeForageJSON.
 // Food DCs are everyday (you usually find SOMETHING to eat); WATER DCs are high — finding a source is rare and a big deal,
@@ -1685,7 +1689,7 @@ let cwfNavBonusNext = 0;   // the momentum die's ROLLED value → eases the NEXT
 let cwfMomentumPending = false;   // a Major navigation EARNED a momentum die that hasn't been rolled yet — the Navigator rolls/enters a d4 next turn to set cwfNavBonusNext
 function cwfRoleDc(role, gov) {
     const night = cwfNightNow() ? 2 : 0;
-    const base = (gov?.dc ?? 10) + night;
+    const base = cwfEffBiomeDc(gov?.dc ?? 10) + night;
     const biome = gov?.biome || "temperate";
     const dense = gov?.vegetation === "high" || biome === "jungle" || biome === "swamp";
     const open = biome === "desert" || biome === "savanna" || biome === "tundra" || biome === "water" || biome === "void";
@@ -1693,7 +1697,8 @@ function cwfRoleDc(role, gov) {
     if (role === "scout") { let d = base; if (dense) d += 3; else if (open) d -= 2; return { dc: Math.max(5, d) }; }
     if (role === "forage") {
         const f = cwfBiomeForage(Domain.biomeKey(gov));   // swamp/water route to their own forage DCs (climate biome alone would miss them)
-        let food = f.food + night, wat = f.water + night;
+        const cAdj = cwfChallenge() - 2;   // same biome-DC shift the other roles get: −2 baseline, Challenge dials it back (Challenge 2 = original)
+        let food = f.food + cAdj + night, wat = f.water + cAdj + night;
         if (nearWater) wat -= 8;                       // a river or coast is a reliable water source (the rare find is easy here)
         if (gov?.vegetation === "high") food -= 2;     // forest mast, berries, game
         if (road) food += 2;                           // picked over near a road
@@ -2314,7 +2319,7 @@ function cwfRouteBreakdownHTML(routeArr, govDc) {
     }
     const chips = segs.map(s => {
         const gov = govDc != null && s.dc === govDc;
-        return `<span class="cwf-route-seg${gov ? " gov" : ""}"${s.tier ? ` data-tier="${s.tier}"` : ""}><i class="fa-solid ${s.icon}"></i> ${s.label}${s.count > 1 ? ` ×${s.count}` : ""}${s.dc != null ? ` · DC ${s.dc}` : ""}</span>`;
+        return `<span class="cwf-route-seg${gov ? " gov" : ""}"${s.tier ? ` data-tier="${s.tier}"` : ""}><i class="fa-solid ${s.icon}"></i> ${s.label}${s.count > 1 ? ` ×${s.count}` : ""}${s.dc != null ? ` · DC ${cwfEffBiomeDc(s.dc)}` : ""}</span>`;
     }).join(`<span class="cwf-route-arrow">›</span>`);
     return `<div class="cwf-route-bd" title="The route's hardest hex sets the Travel Turn DC">${chips}</div>`;
 }
@@ -3208,7 +3213,7 @@ const BiomeBadge = (() => {
             canvasReady: !!canvas?.ready,
             activeToken: tok?.name ?? null,
             partyTokenFlag: canvas?.scene?.getFlag?.(MOD, "partyToken") ?? null,
-            biome: cls ? `${Domain.plainTerrain(cls)} · DC ${cls.dc}` : null,
+            biome: cls ? `${Domain.plainTerrain(cls)} · DC ${cwfEffBiomeDc(cls.dc)}` : null,
             screenPos: tok ? Canvasry.screen(tok.center.x, tok.center.y) : null,
             inDom: !!(el && document.body.contains(el)),
             hidden: el ? el.classList.contains("cwf-hidden") : "(no element yet)",
@@ -3223,7 +3228,7 @@ const BiomeBadge = (() => {
         const restr = cls.restriction === "noFast" ? `<span class="cwf-restr">No Fast Pace</span>`
             : cls.restriction === "water" ? `<span class="cwf-restr">Boat required</span>`
             : cls.restriction === "block" ? `<span class="cwf-restr">Impassable</span>` : "";
-        const dc = cls.dc != null ? `DC ${cls.dc}` : "—";
+        const dc = cls.dc != null ? `DC ${cwfEffBiomeDc(cls.dc)}` : "—";
         const infra = cls.infrastructure ? `<i class="fa-solid fa-road" title="Road — +1 reach per tile (+2 with a cart)"></i>` : "";
         const river = (cls.river && cls.terrainKey !== "water") ? `<i class="fa-solid fa-water" title="River — +1 reach per tile (+2 with a boat)"></i>` : "";
         const urban = cls.settlement ? `<span class="cwf-restr cwf-urban" title="A settlement / CityHUD site under the party"><i class="fa-solid fa-city"></i> Urban</span>` : "";   // natural terrain stays the main label; Urban rides as a sub-tag
@@ -7055,7 +7060,7 @@ const WayfarerPanel = (() => {
         const dis = isGM ? "" : "disabled";
 
         const here = cls
-            ? `<span class="cwf-pill" data-tier="${Domain.tier(cls)}"><i class="fa-solid ${cls.icon}"></i> ${Domain.plainTerrain(cls)} ${cls.dc != null ? `· DC ${cls.dc}` : ""}</span>
+            ? `<span class="cwf-pill" data-tier="${Domain.tier(cls)}"><i class="fa-solid ${cls.icon}"></i> ${Domain.plainTerrain(cls)} ${cls.dc != null ? `· DC ${cwfEffBiomeDc(cls.dc)}` : ""}</span>
                ${cls.restriction === "noFast" ? `<span class="cwf-pill cwf-warn">No Fast Pace</span>` : ""}
                ${cls.restriction === "water" ? `<span class="cwf-pill cwf-warn">Boat required</span>` : ""}
                ${cls.restriction === "block" ? `<span class="cwf-pill cwf-warn">Impassable</span>` : ""}
