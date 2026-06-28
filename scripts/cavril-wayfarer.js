@@ -292,6 +292,7 @@ const Domain = (() => {
     // water/coast → relief → biome → vegetation. (Cave/Urban aren't derivable from hex data — they'd need a settlement/cave flag.)
     function plainTerrain(cls) {
         if (!cls) return "Wilderness";
+        if (cls.cave) return "Cave";   // GM-tagged cave hex — a manual override (CavrilWayfarer.toggleCave())
         if (cls.restriction === "block") return "Void";
         if (cls.elevation === "water" || cls.terrainKey === "water" || cls.biome === "water") return "Water";
         if (cls.coast) return "Coast";
@@ -831,7 +832,12 @@ const Canvasry = (() => {
     }
 
     function biomeForToken(token) {
-        return token ? biomeForPoint(token.center) : null;
+        const cls = token ? biomeForPoint(token.center) : null;
+        if (cls && token) {
+            try { cls.settlement = !!augurSiteUnder(token); } catch (e) { /* augur optional */ }   // a CityHUD/augur town under the party → an "Urban" sub-tag (the terrain itself stays natural)
+            try { const ck = Hex.key(Hex.offsetOf(token.center)); cls.cave = (Store.sceneState()?.caves || []).includes(ck); } catch (e) { /* caves optional */ }   // GM-tagged cave hexes — CavrilWayfarer.toggleCave()
+        }
+        return cls;
     }
 
     // Classify the hex containing an arbitrary world point (used by the course
@@ -1726,6 +1732,18 @@ const cwfAutoStage = () => true;   // ALWAYS pre-stage a combat encounter in the
 const cwfWanted = () => { try { return Math.max(0, Math.min(5, Number(game.settings.get(MOD, "esWanted")) || 0)); } catch { return 0; } };
 async function cwfSetWanted(n) { try { const v = Math.max(0, Math.min(5, Math.round(Number(n) || 0))); await game.settings.set(MOD, "esWanted", v); if (game.user?.isGM) ui.notifications?.info(`${TITLE}: Wanted level → ${v}.`); try { WayfarerPanel?.render?.(); } catch (e) {} return v; } catch (e) { warn("setWanted failed", e); } }
 const cwfWantedAdjust = (d) => cwfSetWanted(cwfWanted() + (Number(d) || 0));
+// GM toggles the party's current hex as a CAVE — a manual per-scene tag (in scene state) so plainTerrain reads "Cave" there +
+// the CZEPEKU lookup leans toward cavern maps. Toggle again to clear. (Caves aren't classifiable from hex data, so they're authored.)
+async function cwfToggleCave() {
+    if (!game.user?.isGM) return;
+    const tok = Canvasry.activeToken(); if (!tok) { ui.notifications?.warn(`${TITLE}: select the party token first.`); return; }
+    const ck = Hex.key(Hex.offsetOf(tok.center));
+    const caves = new Set(Store.sceneState()?.caves || []);
+    const on = caves.has(ck); if (on) caves.delete(ck); else caves.add(ck);
+    try { await Store.setSceneState({ caves: [...caves] }); } catch (e) { warn("toggleCave persist failed", e); }
+    ui.notifications?.info(`${TITLE}: this hex is ${on ? "no longer a Cave" : "now a Cave"}.`);
+    try { BiomeBadge.update(); WayfarerPanel.renderExternal?.(); } catch (e) { /* noop */ }
+}
 function cwfHeat(cls) {
     const wanted = cwfWanted(); if (wanted <= 0) return 0;
     const road = cls?.infrastructure ? 2 : 0, river = cls?.river ? 1 : 0, hide = Danger.biomeMod(cls);
@@ -3130,6 +3148,7 @@ const BiomeBadge = (() => {
         const infra = cls.infrastructure ? `<i class="fa-solid fa-road" title="Road — +1 reach per tile (+2 with a cart)"></i>` : "";
         const river = (cls.river && cls.terrainKey !== "water") ? `<i class="fa-solid fa-water" title="River — +1 reach per tile (+2 with a boat)"></i>` : "";
         const detail = cls.detail ? `<span class="cwf-detail">${cls.detail}</span>` : "";
+        const urban = cls.settlement ? `<span class="cwf-restr cwf-urban" title="A settlement / CityHUD site under the party"><i class="fa-solid fa-city"></i> Urban</span>` : "";   // natural terrain stays the main label; Urban rides as a sub-tag
         return `
             <div class="cwf-badge-row cwf-main">
                 <i class="fa-solid ${cls.icon}"></i>
@@ -3138,7 +3157,7 @@ const BiomeBadge = (() => {
                 ${infra}${river}
             </div>
             <div class="cwf-badge-row cwf-sub">
-                ${detail}${restr}
+                ${detail}${urban}${restr}
                 <span class="cwf-weather" style="--cwf-wx:${w.color}"><i class="fa-solid ${w.icon}"></i>${MiniCal.label() || w.label}</span>
             </div>`;
     }
@@ -7105,6 +7124,7 @@ Hooks.once("ready", () => {
         roleDc: (biome, role = "forage", extra = {}) => cwfRoleDc(role, { biome, dc: 13, ...extra }),
         wanted: (d) => (d == null ? cwfWanted() : cwfWantedAdjust(d)),   // .wanted() reads · .wanted(1)/.wanted(-1) adjusts the Heat/Wanted score
         setWanted: (n) => cwfSetWanted(n),                                // .setWanted(3) sets it directly (0-5)
+        toggleCave: () => cwfToggleCave(),                                // mark / unmark the party's current hex as a Cave (manual terrain tag)
         merchant: (opts) => MerchantEconomy.roll(opts),
         merchantShop: (opts) => CodexShop.merchantShop(opts),   // generate a merchant → a real Campaign Codex storefront stocked with SRD items
         buildMerchantTables: (force) => CodexShop.buildMerchantTables(force),   // create per-type SRD RollTables (for the Merchant Counter restock widget)
