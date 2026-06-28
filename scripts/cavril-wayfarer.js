@@ -314,6 +314,18 @@ const Domain = (() => {
         if (cls.vegetation === "high") return "Forest";
         return "Plains";
     }
+    // The gameplay ROUTING key for a hex — like plainTerrain() but returns MAP KEYS, not labels. TERRAIN overrides climate
+    // where a system keys on it: a swamp (an ELEVATION, climate often temperate) routes as "swamp", open water as "water";
+    // the GM analogs (tainted=Feywild, wasteland=Cave) win over elevation. Else the climate biome. Use EVERYWHERE a
+    // biome→content map is read (forage / gather / music / encounter tables / decks / combat) so swamps get swamp content.
+    function biomeKey(cls) {
+        if (!cls) return "unknown";
+        if (cls.cave) return "wasteland";
+        if (cls.biome === "tainted" || cls.biome === "wasteland") return cls.biome;
+        if (cls.elevation === "water" || cls.terrainKey === "water" || cls.biome === "water") return "water";
+        if (cls.elevation === "swamp" || cls.biome === "swamp") return "swamp";
+        return cls.biome || cls.terrainKey || "unknown";
+    }
 
     // ---- Weather -----------------------------------------------------------
     const WEATHER = {
@@ -412,7 +424,7 @@ const Domain = (() => {
     }
 
     return {
-        DEFAULT_TERRAIN, DEFAULT_FEATURES, BIOME, ELEV, WEATHER, WEATHER_ORDER, PACE, PACE_ORDER, ROLES, plainTerrain,
+        DEFAULT_TERRAIN, DEFAULT_FEATURES, BIOME, ELEV, WEATHER, WEATHER_ORDER, PACE, PACE_ORDER, ROLES, plainTerrain, biomeKey,
         terrainTable, isBiomeTile, keywordsFromSrc, classify, classifyHexlands, tier,
         rollWeatherKey, spaces, fastProhibited, effPace, hoursPerHex, rollState, rollWhy
     };
@@ -1680,7 +1692,7 @@ function cwfRoleDc(role, gov) {
     const road = !!gov?.infrastructure, nearWater = !!(gov?.river || gov?.coast);
     if (role === "scout") { let d = base; if (dense) d += 3; else if (open) d -= 2; return { dc: Math.max(5, d) }; }
     if (role === "forage") {
-        const f = cwfBiomeForage(biome);
+        const f = cwfBiomeForage(Domain.biomeKey(gov));   // swamp/water route to their own forage DCs (climate biome alone would miss them)
         let food = f.food + night, wat = f.water + night;
         if (nearWater) wat -= 8;                       // a river or coast is a reliable water source (the rare find is easy here)
         if (gov?.vegetation === "high") food -= 2;     // forest mast, berries, game
@@ -1803,7 +1815,7 @@ function cwfAvgPartyLevel() {
 // can supply the encounter by setting ctx.text + ctx.handled; otherwise falls back
 // to the editable per-biome RollTable, then a generic line.
 async function cwfEncounterText(cls, { when = "day", surprised = false } = {}) {
-    const biome = cls?.biome || "unknown", label = cls ? Domain.plainTerrain(cls) : "Wilderness";
+    const biome = Domain.biomeKey(cls), label = cls ? Domain.plainTerrain(cls) : "Wilderness";
     // Carry the EXACT hex's terrain features so the encounter generator can bias map + foes (road → travellers/bandits,
     // river → fords + aquatic) off the precise tile the encounter fired on, not a re-read that might land a hex away.
     const ctx = { module: MOD, when, biome, biomeLabel: label, partyLevel: cwfAvgPartyLevel(), surprised,
@@ -1885,14 +1897,14 @@ async function cwfHeatBeat(cls, biome, { surprised = false, night = false } = {}
 }
 // Discovery (roll 20) — a clue, a way down, a glint of treasure. Non-halting; the GM acts on it when they choose. NOT capped.
 async function cwfDiscoveryBeat(cls) {
-    const biome = cls?.biome || "unknown";
+    const biome = Domain.biomeKey(cls);
     cwfNotify();   // a discovery (the nat-20 "you found something") is a notable "look here" beat → the notification ping
     return { halt: false, kind: "discovery", line: `<i class="fa-solid fa-gem"></i> ${await Tables.drawTerrain(cls, "site", () => Tables.drawEvent("site", cls))}` };
 }
 // The biome TABLE (the non-combat/non-heat/non-discovery rolls): mostly flavour, sometimes an arc beat, sometimes a
 // merchant. Flavour/merchant draw from the per-biome EDITABLE RollTables (so the GM's edits show up in play).
 async function cwfTableBeat(cls, { road = false } = {}) {
-    const biome = cls?.biome || "unknown";
+    const biome = Domain.biomeKey(cls);
     const kind = cwfWeightedPick({ flavor: 10, people: 3, arc: 3, trade: road ? 2 : 1 });
     if (kind === "trade") { const m = await TravelingMerchants.onTrade(cls); if (m) return { halt: false, line: `<i class="fa-solid fa-store"></i> Trade: <b>${cwfEsc(m.name)}</b>${m.title ? ` · ${cwfEsc(m.title)}` : ""} — ${cwfEsc((m.readAloud || "").split(/[.!?]/)[0] || "a trader on the road")}` }; return { halt: false, line: await Tables.drawTerrain(cls, "trade", () => Tables.drawEvent("trade", cls)) }; }
     if (kind === "people") { const n = await NarrativeNPCs.onBeat(cls); if (n) return { halt: false, line: `<i class="fa-solid fa-user"></i> On the road: <b>${cwfEsc(n.name)}</b>${n.title ? ` · ${cwfEsc(n.title)}` : ""} — ${cwfEsc(n.situation || (n.readAloud || "").split(/[.!?]/)[0] || "a traveller")}` }; }
@@ -2504,7 +2516,7 @@ const CWF_BIOME_GATHER = {
     wasteland: "Underground", tainted: "Blightshore", void: "Underground", water: "Coast"
 };
 function cwfGatherEnv(gov) {
-    const b = gov?.biome || "temperate";
+    const b = Domain.biomeKey(gov);
     if (gov?.coast || b === "water") return "Coast";
     if (gov?.elevation === "high") return "Mountains";
     return CWF_BIOME_GATHER[b] || "Forests";
@@ -2530,7 +2542,7 @@ async function cwfResolveTable(ref) {
 }
 // The gather table for a hex: an explicit biomeGatherJSON mapping (name or id) first, else "Gathering: <mapped environment>".
 async function cwfFindGatherTable(gov) {
-    const biome = gov?.biome || "temperate";
+    const biome = Domain.biomeKey(gov);
     let map = {};
     try { const raw = game.settings.get(MOD, "biomeGatherJSON"); if (raw && String(raw).trim()) { const p = JSON.parse(raw); if (p && typeof p === "object") map = p; } } catch (e) { /* ignore bad JSON */ }
     if (map[biome]) { const t = await cwfResolveTable(map[biome]); if (t) return t; }
@@ -2621,7 +2633,7 @@ async function cwfForageCritFail(actorId, cls, target = "food") {
         if (n === 1 || n === 6) { try { await a?.toggleStatusEffect?.("poisoned", { active: true }); } catch (e) { /* noop */ } }
         try { Cinematic.broadcast({ icon: "fa-poison", title: "Bad Harvest", subtitle: `${a?.name || "the forager"} — a herb-gathering mishap`, tone: "danger" }); } catch (e) { /* noop */ }
         try { ChatMessage.create({ content: cwfCardShell("fa-poison", "Bad Harvest", cwfRow(a?.name || "Forager", `<span class="cwf-rr-sk">d14 → ${n}.</span> ${CWF_HERB_MISHAPS[n - 1]}`)) }); } catch (e) { /* noop */ }
-        if (n === 14) { try { await cwfCombatBeat(cls, cls?.biome, { surprised: true }); } catch (e) { warn("herb mishap encounter failed", e); } }
+        if (n === 14) { try { await cwfCombatBeat(cls, Domain.biomeKey(cls), { surprised: true }); } catch (e) { warn("herb mishap encounter failed", e); } }
         return;
     }
     let toxic = true;
@@ -2650,7 +2662,7 @@ async function cwfScoutCritFail(actorId, cls) {
     try { hornet = (await new Roll("1d2").evaluate()).total === 1; } catch { /* default to ambush */ }
     if (hornet) {
         try { Cinematic.broadcast({ icon: "fa-bugs", title: "Hornet's Nest", subtitle: "the Scout walked the party into it — ambush!", tone: "danger" }); } catch (e) { /* noop */ }
-        try { await cwfCombatBeat(cls, cls?.biome, { surprised: true }); } catch (e) { warn("hornet's nest encounter failed", e); }
+        try { await cwfCombatBeat(cls, Domain.biomeKey(cls), { surprised: true }); } catch (e) { warn("hornet's nest encounter failed", e); }
     } else {
         const a = game.actors.get(actorId);
         let dmg = 7; try { dmg = (await new Roll("2d6").evaluate()).total; } catch { /* default 7 */ }
@@ -2998,7 +3010,7 @@ const Music = (() => {
     }
     function arrangementFor(cls) {
         if (!cls) return null;
-        const key = cls.terrainKey === "water" ? "water" : (cls.biome || cls.terrainKey);
+        const key = Domain.biomeKey(cls);   // terrain-aware → a swamp gets the swamp ambience, not its climate's
         const m = map();
         return Object.prototype.hasOwnProperty.call(m, key) ? m[key] : null;
     }
@@ -3020,7 +3032,7 @@ const Music = (() => {
         let m = {};
         const raw = game.settings.get(MOD, "campMapJSON");
         if (raw && String(raw).trim()) { try { m = JSON.parse(raw) || {}; } catch (e) { warn("campMapJSON invalid", e); } }
-        const key = cls?.terrainKey === "water" ? "water" : (cls?.biome || cls?.terrainKey);
+        const key = Domain.biomeKey(cls);
         const arr = m[key] || "campVista";   // campVista = Maestro's "Wilderness Camp"
         try { await globalThis.Maestro.fadeOutChannel?.("music"); } catch (e) { warn("maestro music fade failed", e); }   // drop any music so camp is just the night ambience
         try { await globalThis.Maestro.play("emberEnvironment", { channel: "environment", arrangementId: arr }); _last = "camp:" + arr; }
@@ -4252,7 +4264,7 @@ const Tables = (() => {
     }
     function themedPools(cls, kind) {
         const pools = featurePools(cls, kind);
-        const b = BIOME_THEMES[cls?.biome]?.[kind]; if (b && b.length) pools.push(b);
+        const b = BIOME_THEMES[Domain.biomeKey(cls)]?.[kind]; if (b && b.length) pools.push(b);
         return pools;
     }
     function pickFor(cls, kind, generic) {
@@ -4268,7 +4280,7 @@ const Tables = (() => {
     // hex always uses the biome table. This wires the long-existing FEATURE_THEMES overlay into normal play (was fallback-only).
     async function drawTerrain(cls, kind, fb) {
         try { const feats = featurePools(cls, kind); if (feats.length && Math.random() < 0.5) return rnd(rnd(feats)); } catch (e) { /* fall through to the biome table */ }
-        return await drawBiome(cls?.biome || "unknown", kind, fb);
+        return await drawBiome(Domain.biomeKey(cls), kind, fb);
     }
 
     // PER-BIOME editable RollTables — REAL world documents (folder "Cavril: Wayfarer", named "Cavril {Biome} — {Kind}"),
@@ -4608,7 +4620,7 @@ const CWF_BIOME_THEME = {
     tainted: "undead", void: "undead", water: "deepwater", unknown: "soldiers"
 };
 function cwfCombatTier(apl) { const L = Math.max(1, Math.round(Number(apl) || 1)); return CWF_COMBAT_TIERS.reduce((b, t) => Math.abs(t - L) <= Math.abs(b - L) ? t : b, 1); }   // nearest tier; an even APL ties UP to the harder build
-function cwfThemeForHex(gov) { if (gov?.river || gov?.coast || gov?.terrainKey === "water" || gov?.biome === "water") return "deepwater"; return CWF_BIOME_THEME[gov?.biome || "unknown"] || "soldiers"; }
+function cwfThemeForHex(gov) { if (gov?.river || gov?.coast || gov?.terrainKey === "water" || gov?.biome === "water") return "deepwater"; return CWF_BIOME_THEME[Domain.biomeKey(gov)] || "soldiers"; }
 function cwfCombatThemes() {   // built-in rosters merged with the combatRostersJSON override (per-theme apl cells)
     const out = foundry.utils.deepClone(CWF_COMBAT_THEMES);
     try { const raw = game.settings.get(MOD, "combatRostersJSON"); if (raw && String(raw).trim()) { const p = JSON.parse(raw); if (p && typeof p === "object") for (const [k, v] of Object.entries(p)) { out[k] = out[k] || { label: k, apl: {} }; if (v && v.label) out[k].label = v.label; Object.assign(out[k].apl, (v && v.apl) || v || {}); } } } catch (e) { /* keep built-ins on bad JSON */ }
@@ -4682,11 +4694,12 @@ function cwfDeckFor(gov) {
     if (gov?.biome === "tainted") return "feywild";   // the Tainted (☢ fa-radiation) biome set IS the Feywild — its table covers ALL its terrain, even hills/mountains/roads, so this wins over elevation
     if (gov?.biome === "wasteland") return "underdark";   // the Wasteland (💀 fa-skull) biome set = the GM's Underdark / Caves — same realm override, covers ALL its terrain (wins over elevation)
     if (gov?.infrastructure) return "road";
+    if (gov?.elevation === "swamp" || gov?.biome === "swamp") return "swamp";   // swamp TERRAIN → swamp deck (before river, so a swamp WITH a river still reads as swamp)
     if (gov?.river) return "river";
     if (gov?.coast) return "coastal";
     if (gov?.elevation === "high") return "mountains";
     if (gov?.elevation === "medium") return "hills";
-    return CWF_BIOME_DECK[gov?.biome || "unknown"] || "forest";
+    return CWF_BIOME_DECK[Domain.biomeKey(gov)] || "forest";
 }
 async function cwfBuildDecks({ rebuild = false } = {}) {
     if (!game.user.isGM) return null;
@@ -5306,7 +5319,7 @@ const TravelingMerchants = (() => {
     // Pick a merchant fitting this hex: biome match first, road-preferers on roads, then anyone — avoiding recent repeats.
     function pick(cls) {
         if (!TRAVELING_MERCHANTS.length) return null;
-        const biome = String(cls?.biome || cls?.terrainKey || "").toLowerCase();
+        const biome = String(Domain.biomeKey(cls) || "").toLowerCase();
         const road = !!cls?.infrastructure || !!cls?.river;
         let pool = TRAVELING_MERCHANTS.filter(m => (m.biomes || []).some(b => String(b).toLowerCase() === biome));
         if (road) { const r = pool.filter(m => m.road); if (r.length) pool = r; }
@@ -5380,7 +5393,7 @@ const NarrativeNPCs = (() => {
     const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
     function pick(cls) {
         if (!NARRATIVE_NPCS.length) return null;
-        const biome = String(cls?.biome || cls?.terrainKey || "").toLowerCase();
+        const biome = String(Domain.biomeKey(cls) || "").toLowerCase();
         let pool = NARRATIVE_NPCS.filter(n => (n.biomes || []).some(b => String(b).toLowerCase() === biome));
         if (!pool.length) pool = NARRATIVE_NPCS.slice();
         const fresh = pool.filter(n => !_recent.includes(n.key));
@@ -5569,6 +5582,7 @@ const MerchantEconomy = (() => {
         if (cls?.vegetation === "high") want.push("forest");
         if (cls?.elevation === "high") want.push("mountain");
         if (cls?.biome) want.push(cls.biome);
+        if (cls?.elevation === "swamp" || cls?.biome === "swamp") want.push("swamp");
         const m = ALL.filter(k => TYPES[k].terrain.some(t => want.includes(t)));
         return m.length ? m : ALL;
     }
@@ -6533,7 +6547,7 @@ const Camp = (() => {
             const _nAuto = cwfAutoStage() && !!globalThis.CavrilEncounterStage;
             if (_nAuto) { try { globalThis.CavrilEncounterStage.stageEncounter({ surprised: !firstWatcher }); } catch (e) { warn("night auto-stage failed", e); } }
             else Cinematic.broadcast({ icon: "fa-dragon", title: "Ambushed!", subtitle: `${cls ? Domain.plainTerrain(cls) : "the wild"} · hour ${firstHour}`, tone: "encounter" });
-            const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span>${_nAuto ? "" : cwfStageBtn(!firstWatcher)}<button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn-long" title="Slept in past the fight — full long rest, later wake"><i class="fa-solid fa-bed"></i> Long rest</button><button class="cwf-cardbtn" data-cwf="nightdawn-short" title="Moved out — a short rest's benefit only"><i class="fa-solid fa-mug-hot"></i> Short rest</button></div>`;
+            const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span>${_nAuto ? "" : cwfStageBtn(!firstWatcher)}<button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn-long" title="Slept in past the fight — full long rest, later wake"><i class="fa-solid fa-bed"></i> Slept in → Long rest</button><button class="cwf-cardbtn" data-cwf="nightdawn-short" title="Moved out — a short rest's benefit only"><i class="fa-solid fa-mug-hot"></i> Headed out → Short rest</button></div>`;
             const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls ? Domain.plainTerrain(cls) : "", footerHTML: foot }) }).catch(() => null);
             nightDawnPending = { nextDay, msgId: msg?.id };
             cwfCampFinalize("Night watch — resolve the encounter, then wake at dawn.");   // collapse the camp card so its Resolve can't re-fire
@@ -6542,7 +6556,7 @@ const Camp = (() => {
         }
         // A QUIET night now PAUSES on a beat too — the GM narrates how the night resolved, THEN clicks "Wake at dawn". No more
         // auto-advancing the clock the instant the watch resolves; the resolution gets its own narrated moment first. v0.55.185.
-        const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-moon"></i> The watch held</span><button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn-long" title="Narrated the night — wake the party to a long rest and dawn"><i class="fa-solid fa-sun"></i> Wake at dawn</button></div>`;
+        const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-moon"></i> The watch held</span><button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn-long" title="Slept in — wake the party to a full long rest and dawn"><i class="fa-solid fa-bed"></i> Slept in → Long rest</button><button class="cwf-cardbtn" data-cwf="nightdawn-short" title="Headed out — only a short rest's benefit (HP from hit dice, no exhaustion recovery, no slots)"><i class="fa-solid fa-mug-hot"></i> Headed out → Short rest</button></div>`;
         const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls ? Domain.plainTerrain(cls) : "", footerHTML: foot }) }).catch(() => null);
         nightDawnPending = { nextDay, msgId: msg?.id };
         cwfCampFinalize("Night watch — narrate the night, then wake at dawn.");   // collapse the camp card so Resolve can't re-fire

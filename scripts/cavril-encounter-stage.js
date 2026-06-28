@@ -451,6 +451,7 @@
   function effectiveBiome(cls) {
     if (!cls) return "unknown";
     if (cls.terrainKey === "water" || cls.water === true || cls.elevation === "water") return "water";
+    if (cls.elevation === "swamp" || cls.biome === "swamp") return "swamp";   // swamp TERRAIN → swamp maps + foes (was collapsing to the climate biome, so a temperate swamp got forest maps)
     return cls.biome || "unknown";
   }
 
