@@ -4494,12 +4494,19 @@ function cwfCombatRoster(theme, apl) {
 }
 // Spawn a themed, APL-scaled SRD encounter near the party token (foes hidden for the GM to reveal). The fixed-roster counterpart
 // to CavrilEncounterStage's biome-random muster. Theme defaults to the current hex's biome theme.
-async function cwfSpawnEncounter(theme = null, { apl = null, hidden = true, tok = null } = {}) {
+async function cwfSpawnEncounter(theme = null, { apl = null, hidden = true, tok = null, stage = true } = {}) {
     if (!game.user?.isGM) return null;
     const scene = canvas?.scene; if (!scene) { ui.notifications?.warn(`${TITLE}: no active scene to spawn into.`); return null; }
     tok = tok || Canvasry.activeToken();
     if (!theme) { let gov = null; try { gov = tok ? Canvasry.biomeForToken(tok) : null; } catch (e) { /* default below */ } theme = cwfThemeForHex(gov || {}); }
     const roster = cwfCombatRoster(theme, apl == null ? cwfAvgPartyLevel() : apl);
+    // PREFER the full CZEPEKU pipeline: stage a biome-matched battlemap + drop THESE exact foes (token art + combat music). The
+    // direct SRD-token drop below is only the fallback when the EncounterStage isn't installed. v0.55.177.
+    const ES = globalThis.CavrilEncounterStage;
+    if (stage && ES?.stageEncounter) {
+        try { await ES.stageEncounter({ token: tok, foes: roster.foes, surprised: false }); ui.notifications?.info(`${TITLE}: staging ${roster.themeLabel} · APL ${roster.tier} — ${roster.foes.map(f => `${f.count}× ${f.name}`).join(", ")}.`); return { ...roster, staged: true }; }
+        catch (e) { warn("stage via EncounterStage failed — falling back to a direct spawn", e); }
+    }
     const gs = scene.grid?.size || 100;
     const a = tok ? { x: tok.center.x, y: tok.center.y } : { x: (scene.width || 1000) / 2, y: (scene.height || 1000) / 2 };
     const HOST = globalThis.CONST?.TOKEN_DISPOSITIONS?.HOSTILE ?? -1;

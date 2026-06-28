@@ -1895,6 +1895,26 @@
     return actors;
   }
 
+  // Build foe actors from an EXPLICIT name+count list (Cavril's themed combat rosters) instead of the biome roll — same import
+  // path as rollMonsters (compendium → flagged world actor, reused), so these foes ride the full stage pipeline (CZEPEKU map +
+  // token art + music). Unmatched names are skipped + warned. v0.55.177.
+  async function actorsByNames(specs) {
+    const pack = game.packs?.get(CFG.monsterPack); if (!pack) { warn(`monster pack ${CFG.monsterPack} missing`); return []; }
+    let idx; try { idx = await pack.getIndex(); } catch (e) { warn("getIndex failed", e); return []; }
+    const folder = await ensureFolder("Encounter Monsters", "Actor");
+    const out = [];
+    for (const s of (specs || [])) {
+      const key = String(s.name || "").toLowerCase();
+      const e = idx.find(x => String(x.name).toLowerCase() === key) || idx.find(x => String(x.name).toLowerCase().includes(key));
+      if (!e) { warn(`foe not in ${CFG.monsterPack}: ${s.name}`); continue; }
+      const srcId = `${pack.collection}.${e._id}`;
+      let actor = game.actors?.find(a => { try { return a.getFlag?.("cavril-wayfarer", "esSrcId") === srcId; } catch { return false; } });
+      if (!actor) { try { const data = (await pack.getDocument(e._id)).toObject(); data.folder = folder?.id ?? null; foundry.utils.setProperty(data, "flags.cavril-wayfarer.esSrcId", srcId); actor = await Actor.create(data); } catch (err) { warn(`import "${s.name}" failed`, err); } }
+      if (actor) for (let i = 0; i < Math.max(1, (s.count | 0) || 1); i++) out.push(actor);
+    }
+    return out;
+  }
+
   // Diagnostics: surface mismatches between the party-group members and the player-owned
   // characters — the likely source of duplicate combatants (an encounter actor that isn't the
   // same identity the sheet / DDB rolls initiative for). Run CavrilEncounterStage.diagnoseParty().
@@ -2822,7 +2842,7 @@
     let actors = [], foeTokens = [];
     const gmIds = game.users.filter(u => u.isGM).map(u => u.id);
     let _stagingMsg = null;
-    if ((opts.dropMonsters ?? CFG.dropMonsters) && type === "combat") { try { actors = await rollMonsters(cls); } catch (e) { warn("roll foes failed", e); } }
+    if ((opts.dropMonsters ?? CFG.dropMonsters) && type === "combat") { try { actors = (opts.foes && opts.foes.length) ? await actorsByNames(opts.foes) : await rollMonsters(cls); } catch (e) { warn("roll foes failed", e); } }   // opts.foes = an explicit [{name,count}] roster (Cavril's themed builds) overrides the biome roll
     const hook = encounterHook(cls, actors);
     const foeList = actors.map(a => esc(a.name)).join(", ") || "—";
     if (!autoEnter && actors.length) { try { _stagingMsg = await ChatMessage.create({ content: cwfEnterCard(null, "", "", foeList, hook, !!opts.surprised, true), whisper: gmIds }); ui.notifications?.info(`Encounter incoming — ${actors.length} foe${actors.length === 1 ? "" : "s"}. Read the whispered prompt while the map loads.`); } catch (e) {} shiftTension(); }   // music slides tense AS the scene loads — the players' only cue; the initiative cinematic waits for the manual Enter
