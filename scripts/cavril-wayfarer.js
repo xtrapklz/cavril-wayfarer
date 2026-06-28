@@ -4654,9 +4654,10 @@ async function cwfDecksData() {
 const CWF_BIOME_DECK = {
     temperate: "forest", boreal: "forest", jungle: "jungle", savanna: "grassland", swamp: "swamp",
     desert: "desert", tundra: "mountains", frozen: "mountains", volcanic: "mountains", wasteland: "desert",
-    tainted: "underdark", void: "underdark", water: "lake", unknown: "forest"
+    tainted: "feywild", void: "underdark", water: "lake", unknown: "forest"
 };
 function cwfDeckFor(gov) {
+    if (gov?.biome === "tainted") return "feywild";   // the Tainted (☢ fa-radiation) biome set IS the Feywild — its table covers ALL its terrain, even hills/mountains/roads, so this wins over elevation
     if (gov?.infrastructure) return "road";
     if (gov?.river) return "river";
     if (gov?.coast) return "coastal";
