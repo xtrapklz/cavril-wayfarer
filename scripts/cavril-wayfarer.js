@@ -4735,6 +4735,25 @@ async function cwfSpawnQuest(nodeId, opts = {}) {
     if (!node) { ui.notifications?.warn(`${TITLE}: no quest node "${nodeId}" — try e.g. MOUNTAINS_01.`); return null; }
     return cwfSpawnEncounter(cwfQuestTheme(node), opts);
 }
+// Explicit trade type per hand-crafted merchant (GM-authored, option b) → each routes through a real CodexShop storefront,
+// stocked from that trade's SRD pools + a trade-matched restock table, linked back to the NPC. Story NPCs aren't listed → no shop.
+const CWF_MERCHANT_TYPE = {
+    "maven-coll-the-mending-widow": "peddler",
+    "hessenmaw-the-leavings-reliquer": "relicdealer",
+    "annet-of-the-tenth": "cartographer",
+    "the-vinegar-mendicant": "apothecary",
+    "quill-the-bark-pedlar": "relicdealer",
+    "the-salt-widow": "provisioner",
+    "the-tallowright": "relicdealer",
+    "brohm-cinderhauf": "relicdealer",
+    "nettle-the-lamplit": "peddler",
+    "voss-greel-the-tooth-counter": "fence",
+    "the-tallowman": "relicdealer",
+    "mother-coin": "general",
+    "bartholomew-crane": "peddler",
+    "nan-threnody": "herbalist",
+    "the-bell-wife": "cartographer",
+};
 async function cwfRoadCastActor(m, kind, { force = false } = {}) {
     if (!game.user?.isGM || !m?.name) return null;
     let actor = (game.actors || []).find(a => { try { return a.getFlag(MOD, "roadCast") === m.name; } catch (e) { return false; } }) || null;
@@ -4990,6 +5009,22 @@ async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find o
         // BUY-BACK: a Trade-In Counter on EVERY NPC's Inventory tab, so the party can sell items back. CC's TradeInWidget →
         // storage key "tradein" (class name minus "Widget", lowercased), registry name "Trade-In Counter". Defaults are fine.
         try { await cwfCodexWidget(doc, "Trade-In Counter", "inventory", "tradein", {}); } catch (e) { warn("trade-in wire failed", e); }
+        // STOREFRONT (merchants only, option b): a real Campaign Codex shop stocked from this merchant's TRADE pools (SRD items) +
+        // a trade-matched restock table, LINKED back to this NPC — so the journal carries real, sellable goods (your #6/#7).
+        try {
+            const typeKey = (kind === "merchant") ? CWF_MERCHANT_TYPE[m.key] : null;
+            const typeCfg = typeKey && MerchantEconomy.TYPES?.[typeKey];
+            const hasShop = ((doc.getFlag(CC_NS, "data")?.linkedShops) || []).length > 0;
+            if (typeCfg && !hasShop && CodexShop?.createShop && game.campaignCodex?.linkShopToNPC) {
+                const want = typeCfg.count ? typeCfg.count[1] : 8;
+                const picks = await CodexShop.pickStock(typeCfg, cwfAvgPartyLevel(), want);
+                const shop = await CodexShop.createShop(`${m.name} — Wares`, picks, { markup: typeCfg.markup ?? 1.1, description: `<p><em>${cwfEsc(m.title ? `${m.name}, ${m.title}` : m.name)}'s wares.</em></p>` });
+                if (shop) {
+                    await game.campaignCodex.linkShopToNPC(shop, doc);
+                    try { const table = await CodexShop.tableForType(typeKey); if (table) await cwfCodexWidget(shop, "Merchant Counter", "widgets", "merchantcounter", { restockTables: [{ uuid: table.uuid, multiplier: "1d4", name: table.name, img: table.img || "icons/svg/d20.svg" }] }); } catch (e) { warn("storefront restock wire failed", e); }
+                }
+            }
+        } catch (e) { warn("storefront wire failed", e); }
     } catch (e) { warn("populate road-cast journal failed", e); }
     return doc;
 }
