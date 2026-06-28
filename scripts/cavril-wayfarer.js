@@ -4713,10 +4713,25 @@ async function cwfSpawnQuest(nodeId, opts = {}) {
     if (!node) { ui.notifications?.warn(`${TITLE}: no quest node "${nodeId}" — try e.g. MOUNTAINS_01.`); return null; }
     return cwfSpawnEncounter(cwfQuestTheme(node), opts);
 }
-async function cwfRoadCastActor(m, kind) {
+async function cwfRoadCastActor(m, kind, { force = false } = {}) {
     if (!game.user?.isGM || !m?.name) return null;
     let actor = (game.actors || []).find(a => { try { return a.getFlag(MOD, "roadCast") === m.name; } catch (e) { return false; } }) || null;
-    if (actor) return actor;
+    if (actor) {
+        if (!force) return actor;
+        // Force-rebuild: bring the EXISTING actor up to the current dossier — apply the SUGGESTED ability scores (so the sheet
+        // matches the journal's "Suggested" block), refresh the token art, and strip the old filler loot earlier builds left.
+        try {
+            const dossier = cwfNpcDossier(m, kind), upd = {};
+            for (const [k, v] of Object.entries(dossier.attrs)) upd[`system.abilities.${k}.value`] = v;
+            let img = actor.img;
+            try { const tk = await globalThis.CavrilEncounterStage?.tokenArtFor?.([cwfShortSpecies(m.species || ""), m.title || "", kind].filter(Boolean)); if (tk?.url) img = tk.url; } catch (e) { /* offline */ }
+            if (img && img !== actor.img) { upd.img = img; upd["prototypeToken.texture.src"] = img; }
+            await actor.update(upd);
+            const junk = actor.items.filter(it => it.type === "loot" && /(’s|'s) effects$|^Traveler's sundries$/.test(it.name)).map(it => it.id);
+            if (junk.length) await actor.deleteEmbeddedDocuments("Item", junk);
+        } catch (e) { warn("road-cast actor refresh failed", e); }
+        return actor;
+    }
     let img = "icons/svg/mystery-man.svg";
     try { const tk = await globalThis.CavrilEncounterStage?.tokenArtFor?.([cwfShortSpecies(m.species || ""), m.title || "", kind].filter(Boolean)); if (tk?.url) img = tk.url; } catch (e) { /* offline */ }
     if (img === "icons/svg/mystery-man.svg") { const bm = cwfRoadCastToken(m); if (bm) img = bm; }
@@ -4788,7 +4803,7 @@ function cwfNpcDossier(m, kind) {
 }
 // Render the dossier as a City-HUD-styled description: the metric strip + OCEAN pips + suggested ability scores up top (the
 // HUD's header stack), then color-themed, iconed sections in the HUD's own palette. Raw HTML — CC enriches + injects it as-is.
-function cwfNpcDossierHTML(m, kind, d) {
+function cwfNpcDossierHTML(m, kind, d, hasAssoc = false) {
     const e = (s) => cwfEsc(s);
     const ul = (arr) => arr?.length ? `<ul>${arr.map(x => `<li>${e(x)}</li>`).join("")}</ul>` : "";
     const MET = { health: { l: "Health", i: "fa-heart-pulse", c: "#ef4444" }, happiness: { l: "Happiness", i: "fa-face-smile", c: "#f97316" }, wealth: { l: "Wealth", i: "fa-coins", c: "#fbbf24" }, favor: { l: "Culture", i: "fa-landmark", c: "#22c55e" }, attack: { l: "Offense", i: "fa-khanda", c: "#3b82f6" }, ac: { l: "Defense", i: "fa-shield-halved", c: "#a855f7" } };
@@ -4809,7 +4824,7 @@ function cwfNpcDossierHTML(m, kind, d) {
         + (m.readAloud ? sec("fa-scroll", "#22c55e", "Bio", `<blockquote>${e(m.readAloud)}</blockquote>${m.situation ? `<p>${e(m.situation)}</p>` : ""}`) : "")
         + sec("fa-masks-theater", "#c084fc", "Roleplay cues", [m.voice ? `<p><i class="fa-solid fa-comment-dots" style="color:#38bdf8"></i> <b>Voice.</b> ${e(m.voice)}</p>` : "", m.appearance ? `<p><i class="fa-solid fa-hand-sparkles" style="color:#f472b6"></i> <b>Manner.</b> ${e(m.appearance)}</p>` : "", m.wants ? `<p><i class="fa-solid fa-bullseye" style="color:#fbbf24"></i> <b>Wants.</b> ${e(m.wants)}</p>` : "", (m.twist || m.lore) ? `<p><i class="fa-solid fa-user-secret" style="color:#ef4444"></i> <b>Secret.</b> <span style="opacity:.7">(GM — see Notes.)</span></p>` : ""].join(""))
         + sec("fa-map-pin", "#38bdf8", "Places & faith", `<p><i class="fa-solid fa-house" style="color:#38bdf8"></i> <b>Has lived:</b> ${e(d.lived.join("; "))}.</p><p><i class="fa-solid fa-pray" style="color:#c084fc"></i> <b>Faith:</b> ${e(d.faith)}.</p><p><i class="fa-solid fa-dice" style="color:#22c55e"></i> <b>Hobby:</b> ${e(d.hobby)}.</p>`)
-        + sec("fa-people-roof", "#f472b6", "Family & friends", `<p><i class="fa-solid fa-people-roof" style="color:#f472b6"></i> <b>Family.</b> ${e(family)}.</p><p style="opacity:.7;font-size:12px"><i class="fa-solid fa-user-group" style="color:#a78bfa"></i> Associates link on the <b>Associates</b> tab; the <b>connections graph</b> visualises them.</p>`)
+        + sec("fa-people-roof", "#f472b6", "Family & friends", `<p><i class="fa-solid fa-people-roof" style="color:#f472b6"></i> <b>Family.</b> ${e(family)}.</p>${hasAssoc ? `<p style="opacity:.7;font-size:12px"><i class="fa-solid fa-user-group" style="color:#a78bfa"></i> Associates link on the <b>Associates</b> tab; the <b>connections graph</b> visualises them.</p>` : ""}`)
         + sec("fa-shop", "#f97316", "Carries / sells", ul(d.loot) + (m.stock?.length ? `<p style="opacity:.8;font-size:12px;margin-top:4px"><b>Wares:</b></p>${ul(m.stock)}` : ""))
         + (m.buys?.length ? sec("fa-hand-holding-dollar", "#fbbf24", "Pays well for", ul(m.buys)) : "")
         + (m.rumour ? sec("fa-comment", "#06b6d4", "Rumour", `<p>“${e(m.rumour)}”</p>`) : "")
@@ -4919,7 +4934,7 @@ async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find o
     if (!game.campaignCodex || !game.user?.isGM || !m) return null;
     let doc = (game.journal || []).find(j => { try { return j.getFlag(CC_NS, "type") === "npc" && j.name === m.name; } catch (e) { return false; } });
     if (doc && !force) return doc;   // force = re-populate an existing journal (so a rebuild upgrades the WHOLE cast to the latest dossier)
-    const actor = await cwfRoadCastActor(m, kind);   // a real linked sheet behind the journal — durable art + tiered inventory
+    const actor = await cwfRoadCastActor(m, kind, { force });   // a real linked sheet behind the journal — durable art + tiered inventory; force re-applies the suggested abilities + refreshes art
     if (!doc) { try { doc = await game.campaignCodex.createNPCJournal(actor || null, m.name, false); } catch (e) { warn("createNPCJournal failed", e); return null; } }
     if (!doc) return null;
     const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
@@ -4928,7 +4943,9 @@ async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find o
     // The description is now the full City-HUD-style DOSSIER (metric strip + OCEAN + attributes + themed sections), generated
     // from a seeded dossier of editable suggestions woven together with the hand-authored read-aloud / voice / hook / stock.
     const dossier = cwfNpcDossier(m, kind);
-    const desc = cwfNpcDossierHTML(m, kind, dossier);
+    let assoc = [];
+    try { assoc = cwfRoadCastLinks(m, [m.lore, m.hook, m.readAloud, m.appearance].join(" ")) || []; } catch (e) { warn("road-cast links failed", e); }   // up here so the dossier GATES its "see Associates tab" line on whether any actually exist
+    const desc = cwfNpcDossierHTML(m, kind, dossier, assoc.length > 0);
     const outc = Array.isArray(m.outcomes) ? m.outcomes.join(" · ") : m.outcomes;
     const notes = `<p><strong>The truth — GM only.</strong></p>`
         + (m.lore ? `<p>${esc(m.lore)}</p>` : "")
@@ -4936,7 +4953,7 @@ async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find o
         + (outc ? `<p><strong>If the party helps / refuses / exploits.</strong> ${esc(outc)}</p>` : "");
     try {
         const data = doc.getFlag(CC_NS, "data") || {};
-        const assoc = cwfRoadCastLinks(m, [m.lore, m.hook, m.readAloud, m.appearance].join(" "));   // linked allies → both the Associates tab AND the quest's related-docs
+        // `assoc` (linked allies → the Associates tab + the quest's related-docs) was computed above so the dossier could gate its Associates line; reused here.
         const quest = await cwfRoadCastQuest(m, doc, assoc, force).catch(() => null);   // hook → a trackable Quest-Board entry, this NPC as giver, links threaded in
         const tags = Array.from(new Set([cwfShortSpecies(m.species || ""), kind === "merchant" ? "merchant" : "road NPC", ...(m.biomes || []), (String(m.arc || "").match(/Arc [A-Z]/)?.[0])].map(t => String(t || "").trim()).filter(Boolean)));
         await doc.setFlag(CC_NS, "data", { ...data, description: desc, notes, tags, associates: assoc, linkedQuests: quest ? [quest.uuid] : (data.linkedQuests || []) });
