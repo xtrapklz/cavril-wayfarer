@@ -552,7 +552,7 @@ const Store = (() => {
         g.register(MOD, "sfxFoot", { name: "Footsteps sound", hint: "Sound file (or a Maestro soundboard folder ending in /) for travel on foot. Blank = silent.", scope: "world", config: false, type: String, default: "" });
         g.register(MOD, "sfxCart", { name: "Cart sound", hint: "Sound for a cart on a road (Boat/Cart on + road). Blank = silent.", scope: "world", config: false, type: String, default: "" });
         g.register(MOD, "sfxBoat", { name: "Boat sound", hint: "Sound for a boat on a river (Boat/Cart on + river). Blank = silent.", scope: "world", config: false, type: String, default: "" });
-        g.register(MOD, "notifySfx", { name: "Notification ping", hint: "Optional Cavril: Maestro cue (or a soundboard folder ending in /) played as a generic 'something happened' ping — e.g. your notifications.ogg. A ref like sfx:notifications.ogg, preset:<tag>, or a folder. Blank = silent. Set it in the 🎵 Sound cues menu; fired via CavrilWayfarer.notify().", scope: "world", config: false, type: String, default: "" });
+        g.register(MOD, "notifySfx", { name: "Notification sound", hint: "A sound file played as a generic 'something happened' notification ping — click the folder icon and browse to your notifications.ogg (or any .ogg/.mp3/.wav). Blank = silent. Played to the whole table; fired via CavrilWayfarer.notify().", scope: "world", config: true, type: String, default: "", filePicker: "audio" });
         // Movement penalties for rugged terrain (separate from the biome DC).
         g.register(MOD, "terrainPenalties", { name: "Slow rugged terrain", hint: "Hills, mountains and wetlands cost extra movement (so the party tends to path around them). Does not change the biome DC.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "terrainPenaltyJSON", { name: "Terrain movement penalty (advanced)", hint: 'Optional JSON of extra movement cost by elevation, e.g. {"flat":0,"medium":1,"high":2,"swamp":1}. Blank uses those defaults (hills +1, mountains +2, wetland +1).', scope: "world", config: true, type: String, default: "" });
@@ -1341,8 +1341,7 @@ const CWF_SOUND_SETTINGS = [
     { key: "sfxCineDusk", label: "Make Camp (dusk)" }, { key: "sfxCineNight", label: "Night Watch" }, { key: "sfxCineDawn", label: "Dawn" },
     { key: "sfxCineWeather", label: "Weather change" }, { key: "sfxCineTravel", label: "Biome / road turn" },
     { key: "sfxDangerUp", label: "Danger rising" }, { key: "sfxDangerDown", label: "Danger easing" },
-    { key: "sfxFoot", label: "Footsteps (on foot)" }, { key: "sfxCart", label: "Cart (road)" }, { key: "sfxBoat", label: "Boat (river)" },
-    { key: "notifySfx", label: "Notification ping" }
+    { key: "sfxFoot", label: "Footsteps (on foot)" }, { key: "sfxCart", label: "Cart (road)" }, { key: "sfxBoat", label: "Boat (river)" }
 ];
 // The Maestro cues we can offer in the dropdown: the GM's favourited + custom-named cues (kind:id → label), e.g. preset:storm.
 function cwfSoundCues() {
@@ -1755,11 +1754,12 @@ async function cwfToggleCave() {
 // the 🎵 Sound cues menu. Public: CavrilWayfarer.notify(). Wire it into any beat you want to chime (tell me which).
 function cwfNotify() {
     try {
-        const ref = cwfMaestroRef(game.settings.get(MOD, "notifySfx") || "");
-        if (!ref) return;
-        const M = game.modules.get("cavril-maestro")?.api || globalThis.Maestro;
-        if (ref.endsWith("/") && M?.playRandomInFolder) M.playRandomInFolder(ref);
-        else M?.triggerRef?.(ref);
+        const src = String(game.settings.get(MOD, "notifySfx") || "").trim();
+        if (!src) return;
+        const AH = foundry.audio?.AudioHelper || globalThis.AudioHelper;   // play the chosen file to the WHOLE table (2nd arg = broadcast)
+        if (AH?.play) { AH.play({ src, volume: 0.8, autoplay: true, loop: false }, true); return; }
+        const M = game.modules.get("cavril-maestro")?.api || globalThis.Maestro;   // fallback via Maestro if AudioHelper is unavailable
+        M?.playOneShot?.(src) ?? M?.triggerRef?.(cwfMaestroRef(src));
     } catch (e) { /* noop */ }
 }
 function cwfHeat(cls) {
