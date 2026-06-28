@@ -3179,6 +3179,7 @@
     // Pure helpers exposed for the self-test harness + live debugging (no side effects).
     _test: { effectiveBiome, candidateTags, scoreItem, mismatchTags, pickVariant, scatterPoints, dominantType, isExcluded, hasStructure, isWilderness, mergedRoster, composeEncounter, BIOME_CREATURES, BIOME_ROSTER, COMPOSITIONS, TYPE_MUSIC, BIOME_TAGS, WET_MISMATCH },
     getCatalog, pickMap, scenePayload, importableFor, stageMapByKey, previewBiomePools, buildBiomeIndex, biomeIndexStatus, openBiomeReview, openMapGrid, swapMap, swapSceneMap, mapPreviewProbe, storyMaps, storyTags, stageStoryMap, dumpCatalog, applyCuration, previewMap, czepekuProbe,
+    tagMatch: { candidateTags, scoreItem, mismatchTags, pickVariant },   // the CZEPEKU tag-scoring engine, exposed so CityHUD's Dresser can share ONE matcher instead of duplicating it (interconnection #2)
     tokenCatalog, tokenProbe, tokenPacks, tokenSubjects, tokenSample, tokenFor, tokenUrl,   // CZEPEKU NPC art: tokenSubjects() lists the character vocab, tokenFor(keywords) matches a face
     tokenArtFor, saveExternalImage, stageInterior, sceneImage,   // durable art (download → local path) + keyword-matched enterable interior scenes for storefronts
     tokenRank, tokenPick, openTokenPicker, closeTokenPicker,     // CZEPEKU token picker: scored search (tokenRank), best/wildcard single pick (tokenPick), GM dialog (openTokenPicker)

@@ -2,10 +2,10 @@
     "id": "cavril-wayfarer",
     "title": "Cavril: Wayfarer",
     "description": "Guided hexcrawl travel for Foundry. Reads the hex under the party token (Augur: Hexlands tile flags, with filename fallbacks) for its biome, travel DC and movement restriction; plan a course over reachable hexes at a chosen pace and auto-move the party. Run a guided group check — claim Navigator/Scout/Forager from the party group actor, swap skills per situation, roll in Foundry or auto-fill from D&D Beyond (via ddb-roll-cards), resolve vs the route's governing DC drawing editable RollTables. Party supplies are summed from member sheets + the group's shared stash and consumed on camp; weather and the clock come from Mini Calendar. Softly integrates with Augur: Nexus sites.",
-    "version": "0.55.188",
+    "version": "0.55.189",
     "url": "https://github.com/xtrapklz/cavril-wayfarer",
     "manifest": "https://github.com/xtrapklz/cavril-wayfarer/releases/latest/download/module.json",
-    "download": "https://github.com/xtrapklz/cavril-wayfarer/releases/download/v0.55.188/cavril-wayfarer.zip",
+    "download": "https://github.com/xtrapklz/cavril-wayfarer/releases/download/v0.55.189/cavril-wayfarer.zip",
     "readme": "https://github.com/xtrapklz/cavril-wayfarer/blob/main/README.md",
     "bugs": "https://github.com/xtrapklz/cavril-wayfarer/issues",
     "compatibility": {
