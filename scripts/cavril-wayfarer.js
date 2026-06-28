@@ -528,6 +528,7 @@ const Store = (() => {
         g.register(MOD, "biomeForageWeightsJSON", { name: "Forage draw weights by biome (advanced)", hint: 'Optional JSON of per-biome forage-DRAW weights {food,water,herb} — the relative odds each draw turns up food, a water source, or a herb. e.g. {"desert":{"food":2,"water":1,"herb":2},"swamp":{"food":4,"water":6,"herb":4}}. Higher = likelier. A river/coast/water hex adds +5 water on top; dense forest +2 food. Blank uses the defaults.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "gatherIngredients", { name: "Forage gathers crafting ingredients", hint: "On a HIGH forage roll (a crit, or well over the DC) also draw a craftable INGREDIENT from this biome's gather table and deposit it in the shared party GROUP inventory (or the Forager's own pack if there's no group actor). Separate from rations & water — never touches the supply counts. Default on.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "biomeGatherJSON", { name: "Biome → gather table (advanced)", hint: 'Optional JSON to remap a biome to a specific RollTable name or id, e.g. {"jungle":"Gathering: Swamp"}. Blank uses the built-in map to Potion-Crafting-&-Gathering\'s "Gathering: <Environment>" tables (searched in world AND compendiums): temperate→Grasslands, boreal/jungle→Forests, savanna→Savannahs, swamp→Swamp, desert→Desert, tundra/frozen→Arctic, volcanic→Volcanos, wasteland/tainted→Blightshore, void→Underground, water & coast→Coast, high elevation→Mountains.', scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "combatRostersJSON", { name: "Combat encounter rosters (advanced)", hint: 'Optional JSON to override the themed APL combat builds, e.g. {"predators":{"apl":{"5":"1 Bulette | 2 Manticore"}}}. Cell format: "N Name, N Name"; use " | " for alternative builds (one is rolled). Themes: soldiers, fey, predators, undead, deepwater, caves, titans. Names match the dnd5e SRD. Blank uses the built-in 7-theme deck.', scope: "world", config: true, type: String, default: "" });
         // Cavril: Maestro biome → environment soundscape.
         g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Set this visually with the “Assign biome ambience…” button above (or right-click the ♪ on the travel HUD). Advanced: raw JSON of biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay"}. Blank = defaults; "" = silence for that biome.', scope: "world", config: true, type: String, default: "" });
@@ -4448,6 +4449,73 @@ async function cwfFindStatblock(name) {
     }
     cwfFindStatblock._cache[key] = null; return null;
 }
+/* =========================================================================
+ * COMBAT ENCOUNTER THEMES — fixed, APL-scaled foe rosters (the GM-authored 7-theme deck).
+ * A FIXED-BUILD layer complementing the EncounterStage's biome-random picker: when a quest
+ * combat or a themed random fires, spawn EXACTLY this build for the party's level. Names
+ * resolve against the dnd5e SRD via cwfFindStatblock (case-insensitive, partial-OK). Editable
+ * live via the combatRostersJSON setting. Cell format: "N Name, N Name"; " | " offers alternative
+ * builds (one is rolled). APL snaps to the nearest of 1/3/5/7/9/11/13/15. v0.55.171.
+ * ========================================================================= */
+const CWF_COMBAT_TIERS = [1, 3, 5, 7, 9, 11, 13, 15];
+const CWF_COMBAT_THEMES = {
+    soldiers:  { label: "Soldiers & Scoundrels", apl: { 1: "3 Bandit, 1 Mastiff", 3: "1 Spy, 3 Thug", 5: "1 Bandit Captain, 2 Veteran", 7: "1 Mage, 3 Veteran", 9: "1 Gladiator, 4 Veteran", 11: "1 Assassin, 1 Mage, 3 Gladiator", 13: "2 Assassin, 1 Archmage", 15: "1 Archmage, 2 Assassin, 2 Gladiator" } },
+    fey:       { label: "Wild Fey & Blight",     apl: { 1: "4 Twig Blight, 1 Giant Poisonous Snake", 3: "1 Green Hag, 2 Awakened Tree", 5: "1 Shambling Mound, 2 Dryad", 7: "3 Green Hag", 9: "1 Treant, 2 Shambling Mound", 11: "3 Green Hag, 1 Treant", 13: "3 Treant, 1 Archmage", 15: "4 Treant, 2 Green Hag" } },
+    predators: { label: "Apex Predators",        apl: { 1: "2 Giant Badger, 1 Dire Wolf", 3: "1 Owlbear, 1 Giant Boar", 5: "1 Bulette | 1 Manticore, 2 Griffon", 7: "2 Chimera | 1 Hydra", 9: "1 Triceratops, 2 Bulette", 11: "1 Roc | 2 Remorhaz", 13: "1 Purple Worm", 15: "1 Purple Worm, 2 Roc" } },
+    undead:    { label: "The Restless Dead",     apl: { 1: "4 Skeleton, 1 Zombie", 3: "1 Wight, 4 Skeleton", 5: "2 Mummy, 2 Ghoul", 7: "1 Ghost, 3 Wight", 9: "3 Mummy, 2 Wraith", 11: "1 Vampire, 2 Vampire Spawn", 13: "1 Mummy Lord", 15: "1 Mummy Lord, 2 Mummy, 2 Wraith" } },
+    deepwater: { label: "Deep Waters",           apl: { 1: "3 Giant Crab, 1 Swarm of Quippers", 3: "3 Sahuagin, 1 Giant Crocodile", 5: "1 Water Elemental, 2 Merrow", 7: "1 Chuul, 3 Merrow", 9: "3 Water Elemental, 2 Chuul", 11: "1 Marid, 2 Water Elemental", 13: "1 Storm Giant", 15: "2 Storm Giant" } },
+    caves:     { label: "Cave Dwellers",         apl: { 1: "2 Giant Wolf Spider, 2 Goblin", 3: "2 Grick, 1 Swarm of Insects", 5: "1 Roper", 7: "1 Drider, 2 Giant Spider", 9: "3 Umber Hulk", 11: "1 Behir", 13: "1 Behir, 3 Umber Hulk", 15: "2 Behir" } },
+    titans:    { label: "Titans of the Realm",   apl: { 1: "1 Brass Dragon Wyrmling | 1 Half-Ogre", 3: "1 Black Dragon Wyrmling, 2 Cultist", 5: "1 Young White Dragon | 1 Frost Giant", 7: "1 Young Black Dragon, 2 Cult Fanatic", 9: "1 Young Red Dragon | 2 Frost Giant", 11: "1 Adult Brass Dragon | 3 Frost Giant", 13: "1 Adult Blue Dragon", 15: "1 Adult Red Dragon" } }
+};
+// Default biome → theme (a quest or the GM can override per-fight). A water FEATURE (river/coast) pulls Deep Waters regardless.
+const CWF_BIOME_THEME = {
+    temperate: "soldiers", boreal: "fey", jungle: "predators", savanna: "predators", swamp: "deepwater",
+    desert: "undead", tundra: "predators", frozen: "predators", volcanic: "titans", wasteland: "undead",
+    tainted: "undead", void: "undead", water: "deepwater", unknown: "soldiers"
+};
+function cwfCombatTier(apl) { const L = Math.max(1, Math.round(Number(apl) || 1)); return CWF_COMBAT_TIERS.reduce((b, t) => Math.abs(t - L) <= Math.abs(b - L) ? t : b, 1); }   // nearest tier; an even APL ties UP to the harder build
+function cwfThemeForHex(gov) { if (gov?.river || gov?.coast || gov?.terrainKey === "water" || gov?.biome === "water") return "deepwater"; return CWF_BIOME_THEME[gov?.biome || "unknown"] || "soldiers"; }
+function cwfCombatThemes() {   // built-in rosters merged with the combatRostersJSON override (per-theme apl cells)
+    const out = foundry.utils.deepClone(CWF_COMBAT_THEMES);
+    try { const raw = game.settings.get(MOD, "combatRostersJSON"); if (raw && String(raw).trim()) { const p = JSON.parse(raw); if (p && typeof p === "object") for (const [k, v] of Object.entries(p)) { out[k] = out[k] || { label: k, apl: {} }; if (v && v.label) out[k].label = v.label; Object.assign(out[k].apl, (v && v.apl) || v || {}); } } } catch (e) { /* keep built-ins on bad JSON */ }
+    return out;
+}
+function cwfCombatRoster(theme, apl) {
+    const themes = cwfCombatThemes();
+    const th = themes[theme] || themes.soldiers;
+    const tier = cwfCombatTier(apl);
+    const cell = th.apl[tier] || th.apl[1] || "";
+    const alts = String(cell).split("|").map(s => s.trim()).filter(Boolean);
+    const alt = alts[Math.floor(Math.random() * alts.length)] || "";   // roll one of the " | " alternative builds
+    const foes = alt.split(",").map(s => { const m = s.trim().match(/^(\d+)\s*[x×]?\s+(.+)$/i); return m ? { count: Math.max(1, Number(m[1])), name: m[2].trim() } : null; }).filter(Boolean);
+    return { theme, themeLabel: th.label, tier, apl: Math.round(Number(apl) || 1), foes };
+}
+// Spawn a themed, APL-scaled SRD encounter near the party token (foes hidden for the GM to reveal). The fixed-roster counterpart
+// to CavrilEncounterStage's biome-random muster. Theme defaults to the current hex's biome theme.
+async function cwfSpawnEncounter(theme = null, { apl = null, hidden = true, tok = null } = {}) {
+    if (!game.user?.isGM) return null;
+    const scene = canvas?.scene; if (!scene) { ui.notifications?.warn(`${TITLE}: no active scene to spawn into.`); return null; }
+    tok = tok || Canvasry.activeToken();
+    if (!theme) { let gov = null; try { gov = tok ? Canvasry.biomeForToken(tok) : null; } catch (e) { /* default below */ } theme = cwfThemeForHex(gov || {}); }
+    const roster = cwfCombatRoster(theme, apl == null ? cwfAvgPartyLevel() : apl);
+    const gs = scene.grid?.size || 100;
+    const a = tok ? { x: tok.center.x, y: tok.center.y } : { x: (scene.width || 1000) / 2, y: (scene.height || 1000) / 2 };
+    const HOST = globalThis.CONST?.TOKEN_DISPOSITIONS?.HOSTILE ?? -1;
+    const data = [], missing = []; let placed = 0;
+    for (const f of roster.foes) {
+        const actor = await cwfFindStatblock(f.name);
+        if (!actor) { missing.push(f.name); continue; }
+        for (let i = 0; i < f.count; i++) {
+            const ang = placed * 0.9 + 0.5, rad = (3 + Math.floor(placed / 6)) * gs;   // loose spiral a few cells out from the party
+            try { const td = await actor.getTokenDocument({ x: Math.round(a.x + Math.cos(ang) * rad - gs / 2), y: Math.round(a.y + Math.sin(ang) * rad - gs / 2), hidden, disposition: HOST }); data.push(td.toObject()); placed++; } catch (e) { warn("foe token build failed", e); }
+        }
+    }
+    if (data.length) { try { await scene.createEmbeddedDocuments("Token", data); } catch (e) { warn("foe spawn failed", e); } }
+    const summary = roster.foes.map(f => `${f.count}× ${cwfEsc(f.name)}`).join(" · ");
+    try { ChatMessage.create({ content: cwfCardShell("fa-dragon", `${roster.themeLabel} · APL ${roster.tier}`, cwfRow(`Spawned ${data.length} foe${data.length === 1 ? "" : "s"}`, `${summary || "—"}${missing.length ? ` <span style="color:#d6887e">· not in SRD: ${missing.map(cwfEsc).join(", ")}</span>` : ""}`)) }); } catch (e) { /* card best-effort */ }
+    ui.notifications?.info(`${TITLE}: spawned ${data.length} foe${data.length === 1 ? "" : "s"} — ${roster.themeLabel}, APL ${roster.tier}.`);
+    return { ...roster, spawned: data.length, missing };
+}
 async function cwfRoadCastActor(m, kind) {
     if (!game.user?.isGM || !m?.name) return null;
     let actor = (game.actors || []).find(a => { try { return a.getFlag(MOD, "roadCast") === m.name; } catch (e) { return false; } }) || null;
@@ -6744,6 +6812,9 @@ Hooks.once("ready", () => {
         // Which RollTable (world or compendium) each biome's forage-gather resolves to — mapped env + biomeGatherJSON override.
         gatherTables: async () => { const out = {}; for (const b of ["temperate", "boreal", "jungle", "savanna", "swamp", "desert", "tundra", "frozen", "volcanic", "wasteland", "tainted", "void", "water"]) { const t = await cwfFindGatherTable({ biome: b }); out[b] = `${cwfGatherEnv({ biome: b })} → ${t ? t.name : "(none found)"}`; } return out; },
         forageGather: (actorId, biome = "temperate", count = 1) => cwfForageGather(actorId, { biome }, { count }),   // manual test: draws + awards `count` ingredients
+        spawnEncounter: (theme = null, opts = {}) => cwfSpawnEncounter(theme, opts),   // spawn a themed, APL-scaled SRD encounter near the party (theme defaults to the hex's biome theme)
+        combatRoster: (theme = "soldiers", apl = null) => cwfCombatRoster(theme, apl == null ? cwfAvgPartyLevel() : apl),   // inspect the build for a theme + level
+        combatThemes: () => Object.fromEntries(Object.entries(cwfCombatThemes()).map(([k, v]) => [k, v.label])),
         roleDc: (biome, role = "forage", extra = {}) => cwfRoleDc(role, { biome, dc: 13, ...extra }),
         wanted: (d) => (d == null ? cwfWanted() : cwfWantedAdjust(d)),   // .wanted() reads · .wanted(1)/.wanted(-1) adjusts the Heat/Wanted score
         setWanted: (n) => cwfSetWanted(n),                                // .setWanted(3) sets it directly (0-5)
