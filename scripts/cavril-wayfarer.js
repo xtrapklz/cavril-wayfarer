@@ -508,16 +508,17 @@ const Store = (() => {
                     async _renderInner() {
                         const cues = cwfSoundCues();
                         const optsFor = (cur) => `<option value="">— none —</option>` + cues.map(c => `<option value="${cwfEsc(c.ref)}"${c.ref === cur ? " selected" : ""}>[${cwfEsc(c.kind)}] ${cwfEsc(c.label)}</option>`).join("") + (cur && !cues.some(c => c.ref === cur) ? `<option value="${cwfEsc(cur)}" selected>(current) ${cwfEsc(cur)}</option>` : "");
-                        const rows = CWF_SOUND_SETTINGS.map(s => `<div class="form-group" style="align-items:center"><label style="flex:0 0 150px">${s.label}</label><select name="${s.key}" style="flex:1.2">${optsFor(game.settings.get(MOD, s.key) || "")}</select><input type="text" name="${s.key}__raw" placeholder="or paste a ref / @Maestro[…]" style="flex:1;margin:0 6px" value=""><button type="button" class="cwf-snd-test" data-key="${s.key}" title="Preview"><i class="fa-solid fa-play"></i></button></div>`).join("");
+                        const rows = CWF_SOUND_SETTINGS.map(s => `<div class="form-group" style="align-items:center"><label style="flex:0 0 150px">${s.label}</label><select name="${s.key}" style="flex:1.2">${optsFor(game.settings.get(MOD, s.key) || "")}</select><input type="text" name="${s.key}__raw" placeholder="browse a file (folder icon →) or paste a Maestro ref" style="flex:1;margin:0 6px" value=""><button type="button" class="cwf-snd-pick" data-key="${s.key}" title="Browse to a sound file"><i class="fa-solid fa-folder-open"></i></button><button type="button" class="cwf-snd-test" data-key="${s.key}" title="Preview"><i class="fa-solid fa-play"></i></button></div>`).join("");
                         // Travel MOVEMENT sfx (a folder of foot-/cart-/boat- files, not a single Maestro cue) — folded in here so EVERY travel/cine/danger sound lives in this one menu.
                         const tOn = game.settings.get(MOD, "travelSfx"), tPath = game.settings.get(MOD, "travelSfxPath") || "";
                         const travelBlock = `<hr style="margin:10px 0 8px"><div class="form-group" style="align-items:center"><label style="flex:0 0 150px" title="Per-hex footstep / cart / boat sounds drawn from a folder of named files">Travel movement</label><label style="flex:0 0 auto;margin-right:10px;white-space:nowrap"><input type="checkbox" name="travelSfx"${tOn ? " checked" : ""}> on</label><input type="text" name="travelSfxPath" value="${cwfEsc(tPath)}" placeholder="Sounds folder — foot-grass.ogg, cart-water.ogg, boat-water.ogg…" style="flex:1"></div>`;
-                        const note = cues.length ? `Pick from your <b>${cues.length}</b> Cavril: Maestro favourites / named cues, or paste a raw ref (<code>preset:storm</code>, <code>sfx:thunder</code>, <code>amb:forest</code>).` : `Favourite or name cues in Cavril: Maestro to list them here, or paste a ref (e.g. <code>preset:storm</code>).`;
+                        const note = `Three ways to set each sound — <b>browse to a file</b> with the folder icon, pick a <b>Maestro cue</b> from the dropdown${cues.length ? ` (your ${cues.length} favourited / named cues)` : ` — favourite cues in Cavril: Maestro to list them`}, or paste a ref (<code>preset:storm</code>, <code>sfx:thunder</code>). Preview any slot with ▶.`;
                         return $(`<form autocomplete="off"><p class="notes" style="margin:.2em 0 .7em">${note}</p>${rows}${travelBlock}<footer style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px"><button type="submit"><i class="fa-solid fa-floppy-disk"></i> Save cues</button></footer></form>`);
                     }
                     activateListeners(html) {
                         super.activateListeners(html);
-                        html.on("click", ".cwf-snd-test", (e) => { e.preventDefault(); const k = e.currentTarget.dataset.key; const raw = String(html.find(`input[name="${k}__raw"]`).val() || "").trim(); const sel = String(html.find(`select[name="${k}"]`).val() || "").trim(); const ref = (raw || sel).replace(/^@Maestro\[(.+)\]$/i, "$1"); if (!ref) return ui.notifications?.info("No cue set in that slot."); try { (game.modules.get("cavril-maestro")?.api || globalThis.Maestro)?.triggerRef?.(ref); } catch (er) { warn("preview failed", er); } });
+                        html.on("click", ".cwf-snd-test", (e) => { e.preventDefault(); const k = e.currentTarget.dataset.key; const raw = String(html.find(`input[name="${k}__raw"]`).val() || "").trim(); const sel = String(html.find(`select[name="${k}"]`).val() || "").trim(); const ref = (raw || sel).replace(/^@Maestro\[(.+)\]$/i, "$1"); if (!ref) return ui.notifications?.info("No sound set in that slot."); try { cwfPlaySound(ref); } catch (er) { warn("preview failed", er); } });
+                        html.on("click", ".cwf-snd-pick", (e) => { e.preventDefault(); const k = e.currentTarget.dataset.key; const FP = foundry.applications?.apps?.FilePicker?.implementation || globalThis.FilePicker; try { new FP({ type: "audio", current: String(html.find(`input[name="${k}__raw"]`).val() || ""), callback: (path) => html.find(`input[name="${k}__raw"]`).val(path) }).render(true); } catch (er) { warn("file picker failed", er); } });
                     }
                     async _updateObject(event, formData) {
                         for (const s of CWF_SOUND_SETTINGS) { const raw = String(formData[`${s.key}__raw`] || "").trim().replace(/^@Maestro\[(.+)\]$/i, "$1"); const val = raw || String(formData[s.key] || "").trim(); try { await game.settings.set(MOD, s.key, val); } catch (e) { warn("sound setting save failed", s.key, e); } }
@@ -1525,7 +1526,7 @@ const Cinematic = (() => {
         if (!game.user.isGM) return;
         const ref = cwfMaestroRef(game.settings.get(MOD, CINE_SFX_KEY[tone] || CINE_SFX_KEY.travel) || "");
         if (!ref) return;
-        try { const M = globalThis.Maestro; if (ref.endsWith("/") && M?.playRandomInFolder) M.playRandomInFolder(ref); else M?.triggerRef?.(ref); }
+        try { cwfPlaySound(ref); }
         catch (e) { warn("cinematic sfx failed", e); }
     }
     function broadcast(spec) {
@@ -1763,16 +1764,19 @@ async function cwfToggleCave() {
 }
 // Generic "something happened" ping — plays the notifySfx cue (a Maestro ref, or a folder ending in /) if the GM set one in
 // the 🎵 Sound cues menu. Public: CavrilWayfarer.notify(). Wire it into any beat you want to chime (tell me which).
-function cwfNotify() {
-    try {
-        const src = String(game.settings.get(MOD, "notifySfx") || "").trim();
-        if (!src) return;
-        const AH = foundry.audio?.AudioHelper || globalThis.AudioHelper;   // play the chosen file to the WHOLE table (2nd arg = broadcast)
-        if (AH?.play) { AH.play({ src, volume: 0.8, autoplay: true, loop: false }, true); return; }
-        const M = game.modules.get("cavril-maestro")?.api || globalThis.Maestro;   // fallback via Maestro if AudioHelper is unavailable
-        M?.playOneShot?.(src) ?? M?.triggerRef?.(cwfMaestroRef(src));
-    } catch (e) { /* noop */ }
+// Play a sound ref — a Maestro cue (kind:id, or a folder ending in /) OR a raw FILE PATH (browsed via the picker). ONE helper so
+// every slot — the cine beats, danger, the menu preview, the notification ping — accepts a file you navigate to AND a Maestro cue.
+function cwfPlaySound(ref) {
+    ref = cwfMaestroRef(String(ref || "").trim());
+    if (!ref) return;
+    const M = game.modules.get("cavril-maestro")?.api || globalThis.Maestro;
+    const looksFile = /\.(ogg|mp3|wav|webm|flac|m4a|opus)$/i.test(ref) && !/^(music|amb|ambience|environment|weather|sfx|preset):/i.test(ref);   // a raw audio FILE, not a kind:id Maestro ref
+    if (looksFile) { const AH = foundry.audio?.AudioHelper || globalThis.AudioHelper; if (AH?.play) { try { AH.play({ src: ref, volume: 0.8, autoplay: true, loop: false }, true); return; } catch (e) { /* fall through to Maestro */ } } }
+    if (ref.endsWith("/") && M?.playRandomInFolder) { M.playRandomInFolder(ref); return; }
+    if (M?.triggerRef) { M.triggerRef(ref); return; }
+    M?.playOneShot?.(ref);
 }
+function cwfNotify() { try { cwfPlaySound(game.settings.get(MOD, "notifySfx") || ""); } catch (e) { /* noop */ } }
 function cwfHeat(cls) {
     const wanted = cwfWanted(); if (wanted <= 0) return 0;
     const road = cls?.infrastructure ? 2 : 0, river = cls?.river ? 1 : 0, hide = Danger.biomeMod(cls);
@@ -6248,7 +6252,7 @@ const Camp = (() => {
             // to every client) and we suppress the per-client fallback tone. Else clients
             // play the built-in bass tone locally.
             const cue = cwfMaestroRef(game.settings.get(MOD, dir === "up" ? "sfxDangerUp" : "sfxDangerDown"));
-            if (cue) { try { globalThis.Maestro?.triggerRef?.(cue); } catch (e) { warn("danger cue trigger failed", e); } }
+            if (cue) { try { cwfPlaySound(cue); } catch (e) { warn("danger cue trigger failed", e); } }
             Cinematic.broadcastFlash({ dir, sound: !cue });   // wordless colour pulse — never shows the level
         }
         WayfarerPanel.render();
