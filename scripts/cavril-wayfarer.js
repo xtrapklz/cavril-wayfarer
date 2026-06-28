@@ -1665,7 +1665,8 @@ function cwfBiomeForage(biome) {
 // Each travel role faces its OWN DC, shaped by the governing hex's biome: navigation by how legible the ground is, scouting
 // by how much cover blocks sightlines, foraging by how scarce food / water are. Returns { dc, food?, water? } — dc is the
 // success threshold (forage: the EASIER of food / water → you find SOMETHING), food/water the per-resource thresholds.
-let cwfNavBonusNext = 0;   // a +1d4 carried from a Major navigation roll → eases the NEXT turn's nav DC, then spent (travel-loop contract)
+let cwfNavBonusNext = 0;   // the momentum die's ROLLED value → eases the NEXT turn's nav DC, then spent (travel-loop contract)
+let cwfMomentumPending = false;   // a Major navigation EARNED a momentum die that hasn't been rolled yet — the Navigator rolls/enters a d4 next turn to set cwfNavBonusNext
 function cwfRoleDc(role, gov) {
     const night = cwfNightNow() ? 2 : 0;
     const base = (gov?.dc ?? 10) + night;
@@ -6030,6 +6031,22 @@ const Turn = (() => {
         WayfarerPanel.render();
     }
     function enterHelper(idx, val) { const h = helpers[idx]; if (!h) return; const n = Number(val); if (Number.isFinite(n)) { h.total = n; h.nat = null; held = true; pulseTravelGroup(); } WayfarerPanel.render(); }
+    // MOMENTUM DIE — a Major navigation last turn earned a d4. The Navigator rolls it here (a real d4, shown in Dice So Nice)
+    // OR types a value they rolled on D&D Beyond / in person; it eases THIS turn's navigation DC, then is spent at resolve.
+    async function rollMomentum() {
+        if (!cwfMomentumPending) return;   // nothing earned / already applied this turn
+        let v = 2;
+        try { const r = new Roll("1d4"); await r.evaluate(); try { if (game.dice3d) await game.dice3d.showForRoll(r, game.user, true); } catch (e) {} v = r.total; } catch (e) { v = 2; }
+        cwfNavBonusNext = Math.max(1, Math.min(4, v)); cwfMomentumPending = false;
+        ui.notifications?.info?.(`Momentum die: +${cwfNavBonusNext} — navigation DC eased by ${cwfNavBonusNext} this turn.`);
+        WayfarerPanel.render();
+    }
+    function enterMomentum(val) {
+        if (!cwfMomentumPending) return;
+        const n = Number(val); if (!Number.isFinite(n) || n <= 0) return;
+        cwfNavBonusNext = Math.max(1, Math.min(4, Math.round(n))); cwfMomentumPending = false;
+        WayfarerPanel.render();
+    }
     // At resolve: each rolled helper backs up the matching-skill role it improves MOST (lowest current total it beats).
     // One helper per role, one role per helper — so two Survival helpers shore up two Survival roles, not pile on one.
     function foldHelpers() {
@@ -6152,16 +6169,17 @@ const Turn = (() => {
         let navEffect = "arrive";
         let navRefund = false, navDoubleDrain = false;   // nat-20 nav refunds the day's upkeep; a critfail "Vicious Circle" drains it double
         let forageMishap = null, forageMishapTgt = "food", scoutMishap = null;   // a botched forage / scout's victim — resolved (the nat-1 fork) after the role loop
+        const cls = governing;   // this turn's biome class — the forage/scout crit-fail handlers below need it in resolve() scope (it was undefined here → "cls is not defined" on a scout crit-fail)
         for (const [k, v] of claimedRoles()) {
             const tier = outcomeFor(v, k) || "fail";
             v.outcome = tier;
             const drawn = await Tables.draw(k, tier);
             v.result = drawn.text;
             if (k === "navigate") {
-                cwfNavBonusNext = 0;   // any Major bonus from last turn was just spent on THIS roll's DC
+                cwfNavBonusNext = 0; cwfMomentumPending = false;   // any momentum die from last turn was just spent on THIS roll's DC (whether or not it was rolled)
                 const navShifting = ["desert", "tundra", "frozen", "swamp", "void"].includes(governing?.biome);
                 if (tier === "crit") { navEffect = "arrive"; navRefund = true; v.result += ` <em>— a flawless line: the day's supplies are refunded.</em>`; }
-                else if (tier === "major") { navEffect = "arrive"; try { cwfNavBonusNext = (await new Roll("1d4").evaluate()).total; } catch (e) { cwfNavBonusNext = 2; } v.result += ` <em>— your next navigation roll eases by ${cwfNavBonusNext} (DC −${cwfNavBonusNext}).</em>`; }
+                else if (tier === "major") { navEffect = "arrive"; cwfMomentumPending = true; v.result += ` <em>— momentum! You earn a navigation die: next turn the Navigator rolls a d4 (or enters a D&D Beyond roll) to ease that turn's navigation.</em>`; }
                 else if (tier === "fail" && navShifting) { navEffect = "scatter"; v.result += ` <em>— the shifting ground throws you off: you scatter to a random adjacent hex.</em>`; }
                 else if (tier === "critfail") { navEffect = "dead"; navDoubleDrain = true; v.result += ` <em>— a vicious circle: no ground gained, and the day's supplies drain double.</em>`; }
                 else navEffect = drawn.effect || "arrive";
@@ -6323,6 +6341,7 @@ const Turn = (() => {
         roleDc: (k) => cwfRoleDc(k, governing),
         claimedRoles, allRolled,
         addHelper, setHelper, dropHelper, rollHelper, enterHelper, claimedHelpers,
+        rollMomentum, enterMomentum, get momentumPending() { return cwfMomentumPending; }, get momentumValue() { return cwfNavBonusNext; },
         setForageTarget(t) { if (["food", "water", "both", "herbs"].includes(t)) { forageTarget = t; WayfarerPanel.render(); } },
         get forageTarget() { return forageTarget; },
         get active() { return active; }, get step() { return step; }, get roles() { return roles; }, get helpers() { return helpers; },
@@ -6638,6 +6657,7 @@ const WayfarerPanel = (() => {
             if (t.dataset.action === "turn-claim") Turn.claim(role, t.value);
             else if (t.dataset.action === "turn-skill") Turn.setSkill(role, t.value);
             else if (t.dataset.action === "turn-enter") Turn.enter(role, t.value);
+            else if (t.dataset.action === "turn-momentum-enter") Turn.enterMomentum(t.value);
             else if (t.dataset.action === "turn-helper-claim") Turn.setHelper(Number(t.dataset.idx), { actorId: t.value || null });
             else if (t.dataset.action === "turn-helper-skill") Turn.setHelper(Number(t.dataset.idx), { skillId: t.value });
             else if (t.dataset.action === "turn-helper-enter") Turn.enterHelper(Number(t.dataset.idx), t.value);
@@ -6713,6 +6733,7 @@ const WayfarerPanel = (() => {
                 case "travel-cancel": Travel.cancel(); break;
                 case "turn-begin": Turn.begin(); if (Turn.active) Travel.cancel(); break;
                 case "turn-roll": await Turn.roll(btn.dataset.role); break;
+                case "turn-momentum-roll": await Turn.rollMomentum(); break;
                 case "turn-forage-target": Turn.setForageTarget(btn.dataset.tgt); break;
                 case "turn-adjust": Turn.adjust(btn.dataset.role, Number(btn.dataset.d)); break;
                 case "turn-add-helper": Turn.addHelper(); break;
@@ -6882,6 +6903,16 @@ const WayfarerPanel = (() => {
                     <input class="cwf-enter" data-action="turn-enter" data-role="${k}" type="number" placeholder="#" title="Type a d20 total (manual / in-person) — edit freely" value="${s.total ?? ""}" ${dis}>
                     ${badge}
                 </div>` : "";
+            // Momentum die — only on the Navigator, only when a Major nav last turn earned one. Shows an indicator and a
+            // d4 roll button + manual-entry box (for a D&D Beyond / in-person roll); applying it eases this turn's nav DC.
+            const momentum = (k === "navigate" && (Turn.momentumPending || Turn.momentumValue > 0)) ? `
+                <div class="cwf-roll-row" style="gap:6px;align-items:center;margin-top:4px;padding-top:4px;border-top:1px dashed rgba(224,177,90,.35)" title="Momentum die — a Major navigation last turn earned a d4 that eases THIS turn's navigation. Roll it (or type a d4 you rolled on D&D Beyond) to apply before resolving.">
+                    <span style="font-weight:600;opacity:.92"><i class="fa-solid fa-dice-d4" style="color:#e0b15a"></i> Momentum</span>
+                    ${Turn.momentumValue > 0
+                        ? `<span style="color:#7fd18a;font-weight:600">+${Turn.momentumValue} <span class="cwf-muted2">(DC −${Turn.momentumValue})</span></span>`
+                        : `<button class="cwf-btn cwf-roll" data-action="turn-momentum-roll" title="Roll the momentum d4"><i class="fa-solid fa-dice-d4"></i> Roll d4</button>
+                           <input class="cwf-enter" data-action="turn-momentum-enter" type="number" min="1" max="4" placeholder="d4" title="Or type a d4 you rolled on D&D Beyond / in person">`}
+                </div>` : "";
             return `
                 <div class="cwf-role ${s.actorId ? "claimed" : ""}">
                     <div class="cwf-role-h"><i class="fa-solid ${ROLE_ICON[k]}"></i> <b>${ROLE_LABEL[k]}</b> ${dcHint} ${advTag}${whyIcons}</div>
@@ -6891,6 +6922,7 @@ const WayfarerPanel = (() => {
                         <select class="cwf-sel" data-action="turn-skill" data-role="${k}" ${dis} title="Skill for this role this turn">${skillOpts(k, s.skillId)}</select>
                     </div>
                     ${rollRow}
+                    ${momentum}
                 </div>`;
         }).join("");
 
