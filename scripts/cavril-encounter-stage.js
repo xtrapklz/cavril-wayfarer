@@ -82,9 +82,10 @@
     savanna:   ["drought", "clearing", "farm", "desert", "sand"],
     boreal:    ["forest", "fog", "autumn", "clearing", "frozen", "snow"],
     desert:    ["desert", "sand", "drought", "canyon", "crater", "oasis"],
-    wasteland: ["ash", "destruction", "abandoned", "drought", "bones", "corpse", "ruin", "crater", "wasteland"],
-    jungle:    ["jungle", "fungi", "bioluminescent", "fey", "clearing", "swamp"],
-    tainted:   ["infested", "blood", "corpse", "eldritch", "fungi", "infernal", "darkness", "graveyard"],
+    wasteland: ["cave", "cavern", "underdark", "tunnel", "subterranean", "crystal", "grotto", "fungi"],   // = the GM's CAVE / Underdark biome — natural subterranean map tags (was badlands)
+    jungle:    ["jungle", "fungi", "bioluminescent", "clearing", "canopy", "rainforest"],
+    swamp:     ["swamp", "marsh", "bog", "fungi", "flood", "fog"],   // the wayfarer Swamp biome — now its own pool (was folded into jungle)
+    tainted:   ["fey", "feywild", "enchanted", "glade", "mushroom", "fairy", "bioluminescent", "fungi", "eldritch", "dreamscape"],   // = the GM's FEYWILD biome — enchanted + otherworldly map tags (was corruption)
     tundra:    ["frozen", "snow", "fog", "clearing"],
     frozen:    ["frozen", "snow", "crystal", "aurora", "cavern"],
     volcanic:  ["lava", "fire", "ash", "crater", "forge", "infernal", "volcano"],
@@ -647,18 +648,50 @@
     for (const t of (v?.tags || [])) { const s = String(t).toLowerCase(); if (WILDERNESS_TAGS.has(s) || s === "natural") terrain++; if (STRUCTURE_TAGS.has(s)) struct++; }
     return terrain > 0 && struct === 0;
   }
+  // NATURAL-TRAIT NAME INFERENCE — CZEPEKU often NAMES a variant for a natural feature its tags miss: "Mangrove" IS a swamp
+  // even when the map is called "Mangrove Forest". We scan the variant NAME (+ tags) for these natural cues and ADD the
+  // implied terrain tags before classifying, so each variation lands in the right biome. ONLY natural-environment words live
+  // here — man-made / story words stay out (those are caught by STRUCTURE_TAGS and kept out of the biome pools). v0.55.206.
+  const NAME_HINTS = {
+    swamp:     ["mangrove", "bayou", "fen", "marsh", "wetland", "bog", "mire", "moor", "everglade", "quagmire", "swamp"],
+    water:     ["tidal", "lagoon", "atoll", "estuary", "delta", "fjord", "cove", "shoal", "reef"],
+    wasteland: ["cave", "cavern", "grotto", "hollow", "undercroft", "underdark", "subterranean", "sinkhole", "chasm", "tunnel"],   // → Cave biome
+    tainted:   ["fey", "feywild", "faewild", "faerie", "fairy", "enchanted", "glade", "glamour", "mushroom", "toadstool", "mycelian", "dreamscape"],   // → Feywild biome
+    desert:    ["dune", "erg", "mesa", "badland", "oasis"],
+    volcanic:  ["volcanic", "magma", "caldera", "obsidian", "lava"],
+    frozen:    ["glacier", "permafrost", "icefield", "iceberg"],
+    jungle:    ["rainforest", "canopy"],
+  };
+  const HINT_TAGS = {
+    swamp: ["swamp", "marsh", "bog", "flood"], water: ["water", "shore", "ocean"], wasteland: ["cave", "cavern", "underdark"],
+    tainted: ["fey", "feywild", "enchanted", "mushroom"], desert: ["desert", "sand", "canyon"], volcanic: ["lava", "volcano", "ash"], frozen: ["frozen", "snow", "crystal"], jungle: ["jungle"],
+  };
+  // Scan a name (+ its tags) for natural-trait cues → the extra lowercase tags they imply (used for classification only).
+  function inferNaturalTags(name, tags = []) {
+    const hay = `${String(name || "").toLowerCase()} ${(tags || []).map(t => String(t).toLowerCase()).join(" ")}`;
+    const add = new Set();
+    for (const [kind, words] of Object.entries(NAME_HINTS)) if (words.some(w => hay.includes(w))) for (const t of (HINT_TAGS[kind] || [])) add.add(t);
+    return [...add];
+  }
   // Classify one map/scene for the curated index: NATURALIZED variant → biome + generic/specific, PLUS `autoTags` =
   // the union of CZEPEKU's own per-variant tags (the artists' labels) so the grid's filter bar has real tags to work with.
   function classifyMap(it) {
     const base = naturalBase(it);
-    const tags = (base?.tags || []).map(t => String(t).toLowerCase());
+    const tags = [...(base?.tags || []).map(t => String(t).toLowerCase()), ...inferNaturalTags(base?.name || it.name, base?.tags)];   // base tags + natural-trait name inference
     const terrain = tags.filter(t => WILDERNESS_TAGS.has(t) || t === "natural").length;
     const struct = tags.filter(t => STRUCTURE_TAGS.has(t)).length;
     // Generic if ANY variant reads natural (named OR pure-terrain-by-tags) — staging naturalizes it — or the base
     // variant is terrain-dominant. The by-tags path pulls in stripped variants that aren't NAMED natural.
     const natVariant = (it.variants || []).find(variantIsNatural);
     const autoTags = Array.from(new Set((it.variants || []).flatMap(v => (v.tags || []).map(t => String(t).toLowerCase())).filter(Boolean))).sort();
-    return { id: it.id, name: it.name, biome: biomeOf(tags), biomes: biomesOf(tags), generic: !!natVariant || (terrain > 0 && terrain >= struct), natVar: natVariant?.name || base?.name || "", autoTags };
+    // PER-VARIANT rows: each cut classified by ITS OWN tags + the natural-trait name inference, so a "Flooded" variant lands
+    // in swamp even when the base reads forest, a "Mangrove" cut → swamp, a "Mushroom Glade" cut → Feywild — and the GM can
+    // curate / pick each one individually (Stage-2 grid). `structure` flags man-made cuts so the grid can keep them out.
+    const variants = (it.variants || []).map(v => {
+      const vt = [...(v.tags || []).map(t => String(t).toLowerCase()), ...inferNaturalTags(v.name, v.tags)];
+      return { id: v.id, name: v.name || "", key: v.key, biome: biomeOf(vt), biomes: biomesOf(vt), generic: variantIsNatural(v), structure: vt.some(t => STRUCTURE_TAGS.has(t)) };
+    });
+    return { id: it.id, name: it.name, biome: biomeOf(tags), biomes: biomesOf(tags), generic: !!natVariant || (terrain > 0 && terrain >= struct), natVar: natVariant?.name || base?.name || "", autoTags, variants };
   }
   // The stored index merged with the GM's review-panel overrides ({id → {biome?,generic?,exclude?}}). Null
   // until buildBiomeIndex() has run. Overrides win, so re-curating never gets clobbered by a rebuild.
@@ -1572,9 +1605,10 @@
     savanna:   ["beast", "monstrosity", "humanoid"],
     boreal:    ["beast", "fey", "monstrosity", "giant"],
     desert:    ["beast", "monstrosity", "elemental", "humanoid", "undead"],
-    wasteland: ["undead", "fiend", "monstrosity", "aberration", "construct"],
+    wasteland: ["aberration", "monstrosity", "ooze", "beast", "giant", "undead"],   // = the GM's CAVE / Underdark
     jungle:    ["beast", "plant", "monstrosity", "humanoid", "fey"],
-    tainted:   ["aberration", "fiend", "undead", "ooze", "monstrosity"],
+    swamp:     ["beast", "plant", "monstrosity", "humanoid", "fey"],
+    tainted:   ["fey", "aberration", "monstrosity", "beast", "plant"],   // = the GM's FEYWILD (corrupted)
     tundra:    ["beast", "giant", "elemental", "monstrosity"],
     frozen:    ["beast", "giant", "elemental", "undead", "monstrosity"],
     volcanic:  ["elemental", "fiend", "dragon", "beast"],
@@ -1593,13 +1627,14 @@
     temperate: { pool: ["Wolf", "Boar", "Giant Rat", "Stirge", "Bandit", "Giant Wasp", "Black Bear", "Scout", "Thug", "Giant Eagle", "Swarm of Ravens"], lurker: ["Giant Spider", "Giant Wolf Spider", "Spy", "Green Hag", "Awakened Tree"], apex: ["Dire Wolf", "Owlbear", "Brown Bear", "Bandit Captain", "Ogre", "Druid", "Veteran", "Troll", "Werewolf", "Werebear", "Knight", "Hill Giant", "Mage", "Treant"] },
     boreal:    { pool: ["Wolf", "Worg", "Boar", "Black Bear", "Goblin", "Giant Owl", "Giant Elk", "Scout", "Stirge"], lurker: ["Giant Spider", "Werewolf", "Green Hag", "Goblin Boss"], apex: ["Dire Wolf", "Brown Bear", "Owlbear", "Ogre", "Troll", "Werebear", "Hill Giant", "Mammoth", "Young Green Dragon", "Treant"] },
     jungle:    { pool: ["Giant Centipede", "Giant Boar", "Ape", "Giant Wasp", "Constrictor Snake", "Giant Frog", "Flying Snake", "Velociraptor", "Swarm of Insects", "Giant Poisonous Snake", "Pteranodon"], lurker: ["Panther", "Giant Spider", "Giant Constrictor Snake", "Yuan-ti Malison", "Tiger"], apex: ["Giant Ape", "Tiger", "Giant Crocodile", "Allosaurus", "Yuan-ti Malison", "Triceratops", "Tyrannosaurus Rex", "Young Green Dragon"] },
+    swamp:     { pool: ["Giant Frog", "Crocodile", "Lizardfolk", "Giant Lizard", "Stirge", "Bullywug", "Swarm of Insects", "Giant Constrictor Snake", "Giant Poisonous Snake"], lurker: ["Giant Crocodile", "Will-o'-Wisp", "Green Hag", "Giant Toad", "Lizardfolk Shaman"], apex: ["Giant Crocodile", "Hydra", "Shambling Mound", "Troll", "Young Black Dragon", "Black Dragon Wyrmling"] },
     desert:    { pool: ["Jackal", "Giant Lizard", "Hyena", "Vulture", "Giant Vulture", "Scout", "Bandit", "Cultist", "Swarm of Insects"], lurker: ["Giant Scorpion", "Lamia", "Spy", "Mummy", "Cult Fanatic"], apex: ["Giant Scorpion", "Giant Hyena", "Lion", "Lamia", "Mummy", "Salamander", "Gnoll Pack Lord", "Mummy Lord", "Young Brass Dragon", "Androsphinx"] },
     savanna:   { pool: ["Hyena", "Jackal", "Gnoll", "Boar", "Giant Vulture", "Lion", "Scout", "Giant Hyena"], lurker: ["Lion", "Giant Hyena", "Gnoll Pack Lord", "Cult Fanatic"], apex: ["Lion", "Rhinoceros", "Elephant", "Triceratops", "Gnoll Fang of Yeenoghu", "Tyrannosaurus Rex", "Young Brass Dragon"] },
     frozen:    { pool: ["Wolf", "Worg", "Polar Bear", "Ice Mephit", "Giant Goat", "Swarm of Ravens"], lurker: ["Winter Wolf", "Yeti", "Will-o'-Wisp", "Polar Bear"], apex: ["Polar Bear", "Yeti", "Winter Wolf", "Mammoth", "Abominable Yeti", "Frost Giant", "Young White Dragon", "Adult White Dragon"] },
     tundra:    { pool: ["Wolf", "Worg", "Giant Elk", "Polar Bear", "Giant Goat"], lurker: ["Winter Wolf", "Yeti", "Saber-Toothed Tiger"], apex: ["Mammoth", "Winter Wolf", "Saber-Toothed Tiger", "Yeti", "Frost Giant", "Abominable Yeti", "Young White Dragon"] },
     volcanic:  { pool: ["Magma Mephit", "Fire Snake", "Magmin", "Hell Hound", "Smoke Mephit"], lurker: ["Salamander", "Hell Hound", "Fire Elemental"], apex: ["Salamander", "Fire Elemental", "Azer", "Young Red Dragon", "Adult Red Dragon", "Fire Giant"] },
-    wasteland: { pool: ["Jackal", "Giant Vulture", "Zombie", "Skeleton", "Ghoul", "Bandit", "Cultist", "Vulture"], lurker: ["Ghost", "Giant Scorpion", "Cult Fanatic", "Wight"], apex: ["Wight", "Ghast", "Manticore", "Mummy", "Ogre", "Revenant", "Wraith", "Young Black Dragon"] },
-    tainted:   { pool: ["Zombie", "Skeleton", "Ghoul", "Cultist", "Shadow", "Stirge", "Swarm of Insects", "Giant Centipede"], lurker: ["Ghost", "Specter", "Carrion Crawler", "Otyugh", "Will-o'-Wisp"], apex: ["Ghast", "Wight", "Wraith", "Cult Fanatic", "Gibbering Mouther", "Mummy", "Vampire Spawn", "Flameskull"] },
+    wasteland: { pool: ["Giant Bat", "Giant Centipede", "Giant Spider", "Gray Ooze", "Swarm of Bats", "Darkmantle", "Troglodyte", "Giant Lizard"], lurker: ["Roper", "Piercer", "Gelatinous Cube", "Grick", "Cave Fisher"], apex: ["Otyugh", "Umber Hulk", "Roper", "Bulette", "Purple Worm", "Hill Giant", "Young Black Dragon", "Black Pudding"] },   // CAVE / Underdark
+    tainted:   { pool: ["Sprite", "Blink Dog", "Dryad", "Satyr", "Pixie", "Awakened Tree", "Swarm of Insects", "Boggle"], lurker: ["Green Hag", "Will-o'-Wisp", "Quickling", "Redcap", "Annis Hag"], apex: ["Treant", "Unicorn", "Displacer Beast", "Owlbear", "Hag Coven", "Young Green Dragon", "Green Hag"] },   // FEYWILD (corrupted)
     void:      { pool: ["Shadow", "Specter", "Will-o'-Wisp", "Cultist", "Nothic", "Flameskull"], lurker: ["Phase Spider", "Invisible Stalker", "Specter", "Nothic"], apex: ["Wraith", "Wight", "Invisible Stalker", "Gibbering Mouther", "Chuul", "Cloaker", "Salamander"] },
     water:     { pool: ["Reef Shark", "Giant Crab", "Merfolk", "Swarm of Quippers", "Crocodile", "Constrictor Snake", "Giant Octopus", "Sahuagin"], lurker: ["Hunter Shark", "Giant Constrictor Snake", "Sea Hag", "Water Elemental"], apex: ["Hunter Shark", "Giant Shark", "Giant Crocodile", "Plesiosaurus", "Water Elemental", "Killer Whale", "Sahuagin Baron", "Young Bronze Dragon"] },
     unknown:   { pool: ["Wolf", "Bandit", "Giant Spider", "Scout", "Boar"], lurker: ["Giant Spider", "Spy", "Ghost"], apex: ["Ogre", "Dire Wolf", "Bandit Captain", "Owlbear", "Veteran"] },
