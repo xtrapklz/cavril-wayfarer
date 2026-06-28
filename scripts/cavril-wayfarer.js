@@ -4737,10 +4737,9 @@ async function cwfRoadCastActor(m, kind) {
     const cls = (() => { try { const tok = Canvasry.activeToken(); return tok ? Canvasry.biomeForToken(tok) : null; } catch (e) { return null; } })();
     const items = [];
     try {
-        items.push(...await cwfGatherItems(cls, kind === "merchant" ? 3 : 2));                                    // biome herbs
-        if (kind === "merchant" && Array.isArray(m.stock)) for (const s of m.stock.slice(0, 8)) items.push(cwfGenericLoot(s, true));   // their wares
-        else if (m.title || m.arc) items.push(cwfGenericLoot(`${m.title || m.name}'s effects`, false));           // a named NPC's signature
-        items.push(cwfGenericLoot("Traveler's sundries", false));                                                 // pocket loot for everyone
+        items.push(...await cwfGatherItems(cls, kind === "merchant" ? 3 : 2));                                    // biome herbs (real gather-table items)
+        if (kind === "merchant" && Array.isArray(m.stock)) for (const s of m.stock.slice(0, 8)) items.push(cwfGenericLoot(s, true));   // their wares — the merchant's actual goods (mirrored in the journal's Carries/sells)
+        // (removed the generic "X's effects" + "Traveler's sundries" filler — they were inventory noise the GM didn't ask for)
     } catch (e) { warn("road-cast loot failed", e); }
     if (items.length) { try { await actor.createEmbeddedDocuments("Item", items); } catch (e) { warn("road-cast items failed", e); } }
     return actor;
@@ -4805,7 +4804,6 @@ function cwfNpcDossierHTML(m, kind, d) {
     const family = FAMILY[Math.floor(famRng() * FAMILY.length)];
 
     return `<p style="font-size:13px;opacity:.85;margin:0 0 2px"><b>${e(d.ancestry)}</b> · ${e(d.occupation)}${m.arc ? ` · <span style="color:#c084fc">${e((String(m.arc).match(/Arc [A-Z]/)?.[0]) || m.arc)}</span>` : ""}</p>`
-        + strip(Object.keys(MET).map(mPill).join(""))
         + strip(Object.keys(OCE).map(oPill).join(""))
         + `<div style="display:flex;flex-wrap:wrap;gap:5px;margin:6px 0"><span style="display:inline-flex;align-items:center;font-size:10px;color:#a5b4fc;font-weight:700;text-transform:uppercase;margin-right:2px">Suggested</span>${["str", "dex", "con", "int", "wis", "cha"].map(aCell).join("")}</div>`
         + (m.readAloud ? sec("fa-scroll", "#22c55e", "Bio", `<blockquote>${e(m.readAloud)}</blockquote>${m.situation ? `<p>${e(m.situation)}</p>` : ""}`) : "")

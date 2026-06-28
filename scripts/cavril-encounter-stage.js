@@ -1127,9 +1127,13 @@
     if (!force && _tokenCat && (Date.now() - _tokenCatAt) < (CFG.catalogTtlMs ?? 300000)) return _tokenCat;
     const data = await czQuery("fvtt.getSessionData", null);
     const base = data?.urls?.tokenThumbnail || "";
+    // The token art is CZEPEKU's THUMBNAIL (low-res — the GM flagged the faces as "thumbnail quality"). If that URL is a
+    // Cloudflare image-resize, widen it to ~full-res — the SAME image at a larger size; otherwise leave it untouched, so no
+    // guessed endpoint can break the art. (If still soft, run tokenProbe() so we can wire CZEPEKU's true full-res template.)
+    const widenCf = (u) => { try { return /\/cdn-cgi\/image\//.test(u) ? u.replace(/(\/cdn-cgi\/image\/)([^/]+)/, (_m, p, o) => p + o.replace(/width=\d+/, "width=1024").replace(/quality=\d+/, "quality=92")) : u; } catch (e) { return u; } };
     const items = (data?.fantasy?.tokens ?? []).map(t => {
       const tk = typeof t.thumbnailKey === "string" ? t.thumbnailKey : "";
-      const url = (tk && base) ? base.replace("<THUMBNAIL_KEY>", tk) : null;
+      const url = (tk && base) ? widenCf(base.replace("<THUMBNAIL_KEY>", tk)) : null;
       if (!url) return null;
       const subjLabel = _asLabel(t.subject), packLabel = _asLabel(t.pack);
       return {
