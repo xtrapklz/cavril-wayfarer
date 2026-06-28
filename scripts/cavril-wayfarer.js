@@ -1605,42 +1605,8 @@ function cwfBiomeForage(biome) {
     try { const raw = game.settings.get(MOD, "biomeForageJSON"); if (raw && String(raw).trim()) { const p = JSON.parse(raw); if (p && typeof p === "object") map = { ...CWF_BIOME_FORAGE, ...p }; } } catch (e) { /* keep defaults */ }
     return map[biome] || map.temperate || { food: 13, water: 13 };
 }
-// Per-biome forage-draw WEIGHTS — the relative odds each single-unit DRAW turns up a ration / a water charge / a herb / NOTHING.
-// Food weight is the master dial: at a ~14-draw forage (margin 14) a lush biome (jungle ~80% food) nearly provisions a party of
-// 4's day (~12 meals), an average one (temperate 50%) covers ~half, and harsh country (desert/frozen/waste ~15%) yields only a
-// couple — barely slowing the depletion of finite supplies. The "none" bucket is what makes barren land actually bite (you
-// search and find nothing). A river/coast/water hex adds a big water bump (and turns one water draw into a full refill); dense
-// vegetation nudges food (both in cwfForageWeights). Overridable via biomeForageWeightsJSON. v0.55.150.
-const CWF_FORAGE_WEIGHTS = {
-    temperate: { food: 7, water: 3, herb: 2, none: 2 }, boreal: { food: 5, water: 3, herb: 2, none: 3 }, jungle: { food: 13, water: 2, herb: 1, none: 0 },
-    savanna:   { food: 5, water: 2, herb: 2, none: 4 }, swamp:  { food: 6, water: 7, herb: 2, none: 1 }, desert:  { food: 2, water: 1, herb: 2, none: 8 },
-    tundra:    { food: 3, water: 2, herb: 1, none: 6 }, frozen: { food: 2, water: 2, herb: 1, none: 8 }, volcanic: { food: 1, water: 1, herb: 2, none: 9 },
-    wasteland: { food: 2, water: 1, herb: 2, none: 8 }, tainted: { food: 2, water: 1, herb: 3, none: 7 }, void:    { food: 1, water: 1, herb: 1, none: 10 },
-    water:     { food: 4, water: 8, herb: 1, none: 1 }
-};
-const CWF_FORAGE_WEIGHTS_DEFAULT = { food: 5, water: 3, herb: 2, none: 3 };
-function cwfForageWeights(gov) {
-    let map = CWF_FORAGE_WEIGHTS;
-    try { const raw = game.settings.get(MOD, "biomeForageWeightsJSON"); if (raw && String(raw).trim()) { const p = JSON.parse(raw); if (p && typeof p === "object") map = { ...CWF_FORAGE_WEIGHTS, ...p }; } } catch (e) { /* keep defaults */ }
-    const biome = gov?.biome || "temperate";
-    const w = { ...(map[biome] || CWF_FORAGE_WEIGHTS_DEFAULT) };
-    if (gov?.river || gov?.coast || gov?.terrainKey === "water" || biome === "water") w.water = (w.water || 0) + 5;   // a reliable source → water draws far likelier
-    if (gov?.vegetation === "high") w.food = (w.food || 0) + 2;   // forest mast / berries / game
-    return w;
-}
-// One weighted draw → "food" | "water" | "herb". Deterministic-friendly: a caller can pre-roll if it needs a seed.
-function cwfForageDraw(weights, roll = Math.random()) {
-    const entries = [["food", weights.food || 0], ["water", weights.water || 0], ["herb", weights.herb || 0], ["none", weights.none || 0]];
-    const total = entries.reduce((s, [, w]) => s + w, 0);
-    if (total <= 0) return "none";
-    let r = roll * total;
-    for (const [k, w] of entries) { if ((r -= w) < 0) return k; }
-    return "none";
-}
-// Draws scale with the MARGIN: each point you clear the forage DC by buys one weighted draw from the biome's table (min 1 on a
-// bare success). Single-unit draws (1 food draw = 1 ration = 1 meal), so the biome's food WEIGHT is what decides how many draws
-// become rations. DC 10, rolled 24 → 14 draws; a lush biome turns most into food, a harsh one mostly into nothing. v0.55.150.
-const cwfForageDraws = (total, dc) => Math.max(1, Math.floor((total ?? 0) - (dc ?? 0)));
+// (The margin-scaled forage-draw weights + curve — CWF_FORAGE_WEIGHTS / cwfForageWeights / cwfForageDraw / cwfForageDraws —
+//  were retired with the tier forage in phase 3 and removed in the phase-6 prune. cwfBiomeForage above still feeds the forage DC.)
 // Each travel role faces its OWN DC, shaped by the governing hex's biome: navigation by how legible the ground is, scouting
 // by how much cover blocks sightlines, foraging by how scarce food / water are. Returns { dc, food?, water? } — dc is the
 // success threshold (forage: the EASIER of food / water → you find SOMETHING), food/water the per-resource thresholds.
@@ -6785,8 +6751,6 @@ Hooks.once("ready", () => {
             return r;
         },
         meetSomeone: (opts = {}) => { const tok = Canvasry.activeToken(); return meetRoadCast(opts.cls || (tok ? Canvasry.biomeForToken(tok) : {}), opts); },   // drop a road-cast member (merchant or NPC) for the current hex on demand ({merchant:true} to force a merchant)
-        // Inspect the draw-based forage: forage.draws(total, dc) → draw count · forage.weights({biome,river,…}) → {food,water,herb} odds · forage.draw(weights) → one pick.
-        forage: { draws: cwfForageDraws, weights: cwfForageWeights, draw: cwfForageDraw, WEIGHTS: CWF_FORAGE_WEIGHTS },
         travelSfxFile: (cls, boat) => cwfTravelSfxFile(cls, boat),   // which movement sound a hex+toggle plays, e.g. travelSfxFile({biome:"temperate",river:true}, false) → "foot-water-shallow"
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, TravelingMerchants, NarrativeNPCs, _installed: true
     };
