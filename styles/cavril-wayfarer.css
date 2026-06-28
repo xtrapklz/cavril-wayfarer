@@ -85,6 +85,7 @@
 }
 .cwf-head:active { cursor: grabbing; }
 .cwf-head > i { color: var(--cwf-accent); }
+.cwf-head-sp { flex: 1 1 auto; }
 .cwf-title { font-weight: 700; flex: 0 0 auto; letter-spacing: .04em; }
 .cwf-day { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; color: var(--cwf-accent); background: rgba(189,169,232,.12); padding: 1px 8px; border-radius: 10px; }
 .cwf-icon { background: none; border: none; color: var(--cwf-muted); cursor: pointer; width: 22px; height: 22px; border-radius: 6px; }
@@ -524,6 +525,7 @@
 .cwf-supstrip { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
 .cwf-sup { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-variant-numeric: tabular-nums; }
 .cwf-sup-max { opacity: .45; font-weight: 600; font-size: .82em; margin-left: 1px; }
+.cwf-sup-day, .cwf-sup-day .fa-calendar-day { color: var(--cwf-accent); font-weight: 600; }
 .cwf-sup .fa-drumstick-bite { color: #d8a24d; }
 .cwf-sup .fa-bottle-water { color: #4f9fe6; }
 .cwf-sup.ok .fa-face-dizzy { color: #6fb07a; }

@@ -6489,8 +6489,7 @@ const WayfarerPanel = (() => {
         root.innerHTML = `
             <div class="cwf-head" data-drag>
                 <i class="fa-solid fa-mountain-sun" title="${TITLE} — drag to move"></i>
-                <span class="cwf-day" title="Days travelling this journey"><i class="fa-solid fa-calendar-day"></i> Day ${st.day}</span>
-                ${isGM ? `<button class="cwf-end-exped" data-action="reset-journey" title="End this expedition — reset the day counter for a fresh journey"><i class="fa-solid fa-flag-checkered"></i> End Expedition</button>` : ""}
+                <span class="cwf-head-sp"></span>
                 <button class="cwf-icon" data-action="collapse" title="Collapse/expand"><i class="fa-solid ${collapsedRef ? "fa-chevron-down" : "fa-chevron-up"}"></i></button>
                 <button class="cwf-icon" data-action="close" title="Close"><i class="fa-solid fa-xmark"></i></button>
             </div>
@@ -6533,6 +6532,7 @@ const WayfarerPanel = (() => {
                         const rLow = sup.rations < size, wLow = sup.water < size, exhCls = sumExh <= 0 ? "ok" : (sumExh >= size * 2 ? "low" : "warn");
                         const awake = Math.round(cwfHoursSinceRest()), thr = cwfRestThreshold(), tired = awake > thr;
                         return `<div class="cwf-supstrip">
+                            <span class="cwf-sup cwf-sup-day" title="Days travelling this journey — End Expedition (under Rest &amp; sync) starts a fresh count"><i class="fa-solid fa-calendar-day"></i> Day ${st.day}</span>
                             <span class="cwf-sup ${rLow ? "low" : ""}" title="Rations the party carries — ${sup.rations} of ${sumCapR} total capacity. The party eats ${size}/day. Expand for per-character bars."><i class="fa-solid fa-drumstick-bite"></i> ${sup.rations}<span class="cwf-sup-max">/${sumCapR}</span></span>
                             <span class="cwf-sup ${wLow ? "low" : ""}" title="Waterskin charges the party carries — ${sup.water} of ${sumCapW} total capacity. Drinks ${size}/day; a found water source refills everyone. Expand for per-character bars."><i class="fa-solid fa-bottle-water"></i> ${sup.water}<span class="cwf-sup-max">/${sumCapW}</span></span>
                             <span class="cwf-sup ${exhCls}" title="Total party exhaustion — the sum of all ${bd.members.length} members' levels, of ${maxExh} possible. Expand to see who carries it."><i class="fa-solid fa-face-dizzy"></i> ${sumExh}<span class="cwf-sup-max">/${maxExh}</span></span>
@@ -6569,6 +6569,7 @@ const WayfarerPanel = (() => {
                         <button class="cwf-btn" data-action="rest-long" title="Long rest — HP, spell slots, hit dice"><i class="fa-solid fa-bed"></i></button>
                         <button class="cwf-btn" data-action="resync" title="Re-sync sheets from D&D Beyond (confirms first)"><i class="fa-solid fa-arrows-rotate"></i></button>
                         <button class="cwf-btn cwf-resupply" data-action="resupply" title="Resupply — the gold to refill every pack to full capacity (total + per-character), then replenish and deduct it from each character"><i class="fa-solid fa-coins"></i> Resupply</button>
+                        <button class="cwf-btn cwf-end-exped" data-action="reset-journey" title="End this expedition — reset the day counter for a fresh journey"><i class="fa-solid fa-flag-checkered"></i> End Expedition</button>
                     </div>
                 </div>` : ""}
 
