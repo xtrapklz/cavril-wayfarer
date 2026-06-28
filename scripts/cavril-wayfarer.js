@@ -536,6 +536,11 @@ const Store = (() => {
                     async render() { try { await cwfInstallAll({ confirm: true }); } catch (e) { warn("install all failed", e); } return this; }
                 };
                 g.registerMenu(MOD, "cavrilInstallMenu", { name: "Install content", label: "Install all content…", hint: "One click: create every RollTable, encounter deck, quest, and road-cast journal (merchants + storefronts + NPCs) the system needs to run. Idempotent — re-running skips what already exists and upgrades the rest. Campaign Codex must be active for the quests + journals.", icon: "fa-solid fa-box-open", type: InstallApp, restricted: true });
+                const RefreshApp = class extends FA2 {
+                    static get defaultOptions() { return foundry.utils.mergeObject(super.defaultOptions, { id: "cavril-refresh-config", title: "Refresh Cavril Content" }); }
+                    async render() { try { await cwfRefreshAll({ confirm: true }); } catch (e) { warn("refresh all failed", e); } return this; }
+                };
+                g.registerMenu(MOD, "cavrilRefreshMenu", { name: "Refresh content", label: "Refresh all content (overwrite)…", hint: "REPLACES all generated content: deletes every Cavril-made table, encounter deck, road-cast actor, quest, NPC + storefront (everything in the Cavril / Encounter Monsters folders) and rebuilds it fresh — so edits take effect WITHOUT deleting by hand. Your own hand-made docs are left untouched.", icon: "fa-solid fa-arrows-rotate", type: RefreshApp, restricted: true });
             }
         } catch (e) { warn("install menu register failed", e); }
         g.register(MOD, "sfxDangerUp", { name: "Danger-rising cue (Maestro)", hint: "Optional Cavril: Maestro cue for when danger RISES — a reference like sfx:path/to/sound.ogg, music:<id>, preset:<tag>, or a pasted @Maestro[…] link. Maestro plays it to the whole table. Blank = a built-in low rising tone.", scope: "world", config: false, type: String, default: "" });
@@ -4742,6 +4747,7 @@ async function cwfBuildQuests({ rebuild = false } = {}) {
         let jrnl; try { jrnl = await cc.createQuestJournal(name); } catch (e) { warn(`quest create failed: ${id}`, e); }
         if (!jrnl) jrnl = game.journal.find(j => j.getFlag("campaign-codex", "type") === "quest" && j.name === name);
         if (!jrnl) continue;
+        await cwfFileDoc(jrnl, "JournalEntry", "Cavril: Quests");   // keep the quest web in its own folder
         const qd = foundry.utils.duplicate(jrnl.getFlag("campaign-codex", "data") || {});
         qd.quests = Array.isArray(qd.quests) ? qd.quests : [];
         const q = qd.quests[0] || { id: foundry.utils.randomID(), objectives: [] };
@@ -4961,6 +4967,7 @@ async function cwfRoadCastQuest(m, npcDoc, assocUuids = [], force = false) {
     if (q && !force) return q;
     if (!q) { try { q = await game.campaignCodex.createQuestJournal(qname); } catch (e) { warn("createQuestJournal failed", e); return null; } }
     if (!q) return null;
+    await cwfFileDoc(q, "JournalEntry", "Cavril: Quests");
     try {
         const data = q.getFlag(CC_NS, "data") || {};
         const quest = (Array.isArray(data.quests) && data.quests[0]) ? data.quests[0] : {};
@@ -5043,6 +5050,7 @@ async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find o
     const actor = await cwfRoadCastActor(m, kind, { force });   // a real linked sheet behind the journal — durable art + tiered inventory; force re-applies the suggested abilities + refreshes art
     if (!doc) { try { doc = await game.campaignCodex.createNPCJournal(actor || null, m.name, false); } catch (e) { warn("createNPCJournal failed", e); return null; } }
     if (!doc) return null;
+    await cwfFileDoc(doc, "JournalEntry", "Cavril: Cast");
     const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
     const ul = (arr) => (arr?.length) ? `<ul>${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
     const sec = (label, body) => body ? `<h3>${label}</h3>${body}` : "";
@@ -5130,7 +5138,54 @@ async function cwfBuildRoadCastCodex() {
 // ONE-CLICK CONTENT INSTALL — seeds everything the system needs to run: every RollTable, the d20 encounter decks, the quest web,
 // and the road-cast journals (merchants + storefronts + NPCs). Idempotent — each builder skips existing content + upgrades the
 // rest, so it's safe to re-run. Public: CavrilWayfarer.installAll(); also the "📦 Install all content…" settings button.
-async function cwfInstallAll({ confirm = false } = {}) {
+// ── Generated-content FOLDERS + a one-click REFRESH (wipe + reinstall, NO manual delete) ──────────────────────
+// Every doc the system generates lives in one of these well-labeled folders, so management — and the "Refresh all"
+// overwrite below — can target ONLY Cavril's content and never touch the GM's hand-made tables/actors/journals.
+const CWF_CONTENT_FOLDERS = [
+    ["RollTable", "Cavril: Wayfarer"], ["RollTable", "Cavril: Encounters"], ["RollTable", "Cavril Satchels"], ["RollTable", "Cavril Merchants"],
+    ["Actor", "Cavril Road Cast"], ["Actor", "Cavril Tokens"], ["Actor", "Encounter Monsters"], ["Actor", "Cavril Merchants"],
+    ["Scene", "Cavril Merchants"],
+    ["JournalEntry", "Encounters"], ["JournalEntry", "Cavril: Quests"], ["JournalEntry", "Cavril: Cast"], ["JournalEntry", "Cavril: Shops"],
+];
+// find-or-create a folder by (type, name) → its id (or null). ONE shared helper; the older builders each rolled
+// their own inline find-or-create — new code (CC-journal filing, the wipe) routes through this.
+async function cwfEnsureFolder(type, name) {
+    try { let f = (game.folders?.contents || []).find(x => x.type === type && x.name === name); if (!f) f = await Folder.create({ name, type, sorting: "a" }); return f?.id || null; }
+    catch (e) { return null; }
+}
+// move a freshly-created doc into a named folder (best-effort — never throws into the caller). Used to file the
+// Campaign Codex quest/NPC/shop journals, which CC creates loose (no folder API).
+async function cwfFileDoc(doc, type, name) {
+    try { if (!doc?.id) return; const fid = await cwfEnsureFolder(type, name); if (fid && doc.folder?.id !== fid) await doc.update({ folder: fid }); } catch (e) { /* foldering is cosmetic */ }
+}
+// DELETE every Cavril-generated doc (scoped strictly to the folders above) so a reinstall starts clean. Returns the count.
+async function cwfWipeContent() {
+    let n = 0;
+    for (const [type, name] of CWF_CONTENT_FOLDERS) {
+        try {
+            const folder = (game.folders?.contents || []).find(x => x.type === type && x.name === name);
+            if (!folder) continue;
+            const coll = game.collections?.get(type);
+            const ids = (coll?.contents || []).filter(d => d.folder?.id === folder.id).map(d => d.id);
+            if (ids.length && coll?.documentClass?.deleteDocuments) { await coll.documentClass.deleteDocuments(ids); n += ids.length; }
+        } catch (e) { warn(`wipe ${type}/${name} failed`, e); }
+    }
+    return n;
+}
+// REFRESH = wipe the generated docs, then reinstall fresh (force-rebuilding the flag-cached builders). The GM's OWN
+// content is untouched — only the Cavril folders above are emptied. Public: CavrilWayfarer.refreshAll().
+async function cwfRefreshAll({ confirm = false } = {}) {
+    if (!game.user?.isGM) return { wiped: 0, done: 0, total: 0, fails: [] };
+    if (confirm) {
+        const ok = await cwfConfirm("Refresh ALL Cavril content?", "<b>Deletes</b> every Cavril-generated RollTable, encounter deck, road-cast actor, quest, NPC, storefront + merchant scene (everything in the <i>Cavril …</i> / <i>Encounter Monsters</i> folders), then rebuilds them from scratch — so edits to the content take effect <b>without deleting by hand</b>.<br><br><b>Your own hand-made tables / actors / journals are NOT touched.</b> (Tokens already placed from regenerated actors may unlink.)");
+        if (!ok) return { wiped: 0, done: 0, total: 0, fails: [] };
+    }
+    const wiped = await cwfWipeContent();
+    ui.notifications?.info(`${TITLE}: cleared ${wiped} generated doc${wiped === 1 ? "" : "s"} — rebuilding fresh…`);
+    const res = await cwfInstallAll({ confirm: false, force: true });
+    return { wiped, ...res };
+}
+async function cwfInstallAll({ confirm = false, force = false } = {}) {
     if (!game.user?.isGM) return { done: 0, total: 0, fails: [] };
     if (confirm) {
         const ok = await cwfConfirm("Install all Cavril content?", "Creates every RollTable, encounter deck, quest, and road-cast journal (merchants, storefronts, NPCs) the system needs. Safe to re-run — existing content is skipped or upgraded.");
@@ -5143,11 +5198,11 @@ async function cwfInstallAll({ confirm = false } = {}) {
         ["Named-location set-piece tables", () => Tables.buildLocationTables()],
         ["Traveling-merchant table", () => TravelingMerchants.buildTable()],
         ["Road-encounter NPC table", () => NarrativeNPCs.buildTable()],
-        ["d20 encounter decks", () => cwfBuildDecks()],
-        ["Merchant restock tables", () => CodexShop.buildMerchantTables()],
+        ["d20 encounter decks", () => cwfBuildDecks({ rebuild: force })],
+        ["Merchant restock tables", () => CodexShop.buildMerchantTables(force)],
     ];
     if (hasCC) {   // quests + journals live in Campaign Codex — skip them gracefully if it isn't active
-        steps.push(["Quest web (Campaign Codex)", () => cwfBuildQuests()]);
+        steps.push(["Quest web (Campaign Codex)", () => cwfBuildQuests({ rebuild: force })]);
         steps.push(["Road-cast journals — merchants + storefronts + NPCs", () => cwfBuildRoadCastCodex()]);
     }
     ui.notifications?.info(`${TITLE}: installing content — ${steps.length} step${steps.length === 1 ? "" : "s"}…`);
@@ -5558,6 +5613,7 @@ const CodexShop = (() => {
         if (typeof cc?.createShopJournal !== "function") { ui.notifications?.warn("Cavril: Campaign Codex isn't active — can't create a storefront."); return null; }
         const shop = await cc.createShopJournal(name);
         if (!shop) return null;
+        await cwfFileDoc(shop, "JournalEntry", "Cavril: Shops");
         const data = foundry.utils.duplicate(shop.getFlag(MOD_CC, "data") || {});
         data.inventory = picks.map(p => buildRow(p.e, p.quantity));
         data.markup = opts.markup ?? 1.0;
@@ -5626,6 +5682,7 @@ const CodexShop = (() => {
             if (typeof cc?.createNPCJournal === "function") {
                 const npc = await cc.createNPCJournal(actor, m.name).catch(() => null);
                 if (npc) {
+                    await cwfFileDoc(npc, "JournalEntry", "Cavril: Cast");
                     try { await npc.setFlag(MOD_CC, "image", portrait); } catch (e) {}                 // CC hero image = the face
                     try { if (typeof cc.linkShopToNPC === "function") await cc.linkShopToNPC(shop, npc); } catch (e) {}   // shopkeeper shows on the shop
                 }
@@ -7239,6 +7296,8 @@ Hooks.once("ready", () => {
             return r;
         },
         installAll: (opts) => cwfInstallAll(opts),   // ONE call: seed every RollTable + deck + quest + road-cast journal the system needs (mirrors the 📦 Install all content settings button)
+        refreshAll: (opts) => cwfRefreshAll(opts),   // WIPE all generated content (scoped to the Cavril folders) + reinstall fresh — no manual delete (mirrors the Refresh all content settings button)
+        wipeContent: () => cwfWipeContent(),         // delete every generated doc in the Cavril folders (the destructive half of refreshAll)
         meetSomeone: (opts = {}) => { const tok = Canvasry.activeToken(); return meetRoadCast(opts.cls || (tok ? Canvasry.biomeForToken(tok) : {}), opts); },   // drop a road-cast member (merchant or NPC) for the current hex on demand ({merchant:true} to force a merchant)
         travelSfxFile: (cls, boat) => cwfTravelSfxFile(cls, boat),   // which movement sound a hex+toggle plays, e.g. travelSfxFile({biome:"temperate",river:true}, false) → "foot-water-shallow"
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, TravelingMerchants, NarrativeNPCs, _installed: true
