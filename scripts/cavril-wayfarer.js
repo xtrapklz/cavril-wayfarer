@@ -6016,10 +6016,14 @@ const Turn = (() => {
         const h = helpers[idx]; if (!h?.actorId || h._rolling) return;
         const actor = game.actors.get(h.actorId); if (!actor?.rollSkill) { ui.notifications?.warn("That character can't roll skills."); return; }
         const major = parseInt(String(game.system?.version ?? "4"), 10) || 4;
+        // A helper rolls with the SAME advantage / disadvantage as the role they back — the pace/weather mods the
+        // role-holders get — matched by the role whose skill set includes this helper's skill. v0.55.210.
+        const roleKey = Object.keys(ROLE_SKILLS).find(k => ROLE_SKILLS[k].includes(h.skillId)) || "navigate";
+        const rs = rollState(roleKey);
         h._rolling = true; let result = null;
         try {
-            if (major >= 4) result = await actor.rollSkill({ skill: h.skillId }, { configure: false });
-            else result = await actor.rollSkill(h.skillId, { fastForward: true });
+            if (major >= 4) result = await actor.rollSkill({ skill: h.skillId, advantage: rs.adv, disadvantage: rs.dis }, { configure: false });
+            else result = await actor.rollSkill(h.skillId, { advantage: rs.adv, disadvantage: rs.dis, fastForward: true });
         } catch (e) { warn("helper rollSkill failed", e); } finally { h._rolling = false; }
         const rr = Array.isArray(result) ? result[0] : result;
         if (rr) { h.total = rr.total ?? null; h.nat = natOf(rr); pulseTravelGroup(); }
@@ -6229,11 +6233,13 @@ const Turn = (() => {
             const supRows = navRefund ? [] : await Party.consumeDay(paceCost, dc);   // a nat-20 nav refunds the day — nobody spends anything
             if (supRows.length) {
                 const items = supRows.map(r => {
-                    const short = (r.rShort || r.wShort) ? ` <span style="color:#d6887e">short${r.rShort ? ` ${r.rShort}${cwfResIcon("rations")}` : ""}${r.wShort ? ` ${r.wShort}${cwfResIcon("water")}` : ""}</span>` : "";
-                    const saveTxt = r.saves.map(s => `${s.kind} CON ${s.roll}${s.ok ? "✓" : "✗"}`).join(" · ");
-                    return `<div class="cwf-sv-row ${r.exh ? "hit" : ""}"><span class="cwf-sv-name">${cwfEsc(r.name)}</span><span class="cwf-sv-chips">−${r.rTake}${cwfResIcon("rations")} −${r.wTake}${cwfResIcon("water")}${short}${saveTxt ? ` · ${saveTxt}` : ""}</span>${r.exh ? `<span class="cwf-sv-exh up">▲ +${r.exh}</span>` : `<span class="cwf-sv-exh ok">ok</span>`}</div>`;
+                    const short = (r.rShort || r.wShort) ? `<span style="color:#d6887e">short${r.rShort ? ` ${r.rShort}${cwfResIcon("rations")}` : ""}${r.wShort ? ` ${r.wShort}${cwfResIcon("water")}` : ""}</span>` : "";
+                    // CON save line, clear: "hunger ✗ CON 8/13" (roll / biome DC). Number() guards against ever rendering [object Object].
+                    const saveTxt = r.saves.map(s => `${cwfEsc(s.kind)} ${s.ok ? "✓" : "✗"} <span style="opacity:.6">CON ${Number(s.roll)}/${dc}</span>`).join(" · ");
+                    const sub = [short, saveTxt].filter(Boolean).join("  ·  ");   // the shortfall + save details, on their own line so the row never crams
+                    return `<div class="cwf-sv-row ${r.exh ? "hit" : ""}"><span class="cwf-sv-name">${cwfEsc(r.name)}</span><span class="cwf-sv-chips">−${r.rTake}${cwfResIcon("rations")} −${r.wTake}${cwfResIcon("water")}${sub ? `<span style="display:block;margin-top:2px">${sub}</span>` : ""}</span>${r.exh ? `<span class="cwf-sv-exh up">▲ +${r.exh}</span>` : ""}</div>`;
                 }).join("");
-                body += `<div class="cwf-rr"><div class="cwf-rr-head"><span class="cwf-rr-icon"><i class="fa-solid fa-utensils"></i></span><span class="cwf-rr-id"><span class="cwf-rr-role">Daily upkeep</span><span class="cwf-rr-sub">−${paceCost} ration · −${paceCost} water each (${pace} pace)</span></span></div><div class="cwf-rr-b">${items}</div></div>`;
+                body += `<div class="cwf-rr"><div class="cwf-rr-head"><span class="cwf-rr-icon"><i class="fa-solid fa-utensils"></i></span><span class="cwf-rr-id"><span class="cwf-rr-role">Daily upkeep</span><span class="cwf-rr-sub">−${paceCost}${cwfResIcon("rations")} −${paceCost}${cwfResIcon("water")} each · ${pace} pace</span></span></div><div class="cwf-rr-b">${items}</div></div>`;
             }
         } catch (e) { warn("daily upkeep failed", e); }
 
