@@ -4616,10 +4616,13 @@ async function cwfQuestData() {
     catch (e) { try { json = await (await fetch(path)).json(); } catch (e2) { warn("quest-arcs.json fetch failed", e2); } }
     cwfQuestData._cache = json; return json;
 }
+// Per-arc icon for the Codex sheet (icon-override) so each arc's quests read at a glance; paired with the .cwf-arc-<arc> colour.
+const CWF_ARC_ICON = { hag_coven: "fa-hat-wizard", drums_of_war: "fa-chess-rook", black_market: "fa-sack-dollar", scorched_earth: "fa-sun-plant-wilt" };
 function cwfQuestBody(node, data) {
     const npc = node.npc ? data.npcs[node.npc] : null;
     const outs = node.outcomes.map(o => `<li><b>${cwfEsc(o.label)}:</b> ${cwfEsc(o.reward || "")}${o.unlocks?.length ? ` <em>→ unlocks ${cwfEsc(o.unlocks.join(", "))}</em>` : ""}${o.sets?.length ? ` <em>[world-state: ${cwfEsc(o.sets.join(", "))}]</em>` : ""}</li>`).join("");
-    return `${npc ? `<p><b>${cwfEsc(npc.name)}</b> <em>(${cwfEsc(npc.role)})</em> — ${cwfEsc(npc.cue)}</p>` : ""}<p><b>Situation.</b> ${cwfEsc(node.situation)}</p><p><b>Objective.</b> ${cwfEsc(node.objective)}</p>${node.prereqFlags?.length ? `<p><b>Prerequisite:</b> ${cwfEsc(node.prereqFlags.join(node.prereqAny ? " OR " : " AND "))}.</p>` : ""}<p><b>Outcomes</b></p><ul>${outs}</ul>`;
+    // The OBJECTIVE lives in the quest's objectives list (not the body); the body carries the cue, situation, prerequisite + branching outcomes.
+    return `${npc ? `<p><b>${cwfEsc(npc.name)}</b> <em>(${cwfEsc(npc.role)})</em> — ${cwfEsc(npc.cue)}</p>` : ""}<p><b>Situation.</b> ${cwfEsc(node.situation)}</p>${node.prereqFlags?.length ? `<p><b>Prerequisite:</b> ${cwfEsc(node.prereqFlags.join(node.prereqAny ? " OR " : " AND "))}.</p>` : ""}<p><b>Outcomes</b></p><ul>${outs}</ul>`;
 }
 async function cwfBuildQuests({ rebuild = false } = {}) {
     if (!game.user.isGM) return null;
@@ -4641,9 +4644,10 @@ async function cwfBuildQuests({ rebuild = false } = {}) {
         q.title = name; q.description = cwfQuestBody(n, data);
         q.urgency = n.kind === "terminal" ? "high" : n.kind === "entry" ? "medium" : "low";
         q.boardColumn = "active"; q.visible = true;
-        q.objectives = [{ id: foundry.utils.randomID(), title: n.objective, description: "", completed: false, visible: true, objectives: [] }];
+        q.objectives = String(n.objective).split(/\.\s+/).map(s => s.trim()).filter(Boolean).map(t => ({ id: foundry.utils.randomID(), title: t.replace(/\.+$/, "") + ".", description: "", completed: false, visible: true, objectives: [] }));   // the objective broken into discrete, checkable steps
         qd.quests[0] = q; qd.cavrilArc = n.arc; qd.cavrilNode = id;
         try { await jrnl.setFlag("campaign-codex", "data", qd); } catch (e) { warn(`quest data set failed: ${id}`, e); }
+        try { const ic = CWF_ARC_ICON[n.arc]; if (ic) await jrnl.setFlag("campaign-codex", "icon-override", `fa-solid ${ic} cwf-arc-${n.arc}`); } catch (e) { /* icon optional */ }
         ids[id] = { uuid: jrnl.uuid, questId: q.id }; made++;
     }
     for (const id in nodes) {   // PASS 2 — wire the dependency / unlock graph
@@ -4911,7 +4915,7 @@ async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find o
         // A Reputation Tracker on the Info tab → track the party's STANDING with this NPC at a glance (the "alliances" pillar),
         // plus a connections GRAPH widget that diagrams their associate links (the City HUD's friend-graph, in Codex form).
         await cwfCodexWidget(doc, "Reputation Tracker", "info", "reputationtracker", { useLoyalty: false, reputationValue: 0 });
-        await cwfCodexWidget(doc, "networkGraph", "info", "networkgraph", {});
+        await cwfCodexWidget(doc, "networkGraph", "associates", "networkgraph", {});   // the connections graph belongs on the Associates tab, not first-in-view on Info
         // SATCHEL — a per-NPC RollTable (home-biome herbs + an origin-biome rare) wired to a Merchant Counter, so EVERY NPC
         // (merchant or not) restocks specialized, biome-rooted loot. Best-effort: no PCAG gather tables → no satchel.
         try { const satchel = await cwfBuildSatchel(m, dossier.home, dossier.origin); if (satchel) await cwfCodexWidget(doc, "Merchant Counter", "inventory", "merchantcounter", { restockTables: [{ uuid: satchel.uuid, multiplier: "1d3", name: satchel.name, img: "icons/svg/chest.svg" }] }); } catch (e) { warn("satchel wire failed", e); }

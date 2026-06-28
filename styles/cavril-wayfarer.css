@@ -119,9 +119,14 @@
 .cwf-meal-pip { font-size: 11px; color: #7a8290; opacity: .45; transition: color .15s, opacity .15s; }
 .cwf-meal-pip.done { color: #f2c64b; opacity: 1; }
 /* Header chrome — ambience auto-on (no button); day + meals are chips at the left, End Expedition pushed to the right. */
-.cwf-end-exped { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 2px 10px; border-radius: 11px; border: 1px solid #d6665a55; background: #d6665a1a; color: #e8a59e; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.cwf-end-exped { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #d6665a55; background: #d6665a1a; color: #e8a59e; cursor: pointer; white-space: nowrap; }
 .cwf-end-exped:hover { background: #d6665a33; color: #fff; }
-.cwf-actions .cwf-resupply { flex: 2.2; gap: 6px; }   /* Resupply is a labelled button among the icon-only rest/sync ones */
+.cwf-actions .cwf-resupply, .cwf-actions .cwf-end-exped { flex: 2.2; gap: 6px; }   /* Resupply + End Expedition: the two labelled buttons, sized equally among the icon-only rest/sync ones */
+/* Quest arc colours — used by the Campaign Codex icon-override (fa-solid fa-x cwf-arc-<arc>) so each arc's quests read at a glance */
+.cwf-arc-hag_coven { color: #b07be0; }
+.cwf-arc-drums_of_war { color: #d6665a; }
+.cwf-arc-black_market { color: #e0a82e; }
+.cwf-arc-scorched_earth { color: #5bb3c9; }
 .cwf-daychoice { flex-direction: row; }
 .cwf-daychoice .cwf-plan { width: auto; flex: 2; }
 .cwf-daychoice .cwf-btn { flex: 1; height: 34px; }
