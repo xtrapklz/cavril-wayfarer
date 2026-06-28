@@ -2469,8 +2469,36 @@ async function cwfForageSickness(actorId) {
 }
 // The crit-FAIL forage's nat-1 fork (travel-loop contract): RUINED RESOURCES (1d4 rations spoil across the party) OR TOXIC
 // HARVEST (the Forager makes a CON save vs the biome DC — a fail leaves them Poisoned). Coin flip on a 1d2.
-async function cwfForageCritFail(actorId, cls) {
+const CWF_HERB_MISHAPS = [
+    "Mistook hemlock for wild carrot — <b>Poisoned</b> until a long rest (a CON save vs the biome DC shakes it early).",
+    "A fistful of nettles — <b>1d4 damage</b> and disadvantage on the next precise task (lockpicking, fine work).",
+    "Disturbed a hornets' nest in the brush — the party scrambles clear, <b>losing a ration each</b>.",
+    "Crushed the find underfoot — <b>nothing usable</b> comes back this stretch.",
+    "A thorn festers — the Forager <b>wakes with +1 exhaustion</b> unless someone treats it (Medicine).",
+    "Picked a sleep-cap mushroom — <b>Poisoned</b> and groggy until a long rest clears it.",
+    "Reached into a viper's den — a bite: <b>CON save vs the biome DC or Poisoned + 1d6</b>.",
+    "Caustic sap blisters the hands — <b>disadvantage on weapon attacks</b> until a long rest.",
+    "Gathered a tainted bloom — the <b>next potion brewed</b> from the satchel curdles (GM's call).",
+    "Caked in spore-dust — the Forager <b>reeks</b>; disadvantage on Stealth until they wash.",
+    "Wandered off chasing a rare flower — <b>the day runs late</b> and the search turns up nothing.",
+    "An allergic bloom swells the eyes — <b>disadvantage on Perception for 24 hours</b>.",
+    "The 'herb' was carnivorous — it <b>bites for 1d6</b> and the sample is lost.",
+    "Provoked a territorial beast guarding the grove — a <b>surprise wildlife encounter</b>."
+];
+// A botched forage's nat-1 fork. HERBS target → its own d14 bad-harvest deck (the two outright-poison results + the wildlife
+// result auto-apply; the rest narrate). FOOD / WATER / BOTH → the Ruined Resources / Toxic Harvest coin-flip. v0.55.170.
+async function cwfForageCritFail(actorId, cls, target = "food") {
     if (!game.user.isGM) return;
+    if (target === "herbs") {
+        const a = game.actors.get(actorId);
+        let n = 1; try { n = (await new Roll("1d14").evaluate()).total; } catch (e) { n = 1 + Math.floor(Math.random() * 14); }
+        n = Math.max(1, Math.min(14, n));
+        if (n === 1 || n === 6) { try { await a?.toggleStatusEffect?.("poisoned", { active: true }); } catch (e) { /* noop */ } }
+        try { Cinematic.broadcast({ icon: "fa-poison", title: "Bad Harvest", subtitle: `${a?.name || "the forager"} — a herb-gathering mishap`, tone: "danger" }); } catch (e) { /* noop */ }
+        try { ChatMessage.create({ content: cwfCardShell("fa-poison", "Bad Harvest", cwfRow(a?.name || "Forager", `<span class="cwf-rr-sk">d14 → ${n}.</span> ${CWF_HERB_MISHAPS[n - 1]}`)) }); } catch (e) { /* noop */ }
+        if (n === 14) { try { await cwfCombatBeat(cls, cls?.biome, { surprised: true }); } catch (e) { warn("herb mishap encounter failed", e); } }
+        return;
+    }
     let toxic = true;
     try { toxic = (await new Roll("1d2").evaluate()).total === 1; } catch { /* default to toxic */ }
     if (toxic) {
@@ -5540,7 +5568,7 @@ const Turn = (() => {
         syncRollSuppress(false);            // rolls are in → release the suppress
         let navEffect = "arrive";
         let navRefund = false, navDoubleDrain = false;   // nat-20 nav refunds the day's upkeep; a critfail "Vicious Circle" drains it double
-        let forageMishap = null, scoutMishap = null;   // a botched forage / scout's victim — resolved (the nat-1 fork) after the role loop
+        let forageMishap = null, forageMishapTgt = "food", scoutMishap = null;   // a botched forage / scout's victim — resolved (the nat-1 fork) after the role loop
         for (const [k, v] of claimedRoles()) {
             const tier = outcomeFor(v, k) || "fail";
             v.outcome = tier;
@@ -5557,14 +5585,15 @@ const Turn = (() => {
             }
             if (k === "scout" && tier === "critfail") scoutMishap = v.actorId;   // nat-1 scout → Hornet's Nest / Pitfall, resolved after the loop
             if (k === "forage") {
-                // Forage PRODUCES food into the party's packs by SUCCESS TIER (travel-loop contract): success +2 rations, major
-                // +4, crit +6 + a medicinal boon. Yields distribute to each character up to their own Strength-score max — no
-                // stockpile. Water auto-fills to max at a real source (river/lake/coast). The herb satchel (Provenance) rides a
-                // good roll. The Forager targets Food / Water / Both — Both rolls at disadvantage unless a helper backs them. v0.55.163.
+                // Forage PRODUCES supplies by SUCCESS TIER (travel-loop contract): FOOD success +2 / major +4 / crit +6 rations;
+                // WATER success 1d4 / major-crit fill; HERBS success 1d2 / major 1d3+1 / crit 1d4+2 into the Gatherer satchel.
+                // Yields cap at each character's Strength score; water auto-fills at a source. BOTH (food+water) rolls at
+                // disadvantage unless a helper backs the Forager. A crit eases the weariest member. v0.55.170.
                 if (tier === "success" || tier === "major" || tier === "crit") {
                     const atSource = !!(governing?.river || governing?.coast || governing?.terrainKey === "water" || governing?.biome === "water");
                     const wantFood = forageTarget === "food" || forageTarget === "both";
                     const wantWater = forageTarget === "water" || forageTarget === "both";
+                    const wantHerbs = forageTarget === "herbs";
                     const foodYield = tier === "crit" ? 6 : tier === "major" ? 4 : 2;
                     let foodGot = 0, waterGot = 0, waterFull = false;
                     if (wantFood) { const fg = await Party.addSupplies(foodYield, 0); foodGot = fg.rations || 0; }   // success +2 · major +4 · crit +6 rations
@@ -5573,17 +5602,21 @@ const Turn = (() => {
                         if (tier === "success") { try { const wr = (await new Roll("1d4").evaluate()).total; const wg = await Party.addSupplies(0, wr); waterGot = wg.water || 0; } catch (e) { /* water optional */ } }   // success → 1d4 unpurified water
                         else { waterGot = await Party.refillWater(); waterFull = waterGot > 0; }                    // major/crit → enough to fill every skin
                     }
-                    let herbTxt = ""; const herbN = tier === "crit" ? 2 : tier === "major" ? 1 : 0;
+                    // HERBS as the primary target → a tier-scaled gather (success 1d2 · major 1d3+1 · crit 1d4+2); else herbs just ride a good food/water roll
+                    let herbTxt = "", herbN;
+                    if (wantHerbs) { try { herbN = (await new Roll(tier === "crit" ? "1d4+2" : tier === "major" ? "1d3+1" : "1d2").evaluate()).total; } catch (e) { herbN = tier === "crit" ? 5 : tier === "major" ? 3 : 1; } }
+                    else herbN = tier === "crit" ? 2 : tier === "major" ? 1 : 0;
                     if (herbN > 0) { const g = await cwfForageGather(v.actorId, governing, { count: herbN }); if (g) herbTxt = g; }
                     const bits = [];
                     if (foodGot) bits.push(`+${foodGot}${cwfResIcon("rations")}`);
                     if (waterFull) bits.push(`${cwfResIcon("water")} water source — all skins topped off`);
                     else if (waterGot) bits.push(`+${waterGot}${cwfResIcon("water")}`);
                     if (herbTxt) bits.push(herbTxt);
-                    v.result += bits.length ? ` <em>— ${bits.join(" · ")}.</em>` : ` <em>— but every pack is already full.</em>`;
+                    v.result += bits.length ? ` <em>— ${bits.join(" · ")}.</em>` : ` <em>— ${wantHerbs ? "but the gathering turns up nothing usable" : "but every pack is already full"}.</em>`;
+                    if (wantHerbs && tier === "crit") v.result += ` <em>— a rare bloom: a potent ingredient for the satchel.</em>`;   // herb crit-success boon (atop the medicinal ease)
                     if (tier === "crit") { const eased = await cwfForageMedicinal(); if (eased) v.result += ` <em>${eased}</em>`; }
                 } else if (tier === "critfail") {
-                    forageMishap = v.actorId;   // tainted flora or a roused beast → sickness OR a surprise wildlife fight
+                    forageMishap = v.actorId; forageMishapTgt = forageTarget;   // resolved after the loop — the d14 herb deck OR the Ruined/Toxic fork, by target
                 }
             }
         }
@@ -5656,7 +5689,7 @@ const Turn = (() => {
         }
         // A crit-fail forage lands its consequence AFTER the travel beat: tainted flora (lingering sickness) or a roused
         // territorial beast (a surprise fight). Always a surprise — the party blundered into it.
-        if (forageMishap) { try { await cwfForageCritFail(forageMishap, cls); } catch (e) { warn("forage crit-fail resolve failed", e); } }
+        if (forageMishap) { try { await cwfForageCritFail(forageMishap, cls, forageMishapTgt); } catch (e) { warn("forage crit-fail resolve failed", e); } }
         if (scoutMishap) { try { await cwfScoutCritFail(scoutMishap, cls); } catch (e) { warn("scout crit-fail resolve failed", e); } }
 
         step = "resolved";
@@ -5705,7 +5738,7 @@ const Turn = (() => {
         roleDc: (k) => cwfRoleDc(k, governing),
         claimedRoles, allRolled,
         addHelper, setHelper, dropHelper, rollHelper, enterHelper, claimedHelpers,
-        setForageTarget(t) { if (["food", "water", "both"].includes(t)) { forageTarget = t; WayfarerPanel.render(); } },
+        setForageTarget(t) { if (["food", "water", "both", "herbs"].includes(t)) { forageTarget = t; WayfarerPanel.render(); } },
         get forageTarget() { return forageTarget; },
         get active() { return active; }, get step() { return step; }, get roles() { return roles; }, get helpers() { return helpers; },
         get governing() { return governing; }, get route() { return route; }
@@ -6251,7 +6284,7 @@ const WayfarerPanel = (() => {
                 : `<span class="cwf-role-dc" title="${ROLE_LABEL[k]} DC for this terrain (biome-shaped)">DC ${rdc.dc}</span>`;
             const badge = s.total != null ? `<span class="cwf-tier cwf-${tier}">${s.total} · ${TIER_LABEL[tier]}</span>` : "";
             // The Forager picks a target — Food / Water / Both (Both rolls at disadvantage unless a helper backs the Forager).
-            const forageTgt = k === "forage" ? `<div class="cwf-forage-tgt" title="What the Forager is gathering this turn">${[["food", "fa-drumstick-bite", "Food — rations only"], ["water", "fa-bottle-water", "Water only"], ["both", "fa-layer-group", "Both — at disadvantage (a Forager helper cancels it)"]].map(([tg, ic, tip]) => `<button class="cwf-seg cwf-seg-sm ${Turn.forageTarget === tg ? "on" : ""}" data-action="turn-forage-target" data-tgt="${tg}" title="${tip}"><i class="fa-solid ${ic}"></i></button>`).join("")}</div>` : "";
+            const forageTgt = k === "forage" ? `<div class="cwf-forage-tgt" title="What the Forager is gathering this turn">${[["food", "fa-drumstick-bite", "Food — rations only"], ["water", "fa-bottle-water", "Water only"], ["both", "fa-layer-group", "Both food + water — at disadvantage (a Forager helper cancels it)"], ["herbs", "fa-seedling", "Herbs — gather crafting ingredients into the party satchel (the Gatherer hook)"]].map(([tg, ic, tip]) => `<button class="cwf-seg cwf-seg-sm ${Turn.forageTarget === tg ? "on" : ""}" data-action="turn-forage-target" data-tgt="${tg}" title="${tip}"><i class="fa-solid ${ic}"></i></button>`).join("")}</div>` : "";
             const rollRow = s.actorId ? `
                 <div class="cwf-roll-row">
                     <button class="cwf-btn cwf-roll" data-action="turn-roll" data-role="${k}" ${dis}><i class="fa-solid fa-dice-d20"></i> Roll</button>
