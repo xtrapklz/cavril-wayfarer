@@ -4948,6 +4948,9 @@ async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find o
         // SATCHEL — a per-NPC RollTable (home-biome herbs + an origin-biome rare) wired to a Merchant Counter, so EVERY NPC
         // (merchant or not) restocks specialized, biome-rooted loot. Best-effort: no PCAG gather tables → no satchel.
         try { const satchel = await cwfBuildSatchel(m, dossier.home, dossier.origin); if (satchel) await cwfCodexWidget(doc, "Merchant Counter", "inventory", "merchantcounter", { restockTables: [{ uuid: satchel.uuid, multiplier: "1d3", name: satchel.name, img: "icons/svg/chest.svg" }] }); } catch (e) { warn("satchel wire failed", e); }
+        // BUY-BACK: a Trade-In Counter on EVERY NPC's Inventory tab, so the party can sell items back. CC's TradeInWidget →
+        // storage key "tradein" (class name minus "Widget", lowercased), registry name "Trade-In Counter". Defaults are fine.
+        try { await cwfCodexWidget(doc, "Trade-In Counter", "inventory", "tradein", {}); } catch (e) { warn("trade-in wire failed", e); }
     } catch (e) { warn("populate road-cast journal failed", e); }
     return doc;
 }
