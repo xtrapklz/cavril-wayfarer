@@ -1695,6 +1695,12 @@
       t3: { pool: ["Yuan-ti Malison", "Velociraptor", "Ape", "Allosaurus"], lurker: ["Yuan-ti Malison", "Tiger", "Couatl"], apex: ["Giant Ape", "Tyrannosaurus Rex", "Triceratops", "Young Green Dragon", "Giant Crocodile"] },
       t4: { pool: ["Yuan-ti Malison", "Allosaurus", "Giant Ape"], lurker: ["Couatl", "Oni"], apex: ["Tyrannosaurus Rex", "Giant Ape", "Adult Green Dragon", "Triceratops"] }
     },
+    swamp: {   // the GM's Swamp — was MISSING from the per-APL bands, so swamp fell back to the flat roster / generic; now banded
+      t1: { pool: ["Giant Frog", "Crocodile", "Lizardfolk", "Giant Lizard", "Stirge", "Swarm of Insects", "Giant Poisonous Snake"], lurker: ["Giant Toad", "Will-o'-Wisp", "Giant Constrictor Snake", "Lizardfolk Shaman"], apex: ["Crocodile", "Giant Crocodile", "Black Dragon Wyrmling", "Troll"] },
+      t2: { pool: ["Lizardfolk", "Crocodile", "Giant Constrictor Snake", "Lizardfolk Shaman", "Giant Toad"], lurker: ["Green Hag", "Will-o'-Wisp", "Giant Crocodile"], apex: ["Giant Crocodile", "Hydra", "Shambling Mound", "Troll", "Young Black Dragon"] },
+      t3: { pool: ["Lizardfolk", "Giant Crocodile", "Shambling Mound", "Troll"], lurker: ["Green Hag", "Will-o'-Wisp"], apex: ["Hydra", "Giant Crocodile", "Young Black Dragon", "Shambling Mound"] },
+      t4: { pool: ["Giant Crocodile", "Shambling Mound", "Hydra"], lurker: ["Green Hag"], apex: ["Hydra", "Adult Black Dragon", "Young Black Dragon"] }
+    },
     desert: {
       t1: { pool: ["Jackal", "Giant Lizard", "Hyena", "Vulture", "Bandit", "Cultist", "Kobold", "Scout"], lurker: ["Giant Scorpion", "Spy", "Swarm of Insects"], apex: ["Giant Hyena", "Lion", "Bandit Captain", "Gnoll"] },
       t2: { pool: ["Gnoll", "Scout", "Veteran", "Cult Fanatic", "Giant Hyena"], lurker: ["Giant Scorpion", "Lamia", "Mummy"], apex: ["Lion", "Lamia", "Mummy", "Gnoll Pack Lord", "Salamander", "Young Brass Dragon"] },
@@ -1725,17 +1731,17 @@
       t3: { pool: ["Azer", "Salamander", "Fire Elemental"], lurker: ["Salamander", "Efreeti"], apex: ["Fire Giant", "Young Red Dragon", "Fire Elemental", "Efreeti"] },
       t4: { pool: ["Salamander", "Fire Giant", "Azer"], lurker: ["Efreeti"], apex: ["Adult Red Dragon", "Fire Giant", "Efreeti", "Pit Fiend"] }
     },
-    wasteland: {
-      t1: { pool: ["Jackal", "Giant Vulture", "Zombie", "Skeleton", "Bandit", "Cultist", "Vulture"], lurker: ["Ghoul", "Giant Scorpion", "Spy"], apex: ["Ghast", "Ogre", "Manticore", "Bandit Captain"] },
-      t2: { pool: ["Skeleton", "Zombie", "Ghoul", "Cultist", "Veteran"], lurker: ["Wight", "Ghost", "Cult Fanatic"], apex: ["Wight", "Manticore", "Mummy", "Ogre", "Revenant"] },
-      t3: { pool: ["Veteran", "Wight", "Ghoul", "Ghast"], lurker: ["Wraith", "Ghost", "Revenant"], apex: ["Mummy", "Wraith", "Young Black Dragon", "Revenant"] },
-      t4: { pool: ["Veteran", "Wight", "Wraith"], lurker: ["Wraith", "Death Knight"], apex: ["Adult Black Dragon", "Death Knight", "Lich", "Wraith"] }
+    wasteland: {   // = the GM's CAVE / UNDERDARK — aberrations, oozes, subterranean beasts (was the old undead "blight" roster, which shadowed BIOME_ROSTER.wasteland)
+      t1: { pool: ["Giant Bat", "Giant Centipede", "Giant Spider", "Swarm of Bats", "Darkmantle", "Troglodyte", "Giant Lizard"], lurker: ["Gray Ooze", "Grick", "Piercer"], apex: ["Otyugh", "Gelatinous Cube", "Ochre Jelly", "Ogre"] },
+      t2: { pool: ["Troglodyte", "Grick", "Giant Spider", "Darkmantle", "Giant Bat"], lurker: ["Roper", "Gelatinous Cube", "Grick"], apex: ["Otyugh", "Umber Hulk", "Bulette", "Black Pudding", "Hill Giant"] },
+      t3: { pool: ["Umber Hulk", "Roper", "Troglodyte", "Black Pudding"], lurker: ["Roper", "Cloaker"], apex: ["Umber Hulk", "Bulette", "Purple Worm", "Young Black Dragon", "Beholder"] },
+      t4: { pool: ["Umber Hulk", "Roper"], lurker: ["Cloaker"], apex: ["Purple Worm", "Beholder", "Adult Black Dragon"] }
     },
-    tainted: {
-      t1: { pool: ["Zombie", "Skeleton", "Cultist", "Shadow", "Stirge", "Swarm of Insects", "Giant Centipede"], lurker: ["Ghoul", "Specter", "Will-o'-Wisp"], apex: ["Ghast", "Cult Fanatic", "Ogre", "Mimic"] },
-      t2: { pool: ["Ghoul", "Cultist", "Shadow", "Specter", "Veteran"], lurker: ["Wight", "Carrion Crawler", "Otyugh", "Ghost"], apex: ["Ghast", "Wight", "Vampire Spawn", "Flameskull", "Mummy"] },
-      t3: { pool: ["Veteran", "Wight", "Ghast", "Cult Fanatic"], lurker: ["Wraith", "Vampire Spawn", "Gibbering Mouther", "Night Hag"], apex: ["Vampire", "Wraith", "Beholder", "Young Black Dragon", "Mummy Lord"] },
-      t4: { pool: ["Wight", "Vampire Spawn", "Veteran"], lurker: ["Night Hag", "Gibbering Mouther"], apex: ["Vampire", "Beholder", "Lich", "Death Knight"] }
+    tainted: {   // = the GM's FEYWILD — fey + hags + enchanted nature (was the old undead roster, which shadowed BIOME_ROSTER.tainted so Feywild spawned zombies)
+      t1: { pool: ["Sprite", "Pixie", "Blink Dog", "Satyr", "Dryad", "Swarm of Insects", "Awakened Shrub"], lurker: ["Dryad", "Will-o'-Wisp", "Green Hag"], apex: ["Owlbear", "Green Hag", "Awakened Tree", "Displacer Beast"] },
+      t2: { pool: ["Satyr", "Blink Dog", "Displacer Beast", "Awakened Tree", "Will-o'-Wisp"], lurker: ["Green Hag", "Night Hag", "Will-o'-Wisp"], apex: ["Treant", "Unicorn", "Young Green Dragon", "Displacer Beast"] },
+      t3: { pool: ["Displacer Beast", "Green Hag", "Satyr", "Awakened Tree"], lurker: ["Night Hag", "Green Hag"], apex: ["Treant", "Unicorn", "Young Green Dragon", "Adult Green Dragon"] },
+      t4: { pool: ["Displacer Beast", "Treant"], lurker: ["Night Hag"], apex: ["Treant", "Adult Green Dragon", "Unicorn"] }
     },
     void: {
       t1: { pool: ["Shadow", "Specter", "Will-o'-Wisp", "Cultist", "Nothic"], lurker: ["Phase Spider", "Specter", "Nothic"], apex: ["Wight", "Flameskull", "Gibbering Mouther"] },
