@@ -4582,7 +4582,7 @@ const CWF_COMBAT_THEMES = {
 // Default biome → theme (a quest or the GM can override per-fight). A water FEATURE (river/coast) pulls Deep Waters regardless.
 const CWF_BIOME_THEME = {
     temperate: "soldiers", boreal: "fey", jungle: "predators", savanna: "predators", swamp: "deepwater",
-    desert: "undead", tundra: "predators", frozen: "predators", volcanic: "titans", wasteland: "undead",
+    desert: "undead", tundra: "predators", frozen: "predators", volcanic: "titans", wasteland: "caves",
     tainted: "undead", void: "undead", water: "deepwater", unknown: "soldiers"
 };
 function cwfCombatTier(apl) { const L = Math.max(1, Math.round(Number(apl) || 1)); return CWF_COMBAT_TIERS.reduce((b, t) => Math.abs(t - L) <= Math.abs(b - L) ? t : b, 1); }   // nearest tier; an even APL ties UP to the harder build
@@ -4653,11 +4653,12 @@ async function cwfDecksData() {
 // Default hex → deck. Features win (road/river/coast), then elevation (highland→Mountains, hills→Hills), then biome.
 const CWF_BIOME_DECK = {
     temperate: "forest", boreal: "forest", jungle: "jungle", savanna: "grassland", swamp: "swamp",
-    desert: "desert", tundra: "mountains", frozen: "mountains", volcanic: "mountains", wasteland: "desert",
+    desert: "desert", tundra: "mountains", frozen: "mountains", volcanic: "mountains", wasteland: "underdark",
     tainted: "feywild", void: "underdark", water: "lake", unknown: "forest"
 };
 function cwfDeckFor(gov) {
     if (gov?.biome === "tainted") return "feywild";   // the Tainted (☢ fa-radiation) biome set IS the Feywild — its table covers ALL its terrain, even hills/mountains/roads, so this wins over elevation
+    if (gov?.biome === "wasteland") return "underdark";   // the Wasteland (💀 fa-skull) biome set = the GM's Underdark / Caves — same realm override, covers ALL its terrain (wins over elevation)
     if (gov?.infrastructure) return "road";
     if (gov?.river) return "river";
     if (gov?.coast) return "coastal";
