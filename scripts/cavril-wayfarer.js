@@ -4582,6 +4582,24 @@ async function cwfRollDeck(deckKey) {
     const kind = /combat/.test(tag) ? "combat" : /hazard/.test(tag) ? "hazard" : /skill/.test(tag) ? "skill" : /social|trade/.test(tag) ? "social" : "feature";
     return { deck: deckKey, text, tag, kind };
 }
+// Roll the CURRENT hex's deck → post a card; a Combat result carries a "Spawn foes" button that hands the hex's theme to
+// cwfSpawnEncounter. The HUD "Feature" chip + the card's spawn button both route here. v0.55.173.
+async function cwfRollHexFeature() {
+    if (!game.user?.isGM) return;
+    const tok = Canvasry.activeToken();
+    let gov = {}; try { gov = (tok ? Canvasry.biomeForToken(tok) : {}) || {}; } catch (e) { /* default */ }
+    const deckKey = cwfDeckFor(gov);
+    const res = await cwfRollDeck(deckKey);
+    if (!res || !res.text) { ui.notifications?.warn(`${TITLE}: no "${deckKey}" deck yet — run CavrilWayfarer.buildDecks() first.`); return; }
+    const KIND_ICON = { combat: "fa-dragon", hazard: "fa-triangle-exclamation", skill: "fa-dice-d20", social: "fa-handshake", feature: "fa-landmark" };
+    const theme = cwfThemeForHex(gov);
+    const label = res.deck.charAt(0).toUpperCase() + res.deck.slice(1);
+    const tagLabel = res.tag ? res.tag.replace(/\b\w/g, c => c.toUpperCase()) : "Feature";
+    const foot = res.kind === "combat" ? `<div class="cwf-cardbtns"><button class="cwf-cardbtn cwf-primary" data-cwf="spawn-foes" data-theme="${cwfEsc(theme)}" title="Spawn the APL-scaled ${cwfEsc(theme)} foes near the party"><i class="fa-solid fa-dragon"></i> Spawn foes · ${cwfEsc(theme)}</button></div>` : "";
+    try { await ChatMessage.create({ content: cwfCardShell(KIND_ICON[res.kind] || "fa-dice-d20", `Hex Feature · ${cwfEsc(label)}`, cwfRow(tagLabel, cwfEsc(res.text.replace(/^\([^)]+\)\s*/, ""))), { footerHTML: foot }) }); } catch (e) { warn("hex feature card failed", e); }
+    if (res.kind === "combat") { try { Cinematic.broadcast({ icon: "fa-dragon", title: "Trouble ahead", subtitle: res.text.replace(/^\([^)]+\)\s*/, "").split(/[:.]/)[0].slice(0, 60), tone: "encounter" }); } catch (e) { /* noop */ } }
+    return res;
+}
 async function cwfRoadCastActor(m, kind) {
     if (!game.user?.isGM || !m?.name) return null;
     let actor = (game.actors || []).find(a => { try { return a.getFlag(MOD, "roadCast") === m.name; } catch (e) { return false; } }) || null;
@@ -6234,6 +6252,7 @@ const WayfarerPanel = (() => {
                     break;
                 }
                 case "explore-location": await Tables.exploreLocation(btn.dataset.key); break;
+                case "roll-feature": await cwfRollHexFeature(); break;
                 case "toggle-music": await toggleMusic(); break;
                 case "reset-journey": case "end-journey": await endJourney(); break;
                 case "haul": await foragerHaul(); break;
@@ -6640,6 +6659,7 @@ const WayfarerPanel = (() => {
                         ${cls && globalThis.CavrilEncounterStage ? `<button class="cwf-chip chip-scene" data-action="stage-scene" title="Stage a best-match SCENE for a roleplay beat here (a built place — tavern, shrine, ruin — no foes)"><i class="fa-solid fa-masks-theater"></i> Scene</button>` : ""}
                         ${cls && globalThis.CavrilEncounterStage ? `<button class="cwf-chip chip-map" data-action="stage-map" title="Stage a best-match empty BATTLE MAP for this hex (no foes) — for a hand-built fight"><i class="fa-solid fa-chess-board"></i> Map</button>` : ""}
                         ${cls ? `<button class="cwf-chip chip-meet" data-action="meet-someone" title="Drop a hand-crafted road-cast member (a traveling merchant or a road NPC) fitting this biome — the narrative counterpart to the Encounter chip"><i class="fa-solid fa-handshake"></i> Meet</button>` : ""}
+                        ${cls ? `<button class="cwf-chip chip-feature" data-action="roll-feature" title="Roll this hex's d20 encounter deck (${cwfDeckFor(cls)}) — a hazard, skill beat, or social/trade; a Combat result offers a button to spawn the themed APL-scaled foes"><i class="fa-solid fa-dice-d20"></i> Feature</button>` : ""}
                         ${(() => { const lk = Tables.locationKeyFor(site?.name); if (!lk) return ""; const ln = Tables.locationKeys().find(l => l.key === lk)?.name || site?.name; return `<button class="cwf-chip chip-explore" data-action="explore-location" data-key="${esc(lk)}" title="${esc(ln)} — roll on its bespoke exploration table"><i class="fa-solid fa-dungeon"></i> Explore</button>`; })()}
                     </div>
                     ${_dialsOpen ? `<div class="cwf-dials">
@@ -6984,6 +7004,7 @@ function wireCardButtons(root) {
                 else if (act === "open-journal") { try { const d = await fromUuid(el.dataset.uuid); d?.sheet?.render(true); } catch (e) { warn("open journal failed", e); } }   // open the road-cast member's Campaign Codex journal
                 else if (act === "stage-scene") { await globalThis.CavrilEncounterStage?.stageScene?.(); }   // best-match narrative backdrop for THIS meeting (no foes)
                 else if (act === "stage-map") { await globalThis.CavrilEncounterStage?.stageBattlemap?.(); }   // best-match empty battle map for this hex
+                else if (act === "spawn-foes") { await cwfSpawnEncounter(el.dataset.theme || null); }   // the hex-feature Combat card → spawn the APL-scaled themed foes near the party
                 else if (act === "enter-encounter") { await globalThis.CavrilEncounterStage?.enterEncounter?.(el.dataset.scene); }   // move to the staged scene
                 else if (act === "return-overworld") { await returnToOrigin(el.dataset.scene); }   // back to the overworld after the fight
                 else if (act === "step") await cwfDoHexStep();

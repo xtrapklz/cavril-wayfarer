@@ -503,6 +503,8 @@
 .cwf-chip.chip-party:hover { border-color: #5dcaa5; }
 .cwf-chip.chip-encounter i { color: #d8665a; }
 .cwf-chip.chip-encounter:hover { border-color: #d8665a; }
+.cwf-chip.chip-feature i { color: #5bb3c9; }
+.cwf-chip.chip-feature:hover { border-color: #5bb3c9; }
 .cwf-chip.chip-explore i { color: #b07be0; }
 .cwf-chip.chip-explore:hover { border-color: #b07be0; }
 .cwf-chip.chip-scene i { color: #5dcaa5; }
