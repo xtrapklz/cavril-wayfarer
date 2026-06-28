@@ -1087,24 +1087,21 @@ const Party = (() => {
     // stockpile — the only supplies that exist are the ones on the characters' own sheets.
     function supplies() {
         let rations = 0, water = 0;
-        for (const a of members()) { rations += countItems(a, RATION_RE); water += countItems(a, WATER_RE); }
+        for (const a of members()) { rations += countItems(a, RATION_RE); water += waterNow(a); }
         return { rations, water };
     }
     // What ONE character can carry: a base (setting) + their Strength modifier, for
     // rations and for waterskin charges alike. No shared stockpile — the party total is
     // just the sum of these. Floor of 1 so a feeble character still carries something.
-    // Each waterskin holds WATER_PER_SKIN charges (one "unit"). The party's MAX water = (waterskins owned) × that —
-    // bounded by the vessels you carry, not muscle — using each skin's own uses.max where set, else 4. (× quantity.)
+    // Each waterskin = WATER_PER_SKIN charges (one "unit"). MAX water = (number of waterskin ITEMS carried) × that — we count
+    // the VESSELS, NOT their dnd5e uses/quantity (DDB waterskins carry an inflated uses/qty that read as hundreds of charges).
     const WATER_PER_SKIN = 4;
-    function waterCap(a) {
-        let cap = 0;
-        for (const it of (a?.items ?? [])) {
-            if (!WATER_RE.test(it.name || "")) continue;
-            const u = it.system?.uses, qty = Math.max(1, Number(it.system?.quantity) || 1);
-            cap += ((u && Number.isFinite(u.max) && u.max > 0) ? u.max : WATER_PER_SKIN) * qty;
-        }
-        return cap;
-    }
+    const waterSkins = (a) => { let n = 0; for (const it of (a?.items ?? [])) if (WATER_RE.test(it.name || "")) n++; return n; };
+    const waterCap = (a) => waterSkins(a) * WATER_PER_SKIN;
+    // CURRENT water = a per-character POOL (charges remaining) in a flag, clamped to capacity, FULL when unset. Drinking
+    // (consumeDay) draws it down; a water source / refill tops it to cap. Decoupled from the waterskin item's own uses.
+    const waterNow = (a) => { const cap = waterCap(a); const f = Number(a?.getFlag?.(MOD, "water")); return Number.isFinite(f) ? Math.max(0, Math.min(cap, f)) : cap; };
+    const setWaterNow = async (a, v) => { try { await a?.setFlag?.(MOD, "water", Math.max(0, Math.min(waterCap(a), Math.round(Number(v) || 0)))); } catch (e) { /* noop */ } };
     function capacity(a) {
         // RATIONS = Strength SCORE (food is weight you haul). WATER = (waterskins owned × 4 charges) — so the max tracks how
         // many skins the party actually has, and a found source refills to exactly that. Floor of 1 ration for a feeble PC.
@@ -1119,7 +1116,7 @@ const Party = (() => {
             return {
                 id: a.id, name: a.name,
                 exh: a.system?.attributes?.exhaustion ?? 0,
-                rations: countItems(a, RATION_RE), water: countItems(a, WATER_RE),
+                rations: countItems(a, RATION_RE), water: waterNow(a),
                 capRations: cap.rations, capWater: cap.water
             };
         });
@@ -1230,17 +1227,14 @@ const Party = (() => {
         const mem = members();
         if (!mem.length) { ui.notifications?.warn(`${TITLE}: no party members to carry supplies.`); return { rations: 0, water: 0 }; }
         const out = { rations: 0, water: 0 };
-        for (const [key, re, want, name] of [["rations", RATION_RE, rations | 0, "Rations"], ["water", WATER_RE, water | 0, "Waterskin"]]) {
-            let need = Math.max(0, want);
-            const slots = mem.map(m => ({ m, room: Math.max(0, capacity(m)[key] - countItems(m, re)) }))
-                             .filter(s => s.room > 0).sort((a, b) => b.room - a.room);   // emptiest packs first
-            for (const s of slots) {
-                if (need <= 0) break;
-                const give = Math.min(s.room, need);
-                await addItem(s.m, re, name, give);
-                need -= give; out[key] += give;
-            }
-        }
+        // RATIONS — distributed as items into the emptiest packs (food is carried weight).
+        { let need = Math.max(0, rations | 0);
+          const slots = mem.map(m => ({ m, room: Math.max(0, capacity(m).rations - countItems(m, RATION_RE)) })).filter(s => s.room > 0).sort((a, b) => b.room - a.room);
+          for (const s of slots) { if (need <= 0) break; const give = Math.min(s.room, need); await addItem(s.m, RATION_RE, "Rations", give); need -= give; out.rations += give; } }
+        // WATER — added to each character's POOL (charges), emptiest first, capped at their waterskin capacity.
+        { let need = Math.max(0, water | 0);
+          const slots = mem.map(m => ({ m, room: Math.max(0, waterCap(m) - waterNow(m)) })).filter(s => s.room > 0).sort((a, b) => b.room - a.room);
+          for (const s of slots) { if (need <= 0) break; const give = Math.min(s.room, need); await setWaterNow(s.m, waterNow(s.m) + give); need -= give; out.water += give; } }
         return out;
     }
     // Water is a FULL RESET when a source is found: every member's waterskins fill to their carrying capacity. Returns the
@@ -1249,8 +1243,8 @@ const Party = (() => {
         if (!game.user.isGM) return 0;
         let added = 0;
         for (const m of members()) {
-            const need = Math.max(0, capacity(m).water - countItems(m, WATER_RE));
-            if (need > 0) { await addItem(m, WATER_RE, "Waterskin", need); added += need; }
+            const need = Math.max(0, waterCap(m) - waterNow(m));
+            if (need > 0) { await setWaterNow(m, waterCap(m)); added += need; }
         }
         return added;
     }
@@ -1259,25 +1253,25 @@ const Party = (() => {
     // buttons always do something instead of silently bailing when there's no group actor).
     async function adjustStash(type, delta) {
         if (!game.user.isGM || !delta) return;
-        const re = type === "water" ? WATER_RE : RATION_RE;
         const holder = stashHolder();
         if (!holder) { ui.notifications?.warn(`${TITLE}: no party actor (group or character) to hold supplies.`); return; }
+        if (type === "water") { await setWaterNow(holder, waterNow(holder) + delta); return; }   // water is a per-character POOL — nudge the holder's charges (clamped to capacity)
         if (delta > 0) {
-            await addItem(holder, re, type === "water" ? "Waterskin" : "Rations", delta);
+            await addItem(holder, RATION_RE, "Rations", delta);
         } else {
             let need = -delta;
-            need -= await take(holder, re, need);                                    // take from the stash holder first
-            for (const m of members()) { if (need <= 0) break; if (m === holder) continue; need -= await take(m, re, need); }  // then members' packs
+            need -= await take(holder, RATION_RE, need);                                    // take from the stash holder first
+            for (const m of members()) { if (need <= 0) break; if (m === holder) continue; need -= await take(m, RATION_RE, need); }  // then members' packs
         }
     }
     // Set a member's OWN ration/water count to a value (the HUD per-character edit).
     async function setMemberSupply(actorId, type, value) {
         if (!game.user.isGM) return;
         const a = game.actors.get(actorId); if (!a) return;
-        const re = type === "water" ? WATER_RE : RATION_RE;
-        const delta = Math.max(0, Math.round(value)) - countItems(a, re);
-        if (delta > 0) await addItem(a, re, type === "water" ? "Waterskin" : "Rations", delta);
-        else if (delta < 0) await take(a, re, -delta);
+        if (type === "water") { await setWaterNow(a, value); return; }   // water = the per-character pool
+        const delta = Math.max(0, Math.round(value)) - countItems(a, RATION_RE);
+        if (delta > 0) await addItem(a, RATION_RE, "Rations", delta);
+        else if (delta < 0) await take(a, RATION_RE, -delta);
     }
     // PER-DAY consumption (travel-loop contract): each character spends `cost` rations + `cost` water from their OWN pack (cost =
     // pace: 1 slow / 2 normal / 3 fast). A shortfall they can't cover → a CON save vs the biome DC; a fail adds +1 exhaustion.
@@ -1291,8 +1285,8 @@ const Party = (() => {
             const rTake = await take(a, RATION_RE, cost);   // spend up to cost rations from this character's own pack
             // At a lake / river / coast the party drinks from the SOURCE: skins aren't spent and refill to FULL — water is never short here.
             let wTake = 0, wShort = 0;
-            if (atSource) { const need = Math.max(0, capacity(a).water - countItems(a, WATER_RE)); if (need > 0) await addItem(a, WATER_RE, "Waterskin", need); }
-            else { wTake = await take(a, WATER_RE, cost); wShort = cost - wTake; }
+            if (atSource) { await setWaterNow(a, waterCap(a)); }   // drink from the source + top the skins back to full
+            else { const have = waterNow(a); wTake = Math.min(have, cost); await setWaterNow(a, have - wTake); wShort = cost - wTake; }
             const rShort = cost - rTake, saves = []; let exh = 0;
             for (const [short, kind] of [[wShort, "thirst"], [rShort, "hunger"]]) {
                 if (short <= 0) continue;
@@ -1305,7 +1299,7 @@ const Party = (() => {
         }
         return rows;
     }
-    return { groupActor, members, size, supplies, breakdown, capacity, countItems, consume, consumeDay, eatMeal, addSupplies, refillWater, adjustStash, setMemberSupply, RATION_RE, WATER_RE };
+    return { groupActor, members, size, supplies, breakdown, capacity, countItems, waterNow, waterCap, consume, consumeDay, eatMeal, addSupplies, refillWater, adjustStash, setMemberSupply, RATION_RE, WATER_RE };
 })();
 
 /* =========================================================================
@@ -2957,7 +2951,7 @@ async function cwfMusicMapDialog() {
 async function cwfEditMember(actorId, field) {
     if (!game.user.isGM) return;
     const a = game.actors.get(actorId); if (!a) return;
-    const cur = field === "exh" ? (a.system?.attributes?.exhaustion ?? 0) : Party.countItems(a, field === "water" ? Party.WATER_RE : Party.RATION_RE);
+    const cur = field === "exh" ? (a.system?.attributes?.exhaustion ?? 0) : field === "water" ? Party.waterNow(a) : Party.countItems(a, Party.RATION_RE);
     const label = field === "exh" ? "exhaustion (0–6)" : field === "water" ? "waterskins" : "rations";
     const v = await cwfPromptNumber(`Set ${a.name}'s ${label}`, cur);
     if (v == null || !Number.isFinite(v)) return;
