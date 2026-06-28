@@ -480,7 +480,7 @@ const Store = (() => {
         g.register(MOD, "mealsPerDay", { name: "Meals & drinks per day", hint: "Legacy — superseded by the per-day PACE-COST consumption; kept only as a fallback value for the night survival summary.", scope: "world", config: false, type: Number, default: 3 });
         g.register(MOD, "shareProvisions", { name: "Prompt to share provisions", hint: "When a character can't cover their own rations or water at camp, prompt who shares from their pack — so the table role-plays the moment AND the right person actually gives. Refusal (or no one with surplus) leaves them to go without, taking the hunger/thirst toll. Default on.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "foodGraceDays", { name: "Food reserve (days before hunger)", hint: "How many consecutive HUNGRY days (a character ate ≤⅓ of the day's meals) a member can stack before the next adds +1 exhaustion — a flat reserve, no CON math. Eating ≥⅔ of the day's meals keeps you fed. Default 1.", scope: "world", config: true, type: Number, default: 1 });
-        g.register(MOD, "carryBase", { name: "Carry base (rations / water capacity)", hint: "Each character carries up to this many rations AND this many waterskin charges, PLUS their Strength modifier. The party's totals are just the sum of what everyone holds — no shared stockpile. At 3 meals/day this is ~days of autonomy. Default 9 (STR 14 → 11 ≈ 3½ days, STR 8 → 8).", scope: "world", config: true, type: Number, default: 9 });
+        g.register(MOD, "carryBase", { name: "Carry base (RETIRED)", hint: "No longer used. Carrying capacity is now each character's STRENGTH SCORE — str 14 → 14 rations + 14 water — read live from the sheet (the travel-loop model). Hidden so old worlds don't error.", scope: "world", config: false, type: Number, default: 9 });
         g.register(MOD, "rationCost", { name: "Ration price (gp)", hint: "Gold per ration when you Resupply the party to full capacity. Default 0.5 (5 sp — the dnd5e ration price).", scope: "world", config: true, type: Number, default: 0.5 });
         g.register(MOD, "waterCost", { name: "Water price (gp)", hint: "Gold per waterskin charge when you Resupply. Default 0.1 — water is cheap where it's sold (free at a found source). Set 0 to make water free.", scope: "world", config: true, type: Number, default: 0.1 });
         g.register(MOD, "restThresholdHours", { name: "Hours awake before exhaustion", hint: "How long the party can go since its last LONG REST before fatigue sets in. Past this, each travel leg adds +1 exhaustion to everyone until they bed down. The HUD shows the hours-awake clock. Default 24.", scope: "world", config: true, type: Number, default: 24 });
@@ -1856,7 +1856,8 @@ async function cwfHexEventV2(cls, { scoutGood = false, pace = "normal", encUsed 
 const cwfEncHours = () => Math.max(0, Number(game.settings.get(MOD, "encounterHours")) || 1);
 // A biome COMBAT encounter (halts + auto-stages). Surprised if the scout/watch missed.
 async function cwfCombatBeat(cls, biome, { surprised = false, night = false } = {}) {
-    const text = await cwfEncounterText(cls, { when: night ? "night" : "day", surprised });
+    const deck = await cwfDrawDeckKind(cls, ["combat"]).catch(() => null);   // the GM's hand-authored COMBAT entry for this biome leads — Danger sized this band, the deck fills it
+    const text = (deck && deck.kind === "combat" && deck.text) ? cwfDeckText(deck.text) : await cwfEncounterText(cls, { when: night ? "night" : "day", surprised });
     const tag = surprised ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
     return { halt: true, hours: cwfEncHours(), kind: "combat", icon: "fa-dragon", label: "Encounter!", tag, line: text, cinematic: { icon: "fa-dragon", title: "Encounter!", subtitle: biome, tone: "encounter" } };
 }
@@ -1888,6 +1889,13 @@ async function cwfTableBeat(cls, { road = false } = {}) {
     if (kind === "trade") { const m = await TravelingMerchants.onTrade(cls); if (m) return { halt: false, line: `<i class="fa-solid fa-store"></i> Trade: <b>${cwfEsc(m.name)}</b>${m.title ? ` · ${cwfEsc(m.title)}` : ""} — ${cwfEsc((m.readAloud || "").split(/[.!?]/)[0] || "a trader on the road")}` }; return { halt: false, line: await Tables.drawTerrain(cls, "trade", () => Tables.drawEvent("trade", cls)) }; }
     if (kind === "people") { const n = await NarrativeNPCs.onBeat(cls); if (n) return { halt: false, line: `<i class="fa-solid fa-user"></i> On the road: <b>${cwfEsc(n.name)}</b>${n.title ? ` · ${cwfEsc(n.title)}` : ""} — ${cwfEsc(n.situation || (n.readAloud || "").split(/[.!?]/)[0] || "a traveller")}` }; }
     if (kind === "arc") { const beat = await Tables.nextThreadBeat(cls); if (beat) return { halt: false, line: beat }; }
+    // FLAVOUR → the GM's hand-authored deck (the non-combat Hazard / Skill / Social / Feature entries) so the authored content
+    // actually fires on travel. Falls back to the editable per-biome flavour table when the deck turns up nothing usable.
+    const deck = await cwfDrawDeckKind(cls, ["hazard", "skill", "social", "feature"]).catch(() => null);
+    if (deck && deck.text && deck.kind !== "combat") {
+        const KIND_ICON = { hazard: "fa-triangle-exclamation", skill: "fa-dice-d20", social: "fa-handshake", feature: "fa-landmark" };
+        return { halt: false, line: `<i class="fa-solid ${KIND_ICON[deck.kind] || "fa-landmark"}"></i> ${cwfEsc(cwfDeckText(deck.text))}` };
+    }
     return { halt: false, line: await Tables.drawTerrain(cls, "flavor", () => Tables.drawFlavor(cls)) };
 }
 
@@ -2095,7 +2103,7 @@ async function cwfAdvanceHex(auto) {
         const icon = todChanged ? tod.icon : weatherChanged ? (Domain.WEATHER[wxAfter]?.icon || "fa-cloud") : (cls?.icon || "fa-mountain-sun");
         // Subtitle = the OTHER turn bits, or (when the biome is the only change and is already the title) its detail + pace —
         // NOT the biome word again, which was the "temperate showing up twice" duplication (title "Temperate" + sub "Temperate · pace").
-        Cinematic.broadcast({ icon, title: bits[0] || "The road turns", subtitle: bits.slice(1).join(" · ") || `${cls?.detail ? cwfEsc(cls.detail) + " · " : ""}${t.pace} pace`, tone: todChanged ? tod.tone : "weather" });
+        Cinematic.broadcast({ icon, title: bits[0] || "The road turns", subtitle: bits.slice(1).join(" · ") || `${cls ? cwfEsc(Domain.plainTerrain(cls)) + " · " : ""}${t.pace} pace`, tone: todChanged ? tod.tone : "weather" });
         t.lines.push(`<div class="cwf-night-h cwf-ln-turn"><i class="fa-solid ${icon}"></i> ${cwfEsc(bits.join(" · "))}.</div>`);
     }
     // (No per-hex meal beats — consumption is the per-day upkeep at the travel turn's resolve. Travel-loop contract v0.55.160.)
@@ -2264,7 +2272,7 @@ function cwfRouteBreakdownHTML(routeArr, govDc) {
     const segs = [];
     for (const off of routeArr) {
         const cls = Hex.classifyAt(off);
-        const label = cls?.label || "Unknown", dc = cls?.dc ?? null;
+        const label = cls ? Domain.plainTerrain(cls) : "Unknown", dc = cls?.dc ?? null;   // plain biome label (Forest / Hills / Plains …) — no detailed terrain class
         const last = segs[segs.length - 1];
         if (last && last.label === label && last.dc === dc) last.count++;
         else segs.push({ label, dc, icon: cls?.icon || "fa-location-dot", tier: cls ? Domain.tier(cls) : null, count: 1 });
@@ -3165,7 +3173,7 @@ const BiomeBadge = (() => {
             canvasReady: !!canvas?.ready,
             activeToken: tok?.name ?? null,
             partyTokenFlag: canvas?.scene?.getFlag?.(MOD, "partyToken") ?? null,
-            biome: cls ? `${cls.label} (${cls.detail || ""}) DC ${cls.dc}` : null,
+            biome: cls ? `${Domain.plainTerrain(cls)} · DC ${cls.dc}` : null,
             screenPos: tok ? Canvasry.screen(tok.center.x, tok.center.y) : null,
             inDom: !!(el && document.body.contains(el)),
             hidden: el ? el.classList.contains("cwf-hidden") : "(no element yet)",
@@ -3183,7 +3191,6 @@ const BiomeBadge = (() => {
         const dc = cls.dc != null ? `DC ${cls.dc}` : "—";
         const infra = cls.infrastructure ? `<i class="fa-solid fa-road" title="Road — +1 reach per tile (+2 with a cart)"></i>` : "";
         const river = (cls.river && cls.terrainKey !== "water") ? `<i class="fa-solid fa-water" title="River — +1 reach per tile (+2 with a boat)"></i>` : "";
-        const detail = cls.detail ? `<span class="cwf-detail">${cls.detail}</span>` : "";
         const urban = cls.settlement ? `<span class="cwf-restr cwf-urban" title="A settlement / CityHUD site under the party"><i class="fa-solid fa-city"></i> Urban</span>` : "";   // natural terrain stays the main label; Urban rides as a sub-tag
         return `
             <div class="cwf-badge-row cwf-main">
@@ -3193,7 +3200,7 @@ const BiomeBadge = (() => {
                 ${infra}${river}
             </div>
             <div class="cwf-badge-row cwf-sub">
-                ${detail}${urban}${restr}
+                ${urban}${restr}
                 <span class="cwf-weather" style="--cwf-wx:${w.color}"><i class="fa-solid ${w.icon}"></i>${MiniCal.label() || w.label}</span>
             </div>`;
     }
@@ -4692,6 +4699,22 @@ async function cwfRollDeck(deckKey) {
     const kind = /combat/.test(tag) ? "combat" : /hazard/.test(tag) ? "hazard" : /skill/.test(tag) ? "skill" : /social|trade/.test(tag) ? "social" : "feature";
     return { deck: deckKey, text, tag, kind };
 }
+// Strip a deck entry's "(Tag)" prefix → the readable line.
+const cwfDeckText = (t) => String(t || "").replace(/^\([^)]+\)\s*/, "");
+// Draw from THIS hex's deck, retrying for an entry of a wanted KIND. THIS is how the GM's hand-authored encounter-decks.json
+// now DRIVES the auto travel engine: the bands (whose SIZE is set by Danger / Wanted + day-night) pull their CONTENT from the
+// deck. Frequency stays on the dials; the foes + flavour come from the authored deck. Returns {text,tag,kind} or null. v0.55.200.
+async function cwfDrawDeckKind(gov, wantKinds, tries = 12) {
+    const deckKey = cwfDeckFor(gov || {});
+    let last = null;
+    for (let i = 0; i < tries; i++) {
+        let res = null; try { res = await cwfRollDeck(deckKey); } catch (e) { return last; }
+        if (!res || !res.text) return last;
+        last = res;
+        if (wantKinds.includes(res.kind)) return res;
+    }
+    return last;   // deck has none of the wanted kind → whatever we last drew (caller falls back if it's the wrong kind)
+}
 // Roll the CURRENT hex's deck → post a card; a Combat result carries a "Spawn foes" button that hands the hex's theme to
 // cwfSpawnEncounter. The HUD "Feature" chip + the card's spawn button both route here. v0.55.173.
 async function cwfRollHexFeature() {
@@ -5863,7 +5886,7 @@ const Turn = (() => {
         route = r.slice();
         governing = Travel.governing();
         pace = Travel.pace || "normal"; boat = Travel.boat; forageTarget = "food";
-        Cinematic.broadcast({ icon: "fa-compass", title: "Travel Turn", subtitle: governing?.label ? `${governing.label} · DC ${governing.dc ?? "?"}` : `${route.length} hex${route.length === 1 ? "" : "es"}`, tone: "travel" });
+        Cinematic.broadcast({ icon: "fa-compass", title: "Travel Turn", subtitle: governing ? `${Domain.plainTerrain(governing)} · DC ${governing.dc ?? "?"}` : `${route.length} hex${route.length === 1 ? "" : "es"}`, tone: "travel" });
         // Pre-fill from the last remembered assignments (editable per turn).
         const saved = game.settings.get(MOD, "lastRoles") || {};
         const present = new Set(Party.members().map(a => a.id));
@@ -6044,8 +6067,8 @@ const Turn = (() => {
             // the DC everyone is trying to beat — so the group cinematic shows WHERE you are and WHAT you need to roll.
             const dc = cwfRouteDc(governing);
             let cls = null; try { const tk = turnTok || Canvasry.activeToken(); if (tk) cls = Canvasry.biomeForToken(tk); } catch (e) { /* noop */ }
-            const biomeTxt = cls ? `${Domain.plainTerrain(cls)} · ${cls.label || cls.biome || ""}`.trim() : "";   // plain terrain name leads (Mountain / Swamp / …), biome as context
-            const govTxt = `${governing?.label ? governing.label + " · " : ""}DC ${dc}`;
+            const biomeTxt = cls ? Domain.plainTerrain(cls) : "";   // plain terrain name only (Mountain / Swamp / Forest …) — no detailed class suffix
+            const govTxt = `${governing ? Domain.plainTerrain(governing) + " · " : ""}DC ${dc}`;
             const sub = [biomeTxt, govTxt].filter(Boolean).join("  ·  ") || `${route.length} hex${route.length === 1 ? "" : "es"}`;
             window.DDBRollCards?.playGroupCinematic?.({ title: "Travel Turn", sub, participants: parts, progress: !!progress });
         } catch (e) { warn("travel group cinematic failed", e); }
@@ -6176,7 +6199,7 @@ const Turn = (() => {
             path = pick ? [pick] : route.slice();
         }
         if (tok) {
-            await cwfStartTravel(tok, path, { pace, boat, scoutGood, lostHours, header: body, title: "Travel Turn", icon: "fa-compass", sub: `DC ${dc}${governing?.label ? ` · ${governing.label}` : ""}` });
+            await cwfStartTravel(tok, path, { pace, boat, scoutGood, lostHours, header: body, title: "Travel Turn", icon: "fa-compass", sub: `DC ${dc}${governing ? ` · ${Domain.plainTerrain(governing)}` : ""}` });
             // Auto-travel: glide the route BEHIND the chat (the token moves and the clock + weather update with their
             // cinematics) so you can read the resolution instead of clicking Step. It pauses itself at the next signal —
             // a biome/weather/time change or an encounter. Skipped when the party got lost (navEffect "dead", no path).
@@ -6762,7 +6785,7 @@ const WayfarerPanel = (() => {
     function turnCard(dis) {
         const esc = (s) => foundry.utils.escapeHTML?.(String(s)) ?? String(s);
         const dc = cwfRouteDc(Turn.governing);
-        const govLabel = Turn.governing?.label || "—";
+        const govLabel = Turn.governing ? Domain.plainTerrain(Turn.governing) : "—";
         // Show the DC SPREAD across the route, not just the governing (worst) DC — so the GM sees at a glance the
         // day runs e.g. "DC 10–17" (easy plains into hard mountains), not a single number that hides the easy legs.
         const _routeDcs = (Turn.route || []).map(off => Hex.classifyAt(off)?.dc).filter(d => d != null);
@@ -6917,7 +6940,7 @@ const WayfarerPanel = (() => {
         const dis = isGM ? "" : "disabled";
 
         const here = cls
-            ? `<span class="cwf-pill" data-tier="${Domain.tier(cls)}"><i class="fa-solid ${cls.icon}"></i> ${Domain.plainTerrain(cls)}${cls.detail ? ` <em>${cls.detail}</em>` : ""} ${cls.dc != null ? `· DC ${cls.dc}` : ""}</span>
+            ? `<span class="cwf-pill" data-tier="${Domain.tier(cls)}"><i class="fa-solid ${cls.icon}"></i> ${Domain.plainTerrain(cls)} ${cls.dc != null ? `· DC ${cls.dc}` : ""}</span>
                ${cls.restriction === "noFast" ? `<span class="cwf-pill cwf-warn">No Fast Pace</span>` : ""}
                ${cls.restriction === "water" ? `<span class="cwf-pill cwf-warn">Boat required</span>` : ""}
                ${cls.restriction === "block" ? `<span class="cwf-pill cwf-warn">Impassable</span>` : ""}
@@ -6960,7 +6983,7 @@ const WayfarerPanel = (() => {
                 const reach = Travel.reach?.size ?? 0;
                 const e = Travel.eta();
                 const summary = n
-                    ? `<div class="cwf-route">${gov ? `<span class="cwf-pill" data-tier="${Domain.tier(gov)}"><i class="fa-solid ${gov.icon}"></i> ${gov.label} · DC ${gov.dc ?? "?"}</span>` : ""}<span class="cwf-pill cwf-muted">${n} hex${n === 1 ? "" : "es"}${wps > 1 ? ` · ${wps} stops` : ""}${gov && Domain.fastProhibited(gov) ? " · No Fast" : ""}</span>${e ? `<span class="cwf-pill cwf-muted" title="Estimated travel time + arrival clock at ${Domain.PACE[Travel.pace]?.label || Travel.pace} pace"><i class="fa-solid fa-hourglass-half"></i> ~${e.hours}h · arrive ${e.arrive}</span>` : ""}</div>`
+                    ? `<div class="cwf-route">${gov ? `<span class="cwf-pill" data-tier="${Domain.tier(gov)}"><i class="fa-solid ${gov.icon}"></i> ${Domain.plainTerrain(gov)} · DC ${gov.dc ?? "?"}</span>` : ""}<span class="cwf-pill cwf-muted">${n} hex${n === 1 ? "" : "es"}${wps > 1 ? ` · ${wps} stops` : ""}${gov && Domain.fastProhibited(gov) ? " · No Fast" : ""}</span>${e ? `<span class="cwf-pill cwf-muted" title="Estimated travel time + arrival clock at ${Domain.PACE[Travel.pace]?.label || Travel.pace} pace"><i class="fa-solid fa-hourglass-half"></i> ~${e.hours}h · arrive ${e.arrive}</span>` : ""}</div>`
                     : `<div class="cwf-muted2">Click a glowing hex to chart your course — each click adds a stop.</div>`;
                 const hint = reach > 0
                     ? `${reach} hex${reach === 1 ? "" : "es"} in range · click to extend`
@@ -7453,7 +7476,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
         const SECTIONS = [
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "autoTravelOnResolve", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
-            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "shareProvisions", "foodGraceDays", "carryBase", "rationCost", "waterCost", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
+            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "shareProvisions", "foodGraceDays", "rationCost", "waterCost", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
             ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeForageJSON", "biomeForageWeightsJSON", "gatherIngredients", "biomeGatherJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "travelSfxPath", "musicEnabled", "musicMapJSON", "campMapJSON"]],
