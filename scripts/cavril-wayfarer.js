@@ -1858,8 +1858,9 @@ const cwfEncHours = () => Math.max(0, Number(game.settings.get(MOD, "encounterHo
 async function cwfCombatBeat(cls, biome, { surprised = false, night = false } = {}) {
     const deck = await cwfDrawDeckKind(cls, ["combat"]).catch(() => null);   // the GM's hand-authored COMBAT entry for this biome leads — Danger sized this band, the deck fills it
     const text = (deck && deck.kind === "combat" && deck.text) ? cwfDeckText(deck.text) : await cwfEncounterText(cls, { when: night ? "night" : "day", surprised });
+    const deckFoes = await cwfDeckFoes(deck);   // the deck entry's named foe(s) — so the auto-stage spawns the ACTUAL encounter, not a generic biome roll
     const tag = surprised ? ` <span class="cwf-tier-badge cwf-tier-critfail">Surprised</span>` : "";
-    return { halt: true, hours: cwfEncHours(), kind: "combat", icon: "fa-dragon", label: "Encounter!", tag, line: text, cinematic: { icon: "fa-dragon", title: "Encounter!", subtitle: biome, tone: "encounter" } };
+    return { halt: true, hours: cwfEncHours(), kind: "combat", deckFoes, icon: "fa-dragon", label: "Encounter!", tag, line: text, cinematic: { icon: "fa-dragon", title: "Encounter!", subtitle: biome, tone: "encounter" } };
 }
 // A PERSONAL / Heat reckoning — a hostile encounter tied to a party member's past. We flag WHO; the GM narrates the rest
 // (you killed their mother → it's them; stole the jewels → a guard/bounty hunter). Reuses the combat machinery (it IS a fight).
@@ -2122,7 +2123,7 @@ async function cwfAdvanceHex(auto) {
         // Auto-stage the battlemap in the BACKGROUND the instant combat fires, so it preloads while you narrate — then a
         // single "Roll for initiative / Ambush" button drops you in (the reveal cinematic plays on entry, not now).
         const _autoStage = ev.kind === "combat" && cwfAutoStage() && !!globalThis.CavrilEncounterStage;
-        if (_autoStage) { try { globalThis.CavrilEncounterStage.stageEncounter({ surprised: !t.scoutGood, token: canvas.tokens?.get(t.tokId) }); } catch (e) { warn("auto-stage failed", e); } }
+        if (_autoStage) { try { globalThis.CavrilEncounterStage.stageEncounter({ surprised: !t.scoutGood, token: canvas.tokens?.get(t.tokId), foes: ev.deckFoes || undefined }); } catch (e) { warn("auto-stage failed", e); } }   // ev.deckFoes = the table's named foe; absent → biome roll
         if (ev.cinematic && !_autoStage) Cinematic.broadcast(ev.cinematic);   // suppress the lead-in when auto-staging
     } else {
         const _ln = ev?.line || "the way is clear."; const _thread = /^✦/.test(_ln);   // journey-thread beats read as prose → their own purple style, drop the "—"
@@ -4714,6 +4715,24 @@ async function cwfDrawDeckKind(gov, wantKinds, tries = 12) {
         if (wantKinds.includes(res.kind)) return res;
     }
     return last;   // deck has none of the wanted kind → whatever we last drew (caller falls back if it's the wrong kind)
+}
+// Pull a SPAWNABLE foe out of a deck COMBAT entry so the auto-stage spawns the ACTUAL named encounter (not a generic biome roll).
+// NAME = text before the first colon/dash ("Giant Spiders"); COUNT = the first dice/number in the line. Returns [{name,count}]
+// ONLY if a statblock resolves (tries the name, then singularised) — else null, so the caller falls back to the biome roll. v0.55.202.
+async function cwfDeckFoes(deck) {
+    if (!deck || deck.kind !== "combat" || !deck.text) return null;
+    try {
+        const raw = cwfDeckText(deck.text);
+        const nm = (raw.split(/[:.—–\-]/)[0] || "").trim();
+        if (!nm || nm.length < 3) return null;
+        const sb = await cwfFindStatblock(nm) || await cwfFindStatblock(nm.replace(/s$/i, ""));
+        if (!sb) return null;
+        let count = 1;
+        const dice = raw.match(/(\d+)d(\d+)(?:\s*\+\s*(\d+))?/);
+        if (dice) { try { count = (await new Roll(`${dice[1]}d${dice[2]}${dice[3] ? "+" + dice[3] : ""}`).evaluate()).total; } catch (e) { count = Number(dice[1]) || 1; } }
+        else { const num = raw.match(/\b([2-9]|1[0-2])\b/); if (num) count = Number(num[1]); }
+        return [{ name: sb.name, count: Math.max(1, Math.min(12, count)) }];
+    } catch (e) { return null; }
 }
 // Roll the CURRENT hex's deck → post a card; a Combat result carries a "Spawn foes" button that hands the hex's theme to
 // cwfSpawnEncounter. The HUD "Feature" chip + the card's spawn button both route here. v0.55.173.
