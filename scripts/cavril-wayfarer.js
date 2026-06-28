@@ -317,8 +317,11 @@ const Domain = (() => {
     const PACE_ORDER = ["slow", "normal", "fast"];
 
     // Spaces actually moved given pace + biome + boat + short rest.
+    // On difficult (no-Fast) terrain the Fast pace is unavailable, so a persisted Fast falls back to SLOW — the GM-authored
+    // "default to the slow button"; Normal stays a deliberate toggle. Returns the pace KEY actually in effect for this hex.
+    function effPace(paceKey, cls) { return (fastProhibited(cls) && paceKey === "fast") ? "slow" : paceKey; }
     function spaces(state, cls) {
-        const pace = PACE[state.pace] || PACE.normal;
+        const pace = PACE[effPace(state.pace, cls)] || PACE.normal;
         let n = pace.spaces;
         const infra = !!(cls?.infrastructure || ((cls?.river || cls?.terrainKey === "water") && state.boat));
         if (infra) n *= 2;                       // road w/ cart, or river/open-water w/ boat, doubles output
@@ -382,7 +385,7 @@ const Domain = (() => {
     return {
         DEFAULT_TERRAIN, DEFAULT_FEATURES, BIOME, ELEV, WEATHER, WEATHER_ORDER, PACE, PACE_ORDER, ROLES,
         terrainTable, isBiomeTile, keywordsFromSrc, classify, classifyHexlands, tier,
-        rollWeatherKey, spaces, fastProhibited, hoursPerHex, rollState, rollWhy
+        rollWeatherKey, spaces, fastProhibited, effPace, hoursPerHex, rollState, rollWhy
     };
 })();
 
@@ -1903,7 +1906,7 @@ function cwfTrekTimeStrip(t) {
     let here = null; try { const tk = canvas.tokens?.get(t.tokId); if (tk) here = Hex.classifyAt(Hex.offsetOf(tk.center)); } catch (e) { /* noop */ }
     const seg = Domain.PACE_ORDER.map(k => {
         const off = (k === "fast") && Domain.fastProhibited?.(here);
-        return `<button class="cwf-seg ${t.pace === k ? "on" : ""}" data-cwf="trek-pace" data-pace="${k}" ${off ? "disabled" : ""} title="${cwfEsc(Domain.PACE[k].note)} · ~${Math.round(Domain.hoursPerHex(k, t.boat))}h per hex">${Domain.PACE[k].label}</button>`;
+        return `<button class="cwf-seg ${Domain.effPace(t.pace, here) === k ? "on" : ""}" data-cwf="trek-pace" data-pace="${k}" ${off ? "disabled" : ""} title="${cwfEsc(Domain.PACE[k].note)} · ~${Math.round(Domain.hoursPerHex(k, t.boat))}h per hex">${Domain.PACE[k].label}</button>`;
     }).join("");
     const toggle = (!t.done) ? `<div class="cwf-seg-row" title="Change pace before the next hex">${seg}</div>` : "";
     return `<div class="cwf-tstrip${heavy ? " cwf-tstrip-heavy" : ""}"><div class="cwf-tstrip-row"><span class="cwf-tstrip-rate"><i class="fa-solid fa-gauge-simple-high"></i> <b>${cwfEsc(paceLabel)}</b> · ~${rate}h / hex</span><span class="cwf-tstrip-elapsed"><i class="fa-solid fa-hourglass-half"></i> ${elapsedTxt}</span></div>${toggle}</div>`;
@@ -1983,7 +1986,7 @@ async function cwfAdvanceHex(auto) {
         finally { cwfMoving = false; }
     }
     Music.update(cls); MiniCal.syncBiome(cls);   // ambience follows THIS hex's biome
-    const hpH = Domain.PACE[t.pace]?.hours ?? 6;   // plain-hex hours at this pace (Slow 8 · Normal 6 · Fast 4)
+    const hpH = Domain.PACE[Domain.effPace(t.pace, cls)]?.hours ?? 6;   // plain-hex hours at this pace (Slow 8 · Normal 6 · Fast 4); Fast→Slow on no-Fast terrain
     const hexHours = Hex.stepCost(off, cls, { boat: t.boat }, t.prev) * hpH;   // stepCost folds in road/river (÷2, ÷3 w/ vehicle) + rugged-terrain penalty
     t.lastHexHours = hexHours; t.acc += hexHours;   // remember this hex's cost so the card can show "+Xh" per hex
     t.prev = off;
@@ -2438,7 +2441,8 @@ async function cwfForageGather(actorId, gov, { count = 1 } = {}) {
     const group = Party.groupActor();
     const holder = group || actor;   // crafting mats POOL in the shared party group inventory (separate from per-character food/water); fall back to the forager's pack if there's no group actor
     if (!holder) return "";
-    const found = [];
+    const stack = new Map();          // name → { obj, qty } — same-name herbs MERGE into ONE stack (a quantity, not N loose items)
+    const textFinds = [];             // non-Item results (flavour text only)
     for (let i = 0; i < count; i++) {   // one draw per herbal find (margin / 4, doubled on a crit)
         // roll() doesn't persist a "drawn" flag — safe on a read-only compendium table (draw() would try to write the pack)
         let res; try { res = await table.roll(); } catch (e) { try { res = await table.draw({ displayChat: false }); } catch (e2) { warn("gather roll failed", e2); break; } }
@@ -2447,13 +2451,24 @@ async function cwfForageGather(actorId, gov, { count = 1 } = {}) {
                 let doc = null;
                 const cand = [r.documentUuid, (r.documentCollection && r.documentId) ? `${r.documentCollection}.${r.documentId}` : null, (r.documentCollection && r.documentId) ? `Compendium.${r.documentCollection}.${r.documentId}` : null].filter(Boolean);
                 for (const u of cand) { try { doc = await fromUuid(u); if (doc) break; } catch (e) { /* try next uuid form */ } }
-                if (doc && doc.documentName === "Item") { await holder.createEmbeddedDocuments("Item", [doc.toObject()]); found.push(doc.name); }
-                else { const txt = r.text || doc?.name; if (txt) found.push(txt); }
+                if (doc && doc.documentName === "Item") { const ex = stack.get(doc.name); if (ex) ex.qty++; else stack.set(doc.name, { obj: doc.toObject(), qty: 1 }); }
+                else { const txt = r.text || doc?.name; if (txt) textFinds.push(txt); }
             } catch (e) { warn("gather award failed", e); }
         }
     }
-    if (!found.length) return "";
-    return `gathered <b>${found.map(cwfEsc).join("</b>, <b>")}</b> → ${cwfEsc(holder.name)}${group ? " (shared)" : "'s pack"}`;
+    // award the stacks: MERGE into an existing same-name item on the holder (bump its quantity), else create ONE carrying the full count
+    for (const { obj, qty } of stack.values()) {
+        try {
+            const existing = holder.items.find(it => it.name === obj.name && it.type === obj.type);
+            if (existing) await existing.update({ "system.quantity": (Number(existing.system?.quantity) || 1) + qty });
+            else { obj.system = obj.system || {}; obj.system.quantity = qty; await holder.createEmbeddedDocuments("Item", [obj]); }
+        } catch (e) { warn("gather award failed", e); }
+    }
+    const parts = [];
+    for (const [name, { qty }] of stack) parts.push(qty > 1 ? `${cwfEsc(name)} ×${qty}` : cwfEsc(name));
+    for (const txt of textFinds) parts.push(cwfEsc(txt));
+    if (!parts.length) return "";
+    return `gathered <b>${parts.join("</b>, <b>")}</b> → ${cwfEsc(holder.name)}${group ? " (shared)" : "'s pack"}`;
 }
 async function cwfForageMedicinal() {
     if (!game.user.isGM) return "";
@@ -6702,7 +6717,7 @@ const WayfarerPanel = (() => {
                 const tpace = Domain.PACE_ORDER.map(k => {
                     const off = (k === "fast" && gov && Domain.fastProhibited(gov));
                     const hph = Math.round(Domain.hoursPerHex(k, Travel.boat));   // the SIGNIFICANCE of pace = time spent per hex, surfaced on the button itself
-                    return `<button class="cwf-seg cwf-seg-pace ${Travel.pace === k ? "on" : ""}" data-action="travel-pace" data-pace="${k}" ${off ? "disabled" : ""} title="${Domain.PACE[k].note} · ~${hph}h per hex"><span class="cwf-seg-t">${Domain.PACE[k].label}</span><span class="cwf-seg-sub">~${hph}h/hex</span></button>`;
+                    return `<button class="cwf-seg cwf-seg-pace ${Domain.effPace(Travel.pace, gov) === k ? "on" : ""}" data-action="travel-pace" data-pace="${k}" ${off ? "disabled" : ""} title="${Domain.PACE[k].note} · ~${hph}h per hex"><span class="cwf-seg-t">${Domain.PACE[k].label}</span><span class="cwf-seg-sub">~${hph}h/hex</span></button>`;
                 }).join("");
                 const wps = Travel.waypointCount;
                 const reach = Travel.reach?.size ?? 0;
