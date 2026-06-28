@@ -2485,10 +2485,12 @@ async function cwfCampSurvival(consumeResult, { watchers = [] } = {}) {
             else if (a.getFlag?.(MOD, "blockRest")) await a.unsetFlag?.(MOD, "blockRest");
         } catch { /* noop */ }
         if (blocked) chip("fa-bed-pulse", "no recovery", "bad");
+        // cwfCampSurvival only ever ADDS the night's toll — the dawn LONG REST's recovery is applied + shown at WAKE (the
+        // Rest Summary). So show the toll here ("▲ +N" / "no toll"), NOT a final level, which used to read as "they didn't rest".
         const delta = lvl - before;
-        const exhTxt = delta > 0 ? `<span class="cwf-sv-exh up" title="Exhaustion rose to level ${lvl}">▲ ${lvl}</span>`
-            : delta < 0 ? `<span class="cwf-sv-exh down" title="Exhaustion eased to level ${lvl}">▼ ${lvl}</span>`
-            : `<span class="cwf-sv-exh ${lvl > 0 ? "hold" : "ok"}" title="Exhaustion level ${lvl}">${lvl > 0 ? `lvl ${lvl}` : "rested"}</span>`;
+        const exhTxt = delta > 0
+            ? `<span class="cwf-sv-exh up" title="The night cost +${delta} exhaustion (now level ${lvl}); the long rest recovers it when the party wakes">▲ +${delta}</span>`
+            : `<span class="cwf-sv-exh ok" title="No exhaustion from the night${before > 0 ? ` (level ${before}); the long rest recovers it when the party wakes` : ""}">no toll</span>`;
         rows.push(`<div class="cwf-sv-row ${blocked ? "hit" : ""}"><span class="cwf-sv-name">${esc(a.name)}</span><span class="cwf-sv-chips">${chips.join("") || `<span class="cwf-sv-chip ok"><i class="fa-solid fa-circle-check"></i> fed &amp; watered</span>`}</span>${exhTxt}</div>`);
     }
     // Return the rows so the caller can fold them into the Night Watch card (one card).
@@ -6558,7 +6560,7 @@ const Camp = (() => {
         // this same Night Watch card rather than posting a second one.
         const survival = await cwfCampSurvival(mealResult, { watchers });
         mealResult = null;
-        if (survival?.html) body += `<div class="cwf-night-sec">Rest &amp; provisions${survival.label ? ` · ${survival.label}` : ""}</div>${survival.html}`;
+        if (survival?.html) body += `<div class="cwf-night-sec">The night's toll <span class="cwf-muted2">· the long rest recovers exhaustion when you wake (Slept in → Long rest)</span></div>${survival.html}`;
         const prev = Store.sceneState().day || 1, nextDay = prev + 1;
         await Store.setSceneState({ day: nextDay, shortRest: false });
         for (const m of Party.members()) { try { await m.unsetFlag?.(MOD, "mealTollToday"); } catch (e) { /* a new day → the per-day meal-toll cap resets */ } }
