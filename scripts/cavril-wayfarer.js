@@ -1339,6 +1339,45 @@ const cwfShortSpecies = (s) => { const w = String(s || "").split(/\s*[—–(,;:
 // clock crosses dusk/night; during a multi-hex travel turn those clock jumps can outrun the darkness animation, leaving
 // the canvas dark with STALE vision (the scene goes black except the token + weather) until something else refreshes it.
 // We force the recompute after the clock settles — fixes "scene stays black until I camp / move the clock".
+// VISION PULSE (travel-loop contract): reveal the map around the party by ELEVATION — highland/mountains see 3 hexes, hills 2,
+// lowland/desert/swamp/forest 1 — then MASK any hex hidden behind ground at least as tall as where the party stands. Marks the
+// visible hexes explored (the fog set). Foundry's grid traces the sightline; on any failure it degrades to revealing the ring.
+const CWF_ELEV_RANK = { water: 0, flat: 1, swamp: 1, medium: 2, high: 3 };
+function cwfVisionRadius(cls) {
+    if (cls?.vegetation === "high") return 1;   // forest canopy → short sightlines
+    const e = cls?.elevation;
+    if (e === "high") return 3;                 // highland / mountains
+    if (e === "medium") return 2;               // hills
+    return 1;                                   // lowland, desert, swamp, water
+}
+async function cwfVisionPulse(tok) {
+    if (!tok || !game.user?.isGM) return;
+    try {
+        const center = Hex.offsetOf(tok.center); if (!center) return;
+        const hereCls = Hex.classifyAt(center);
+        const hereRank = CWF_ELEV_RANK[hereCls?.elevation] ?? 1;
+        const radius = cwfVisionRadius(hereCls);
+        const seen = new Set([Hex.key(center)]); const within = []; let frontier = [center];
+        for (let r = 0; r < radius; r++) {
+            const next = [];
+            for (const h of frontier) for (const nb of Hex.neighbors(h)) { const k = Hex.key(nb); if (!seen.has(k)) { seen.add(k); within.push({ off: nb, d: r + 1 }); next.push(nb); } }
+            frontier = next;
+        }
+        const visible = [center];
+        for (const { off, d } of within) {
+            if (d <= 1) { visible.push(off); continue; }   // adjacent → always seen (no ground in between)
+            let blocked = false;
+            try {
+                const path = canvas.grid.getDirectPath([center, off]) || [];
+                for (let i = 1; i < path.length - 1; i++) {   // skip both endpoints; ground at least as tall BETWEEN masks the target
+                    if ((CWF_ELEV_RANK[Hex.classifyAt(path[i])?.elevation] ?? 1) >= hereRank) { blocked = true; break; }
+                }
+            } catch (e) { blocked = false; }   // grid can't trace → reveal it (degrade to no masking)
+            if (!blocked) visible.push(off);
+        }
+        await Hex.markExplored(visible);
+    } catch (e) { warn("vision pulse failed", e); }
+}
 function cwfRefreshVision() {
     try { canvas?.perception?.update?.({ initializeVision: true, initializeLighting: true, refreshLighting: true, refreshVision: true }); }
     catch (e) { warn("vision refresh failed", e); }
@@ -1941,6 +1980,7 @@ async function cwfStartTravel(tok, route, { pace = "normal", boat = false, scout
     cwfTrek = { tokId: tok.id, route: (route || []).slice(), idx: 0, pace, boat, scoutGood, acc: 0, prev: Hex.offsetOf(tok.center), lines: [], header, title, icon, sub, halted: false, done: false, lostHours, marchHTML: "", marchSub: "", tod: cwfTimeOfDay().key, lastBiome: (Hex.classifyAt(Hex.offsetOf(tok.center))?.label || null), leg: null, running: false, encUsed: false, startWorldTime: game.time?.worldTime ?? 0, lastHexHours: 0 };
     const msg = await ChatMessage.create({ content: cwfTrekCardHTML(), whisper: cwfGmIds() }).catch(() => null);
     cwfTrek.msgId = msg?.id;
+    try { await cwfVisionPulse(tok); } catch (e) { /* noop */ }   // pulse vision from the STARTING hex before the first glide
     // PUBLIC live journey card for the table (spoiler-free) — posted now, updated hex by hex in cwfTrekRefresh.
     if (cwfTrek.route.length && game.settings.get(MOD, "playerTravelCard")) { const pmsg = await ChatMessage.create({ content: cwfPlayerSummaryHTML(cwfTrek) }).catch(() => null); cwfTrek.playerMsgId = pmsg?.id; }
     if (!cwfTrek.route.length) {   // a "got lost" day — no hexes, just spend the time
@@ -2001,7 +2041,7 @@ async function cwfAdvanceHex(auto) {
     }
     // SIGNAL (or a manual Step) → flush the leg, ONE combined transition cinematic, the hex line.
     cwfFlushLeg();
-    if (tok) { try { cwfRefreshVision(); } catch (e) { /* noop */ } }   // the glide already landed in the move above — just sweep the fog before any cinematic curtain
+    if (tok) { try { cwfRefreshVision(); await cwfVisionPulse(tok); } catch (e) { /* noop */ } }   // the glide landed → sweep the fog + pulse elevation-based vision around the new hex
     if (biomeChanged || weatherChanged || todChanged) {
         await new Promise(res => setTimeout(res, 2 * (Number(game.settings.get(MOD, "moveAnimMs")) || 900)));   // wait TWICE the move-animation time so the token fully settles on the new hex before the transition cinematic (the time-of-day shift) covers it
         const bits = []; if (biomeChanged) bits.push(biome); if (todChanged) bits.push(tod.label); if (weatherChanged && weatherLabel) bits.push(weatherLabel);
@@ -2079,6 +2119,7 @@ async function cwfFinishTravel() {
     if (!t.playerMsgId && !t.halted && t.idx > 0 && game.settings.get(MOD, "playerTravelCard")) { try { ChatMessage.create({ content: cwfPlayerSummaryHTML(t) }); } catch (e) { warn("player travel card failed", e); } }   // fallback if no live card was posted
     WayfarerPanel.renderExternal(); BiomeBadge.update();
     cwfRefreshVision();   // travel ended (maybe at dusk/night) → recompute vision now so the map never stays black
+    try { const _vt = canvas.tokens?.get(t.tokId); if (_vt) await cwfVisionPulse(_vt); } catch (e) { /* noop */ }   // final elevation vision pulse at the arrival hex
     try { cwfMaybeOfferSettlement(); } catch (e) { warn("settlement arrival check failed", e); }
     // Daylight left after a peaceful arrival → obviously nudge the GM to press on with another leg (centre button +
     // the HUD's "Plan a route" goes primary). At night the GM chooses camp or — now — night travel, so no auto-nudge.
