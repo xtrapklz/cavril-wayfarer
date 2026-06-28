@@ -529,6 +529,7 @@ const Store = (() => {
         g.register(MOD, "gatherIngredients", { name: "Forage gathers crafting ingredients", hint: "On a HIGH forage roll (a crit, or well over the DC) also draw a craftable INGREDIENT from this biome's gather table and deposit it in the shared party GROUP inventory (or the Forager's own pack if there's no group actor). Separate from rations & water — never touches the supply counts. Default on.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "biomeGatherJSON", { name: "Biome → gather table (advanced)", hint: 'Optional JSON to remap a biome to a specific RollTable name or id, e.g. {"jungle":"Gathering: Swamp"}. Blank uses the built-in map to Potion-Crafting-&-Gathering\'s "Gathering: <Environment>" tables (searched in world AND compendiums): temperate→Grasslands, boreal/jungle→Forests, savanna→Savannahs, swamp→Swamp, desert→Desert, tundra/frozen→Arctic, volcanic→Volcanos, wasteland/tainted→Blightshore, void→Underground, water & coast→Coast, high elevation→Mountains.', scope: "world", config: true, type: String, default: "" });
         g.register(MOD, "combatRostersJSON", { name: "Combat encounter rosters (advanced)", hint: 'Optional JSON to override the themed APL combat builds, e.g. {"predators":{"apl":{"5":"1 Bulette | 2 Manticore"}}}. Cell format: "N Name, N Name"; use " | " for alternative builds (one is rolled). Themes: soldiers, fey, predators, undead, deepwater, caves, titans. Names match the dnd5e SRD. Blank uses the built-in 7-theme deck.', scope: "world", config: true, type: String, default: "" });
+        g.register(MOD, "deckIds", { scope: "world", config: false, type: Object, default: {} });   // cached RollTable ids for the d20 encounter decks (built from data/encounter-decks.json)
         // Cavril: Maestro biome → environment soundscape.
         g.register(MOD, "musicEnabled", { name: "Drive Maestro environment by biome", hint: "When the party enters a new biome, cross-fade Cavril: Maestro's environment channel to the mapped soundscape.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "musicMapJSON", { name: "Biome → Maestro arrangement (advanced)", hint: 'Set this visually with the “Assign biome ambience…” button above (or right-click the ♪ on the travel HUD). Advanced: raw JSON of biome → emberEnvironment arrangement id, e.g. {"jungle":"jungleDay"}. Blank = defaults; "" = silence for that biome.', scope: "world", config: true, type: String, default: "" });
@@ -4516,6 +4517,71 @@ async function cwfSpawnEncounter(theme = null, { apl = null, hidden = true, tok 
     ui.notifications?.info(`${TITLE}: spawned ${data.length} foe${data.length === 1 ? "" : "s"} — ${roster.themeLabel}, APL ${roster.tier}.`);
     return { ...roster, spawned: data.length, missing };
 }
+/* =========================================================================
+ * ENCOUNTER DECKS — the GM-authored d20 biome decks + Universal POIs, as NATIVE
+ * editable world RollTables (seeded from data/encounter-decks.json). buildDecks()
+ * creates them once into a "Cavril: Encounters" folder; edit the world tables after
+ * (rebuild re-seeds). Each entry is tagged (Hazard/Combat/Skill/Social) — Combat-tagged
+ * results can hand their hex theme straight to cwfSpawnEncounter. v0.55.172.
+ * ========================================================================= */
+async function cwfDecksData() {
+    if (cwfDecksData._cache) return cwfDecksData._cache;
+    const path = `modules/${MOD}/data/encounter-decks.json`;
+    let json = null;
+    try { json = await foundry.utils.fetchJsonWithTimeout(path); }
+    catch (e) { try { json = await (await fetch(path)).json(); } catch (e2) { warn("encounter-decks.json fetch failed", e2); } }
+    cwfDecksData._cache = json; return json;
+}
+// Default hex → deck. Features win (road/river/coast), then elevation (highland→Mountains, hills→Hills), then biome.
+const CWF_BIOME_DECK = {
+    temperate: "forest", boreal: "forest", jungle: "jungle", savanna: "grassland", swamp: "swamp",
+    desert: "desert", tundra: "mountains", frozen: "mountains", volcanic: "mountains", wasteland: "desert",
+    tainted: "underdark", void: "underdark", water: "lake", unknown: "forest"
+};
+function cwfDeckFor(gov) {
+    if (gov?.infrastructure) return "road";
+    if (gov?.river) return "river";
+    if (gov?.coast) return "coastal";
+    if (gov?.elevation === "high") return "mountains";
+    if (gov?.elevation === "medium") return "hills";
+    return CWF_BIOME_DECK[gov?.biome || "unknown"] || "forest";
+}
+async function cwfBuildDecks({ rebuild = false } = {}) {
+    if (!game.user.isGM) return null;
+    const data = await cwfDecksData(); if (!data) { ui.notifications?.error(`${TITLE}: encounter-decks.json not found — is the data/ folder installed?`); return null; }
+    const FOLDER = "Cavril: Encounters";
+    let folder = game.folders?.find(f => f.type === "RollTable" && f.name === FOLDER);
+    try { if (!folder) folder = await Folder.create({ name: FOLDER, type: "RollTable" }); } catch (e) { /* folder optional */ }
+    const ids = foundry.utils.deepClone(game.settings.get(MOD, "deckIds") || {});
+    const decks = { ...data.biomes, universal: data.universal };
+    let made = 0, kept = 0, rebuilt = 0;
+    for (const [key, deck] of Object.entries(decks)) {
+        const entries = deck?.d20 || []; if (!entries.length) continue;
+        const n = entries.length;
+        const results = entries.map((t, i) => ({ type: CONST.TABLE_RESULT_TYPES?.TEXT ?? 0, text: t, weight: 1, range: [i + 1, i + 1] }));
+        let tbl = ids[key] ? game.tables.get(ids[key]) : null;
+        try {
+            if (tbl && !rebuild) { kept++; continue; }                                  // keep the GM's edits unless rebuild
+            if (tbl && rebuild) { const old = tbl.results.map(r => r.id); await tbl.deleteEmbeddedDocuments("TableResult", old); await tbl.update({ formula: `1d${n}` }); await tbl.createEmbeddedDocuments("TableResult", results); rebuilt++; }
+            else { tbl = await RollTable.create({ name: `Encounters — ${deck.label || key}`, formula: `1d${n}`, folder: folder?.id, results, replacement: true, displayRoll: true }); ids[key] = tbl.id; made++; }
+        } catch (e) { warn(`deck build failed: ${key}`, e); }
+    }
+    try { await game.settings.set(MOD, "deckIds", ids); } catch (e) { /* noop */ }
+    ui.notifications?.info(`${TITLE}: encounter decks ready in "${FOLDER}" — ${made} created${kept ? `, ${kept} kept` : ""}${rebuilt ? `, ${rebuilt} rebuilt` : ""}.`);
+    return { made, kept, rebuilt, folder: FOLDER };
+}
+// Roll a deck (builds the tables on first use). Returns { deck, text, tag, kind } — kind ∈ combat/hazard/skill/social/feature.
+async function cwfRollDeck(deckKey) {
+    const get = () => { const ids = game.settings.get(MOD, "deckIds") || {}; return ids[deckKey] ? game.tables.get(ids[deckKey]) : null; };
+    let tbl = get();
+    if (!tbl) { await cwfBuildDecks(); tbl = get(); }
+    if (!tbl) return null;
+    let text = "";
+    try { const res = await tbl.roll(); const r = res?.results?.[0]; text = r?.text || r?.description || r?.name || ""; } catch (e) { warn("deck roll failed", e); }
+    const tag = (text.match(/^\(([^)]+)\)/)?.[1] || "").toLowerCase();
+    const kind = /combat/.test(tag) ? "combat" : /hazard/.test(tag) ? "hazard" : /skill/.test(tag) ? "skill" : /social|trade/.test(tag) ? "social" : "feature";
+    return { deck: deckKey, text, tag, kind };
+}
 async function cwfRoadCastActor(m, kind) {
     if (!game.user?.isGM || !m?.name) return null;
     let actor = (game.actors || []).find(a => { try { return a.getFlag(MOD, "roadCast") === m.name; } catch (e) { return false; } }) || null;
@@ -6815,6 +6881,9 @@ Hooks.once("ready", () => {
         spawnEncounter: (theme = null, opts = {}) => cwfSpawnEncounter(theme, opts),   // spawn a themed, APL-scaled SRD encounter near the party (theme defaults to the hex's biome theme)
         combatRoster: (theme = "soldiers", apl = null) => cwfCombatRoster(theme, apl == null ? cwfAvgPartyLevel() : apl),   // inspect the build for a theme + level
         combatThemes: () => Object.fromEntries(Object.entries(cwfCombatThemes()).map(([k, v]) => [k, v.label])),
+        buildDecks: (opts = {}) => cwfBuildDecks(opts),   // create the native d20 encounter RollTables from data/encounter-decks.json ({rebuild:true} re-seeds)
+        rollDeck: (deckKey = "forest") => cwfRollDeck(deckKey),   // roll a deck: forest/grassland/swamp/hills/mountains/desert/jungle/coastal/urban/feywild/underdark/road/river/lake/universal
+        deckFor: (gov = {}) => cwfDeckFor(gov),   // which deck a hex maps to (features > elevation > biome)
         roleDc: (biome, role = "forage", extra = {}) => cwfRoleDc(role, { biome, dc: 13, ...extra }),
         wanted: (d) => (d == null ? cwfWanted() : cwfWantedAdjust(d)),   // .wanted() reads · .wanted(1)/.wanted(-1) adjusts the Heat/Wanted score
         setWanted: (n) => cwfSetWanted(n),                                // .setWanted(3) sets it directly (0-5)
