@@ -4666,6 +4666,18 @@ async function cwfBuildQuests({ rebuild = false } = {}) {
     ui.notifications?.info(`${TITLE}: quest web built — ${made} created${kept ? `, ${kept} kept` : ""}. Open game.campaignCodex.openQuestBoard().`);
     return { made, kept, nodes: Object.keys(nodes).length };
 }
+// Quest combat → the themed APL spawn. Each arc node maps to a combat theme (the biome default + per-node overrides where the
+// foe doesn't match — Frost Giants, dragons, the Drow). spawnQuest("MOUNTAINS_01") drops that fight at the party's level. v0.55.175.
+const CWF_QUESTBIOME_THEME = { urban: "soldiers", forest: "fey", feywild: "fey", underdark: "caves", grassland: "soldiers", road: "soldiers", hills: "soldiers", mountains: "titans", swamp: "deepwater", river: "fey", lake: "deepwater", coastal: "soldiers", desert: "undead", jungle: "soldiers" };
+const CWF_QUEST_THEME = { SWAMP_01: "titans", MOUNTAINS_01: "titans", CAVES_01: "caves", DESERT_01: "undead", JUNGLE_01: "soldiers" };   // overrides where the foe doesn't match the biome default
+function cwfQuestTheme(node) { return CWF_QUEST_THEME[node?.id] || CWF_QUESTBIOME_THEME[node?.biome] || "soldiers"; }
+async function cwfSpawnQuest(nodeId, opts = {}) {
+    if (!game.user?.isGM) return null;
+    const data = await cwfQuestData(); if (!data) return null;
+    let node = null; for (const arc of Object.values(data.arcs)) { const n = arc.nodes.find(x => x.id === String(nodeId).toUpperCase()); if (n) { node = n; break; } }
+    if (!node) { ui.notifications?.warn(`${TITLE}: no quest node "${nodeId}" — try e.g. MOUNTAINS_01.`); return null; }
+    return cwfSpawnEncounter(cwfQuestTheme(node), opts);
+}
 async function cwfRoadCastActor(m, kind) {
     if (!game.user?.isGM || !m?.name) return null;
     let actor = (game.actors || []).find(a => { try { return a.getFlag(MOD, "roadCast") === m.name; } catch (e) { return false; } }) || null;
@@ -6971,6 +6983,7 @@ Hooks.once("ready", () => {
         rollDeck: (deckKey = "forest") => cwfRollDeck(deckKey),   // roll a deck: forest/grassland/swamp/hills/mountains/desert/jungle/coastal/urban/feywild/underdark/road/river/lake/universal
         deckFor: (gov = {}) => cwfDeckFor(gov),   // which deck a hex maps to (features > elevation > biome)
         buildQuests: (opts = {}) => cwfBuildQuests(opts),   // build the interwoven arc quests as Campaign Codex journals, wired by dependency/unlock ({rebuild:true} re-fills)
+        spawnQuest: (nodeId, opts = {}) => cwfSpawnQuest(nodeId, opts),   // spawn a quest node's themed APL fight near the party, e.g. spawnQuest("MOUNTAINS_01")
         roleDc: (biome, role = "forage", extra = {}) => cwfRoleDc(role, { biome, dc: 13, ...extra }),
         wanted: (d) => (d == null ? cwfWanted() : cwfWantedAdjust(d)),   // .wanted() reads · .wanted(1)/.wanted(-1) adjusts the Heat/Wanted score
         setWanted: (n) => cwfSetWanted(n),                                // .setWanted(3) sets it directly (0-5)
