@@ -5281,7 +5281,7 @@ const ROLE_SKILLS = {
 // A Helper can roll any skill a role can — at resolve, the SAME-skill role takes the better of the two rolls.
 const HELPER_SKILLS = [...new Set(Object.values(ROLE_SKILLS).flat())];   // sur · inv · prc · nat · ste · med
 const Turn = (() => {
-    let active = false, step = "active", route = [], governing = null, pace = "normal", boat = false, turnTok = null;
+    let active = false, step = "active", route = [], governing = null, pace = "normal", boat = false, turnTok = null, forageTarget = "food";   // Food / Water / Both — what the Forager gathers (travel-loop contract)
     let held = false;   // set when the GM manually edits a roll value → suspends auto-resolve so they can adjust freely
     let _suppressed = [];   // actorIds currently suppressed in ddb-roll-cards — their travel-role CHECK cinematics fold into the group cinematic
     const newSlot = () => ({ actorId: null, actorName: null, skillId: null, total: null, nat: null, outcome: null, result: null, helpedBy: null });
@@ -5295,7 +5295,7 @@ const Turn = (() => {
         active = true; step = "active"; held = false;
         route = r.slice();
         governing = Travel.governing();
-        pace = Travel.pace || "normal"; boat = Travel.boat;
+        pace = Travel.pace || "normal"; boat = Travel.boat; forageTarget = "food";
         Cinematic.broadcast({ icon: "fa-compass", title: "Travel Turn", subtitle: governing?.label ? `${governing.label} · DC ${governing.dc ?? "?"}` : `${route.length} hex${route.length === 1 ? "" : "es"}`, tone: "travel" });
         // Pre-fill from the last remembered assignments (editable per turn).
         const saved = game.settings.get(MOD, "lastRoles") || {};
@@ -5390,17 +5390,24 @@ const Turn = (() => {
             helped.add(k);
         }
     }
+    // A helper "backs the Forager" when their skill is one the Forager can use (nat/sur/med) → cancels the both-target penalty.
+    function forageHasHelper() { return claimedHelpers().some(h => ROLE_SKILLS.forage.includes(h.skillId)); }
     function rollState(roleKey) {
         // Off by default → clean single rolls. When on, Slow gives advantage, Fast
         // disadvantage, and weather can hamper a role (the 5e-flavored mechanic).
         if (!game.settings.get(MOD, "travelRollMods")) return { mode: "normal", adv: false, dis: false };
-        return Domain.rollState(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() }, governing);
+        const rs = Domain.rollState(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() }, governing);
+        // Foraging for BOTH food + water at once is disadvantage — UNLESS a helper is backing the Forager (travel-loop contract).
+        if (roleKey === "forage" && forageTarget === "both" && !forageHasHelper()) return rs.adv ? { mode: "normal", adv: false, dis: false } : { mode: "disadvantage", adv: false, dis: true };
+        return rs;
     }
     // The sources behind this role's adv/dis (pace, weather) for the turn card's tiny "why" icons. Empty when the
     // pace/weather modifier rule is off, so the card stays clean unless the mechanic is actually in play.
     function rollWhy(roleKey) {
         if (!game.settings.get(MOD, "travelRollMods")) return [];
-        return Domain.rollWhy(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() }, governing);
+        const why = Domain.rollWhy(roleKey, { pace: Store.sceneState().pace, weather: effectiveWeather() }, governing);
+        if (roleKey === "forage" && forageTarget === "both" && !forageHasHelper()) why.push({ kind: "dis", label: "Foraging for food + water at once", icon: "fa-layer-group" });
+        return why;
     }
 
     function natOf(roll) {
@@ -5501,19 +5508,25 @@ const Turn = (() => {
                 // Forage PRODUCES food into the party's packs by SUCCESS TIER (travel-loop contract): success +2 rations, major
                 // +4, crit +6 + a medicinal boon. Yields distribute to each character up to their own Strength-score max — no
                 // stockpile. Water auto-fills to max at a real source (river/lake/coast). The herb satchel (Provenance) rides a
-                // good roll. Replaces the old margin-scaled draw model. (Food / Water / Both targeting lands next.) v0.55.162.
+                // good roll. The Forager targets Food / Water / Both — Both rolls at disadvantage unless a helper backs them. v0.55.163.
                 if (tier === "success" || tier === "major" || tier === "crit") {
                     const atSource = !!(governing?.river || governing?.coast || governing?.terrainKey === "water" || governing?.biome === "water");
+                    const wantFood = forageTarget === "food" || forageTarget === "both";
+                    const wantWater = forageTarget === "water" || forageTarget === "both";
                     const foodYield = tier === "crit" ? 6 : tier === "major" ? 4 : 2;
-                    const fg = await Party.addSupplies(foodYield, 0);
-                    const foodGot = fg.rations || 0;
-                    let waterGot = 0, waterFull = false;
-                    if (atSource) { waterGot = await Party.refillWater(); waterFull = waterGot > 0; }   // a real source tops off every skin, every tier
+                    let foodGot = 0, waterGot = 0, waterFull = false;
+                    if (wantFood) { const fg = await Party.addSupplies(foodYield, 0); foodGot = fg.rations || 0; }   // success +2 · major +4 · crit +6 rations
+                    if (atSource) { waterGot = await Party.refillWater(); waterFull = waterGot > 0; }                // a real source tops off every skin, whatever the target
+                    else if (wantWater) {
+                        if (tier === "success") { try { const wr = (await new Roll("1d4").evaluate()).total; const wg = await Party.addSupplies(0, wr); waterGot = wg.water || 0; } catch (e) { /* water optional */ } }   // success → 1d4 unpurified water
+                        else { waterGot = await Party.refillWater(); waterFull = waterGot > 0; }                    // major/crit → enough to fill every skin
+                    }
                     let herbTxt = ""; const herbN = tier === "crit" ? 2 : tier === "major" ? 1 : 0;
                     if (herbN > 0) { const g = await cwfForageGather(v.actorId, governing, { count: herbN }); if (g) herbTxt = g; }
                     const bits = [];
                     if (foodGot) bits.push(`+${foodGot}${cwfResIcon("rations")}`);
                     if (waterFull) bits.push(`${cwfResIcon("water")} water source — all skins topped off`);
+                    else if (waterGot) bits.push(`+${waterGot}${cwfResIcon("water")}`);
                     if (herbTxt) bits.push(herbTxt);
                     v.result += bits.length ? ` <em>— ${bits.join(" · ")}.</em>` : ` <em>— but every pack is already full.</em>`;
                     if (tier === "crit") { const eased = await cwfForageMedicinal(); if (eased) v.result += ` <em>${eased}</em>`; }
@@ -5633,6 +5646,8 @@ const Turn = (() => {
         roleDc: (k) => cwfRoleDc(k, governing),
         claimedRoles, allRolled,
         addHelper, setHelper, dropHelper, rollHelper, enterHelper, claimedHelpers,
+        setForageTarget(t) { if (["food", "water", "both"].includes(t)) { forageTarget = t; WayfarerPanel.render(); } },
+        get forageTarget() { return forageTarget; },
         get active() { return active; }, get step() { return step; }, get roles() { return roles; }, get helpers() { return helpers; },
         get governing() { return governing; }, get route() { return route; }
     };
@@ -5996,6 +6011,7 @@ const WayfarerPanel = (() => {
                 case "travel-cancel": Travel.cancel(); break;
                 case "turn-begin": Turn.begin(); if (Turn.active) Travel.cancel(); break;
                 case "turn-roll": await Turn.roll(btn.dataset.role); break;
+                case "turn-forage-target": Turn.setForageTarget(btn.dataset.tgt); break;
                 case "turn-adjust": Turn.adjust(btn.dataset.role, Number(btn.dataset.d)); break;
                 case "turn-add-helper": Turn.addHelper(); break;
                 case "turn-helper-roll": await Turn.rollHelper(Number(btn.dataset.idx)); break;
@@ -6156,6 +6172,8 @@ const WayfarerPanel = (() => {
                 ? `<span class="cwf-role-dc" title="Forage — food DC ${rdc.food} · water DC ${rdc.water}, scaled to the biome (rivers/coast ease water, forest eases food)"><i class="fa-solid fa-drumstick-bite"></i>${rdc.food} <i class="fa-solid fa-bottle-water"></i>${rdc.water}</span>`
                 : `<span class="cwf-role-dc" title="${ROLE_LABEL[k]} DC for this terrain (biome-shaped)">DC ${rdc.dc}</span>`;
             const badge = s.total != null ? `<span class="cwf-tier cwf-${tier}">${s.total} · ${TIER_LABEL[tier]}</span>` : "";
+            // The Forager picks a target — Food / Water / Both (Both rolls at disadvantage unless a helper backs the Forager).
+            const forageTgt = k === "forage" ? `<div class="cwf-forage-tgt" title="What the Forager is gathering this turn">${[["food", "fa-drumstick-bite", "Food — rations only"], ["water", "fa-bottle-water", "Water only"], ["both", "fa-layer-group", "Both — at disadvantage (a Forager helper cancels it)"]].map(([tg, ic, tip]) => `<button class="cwf-seg cwf-seg-sm ${Turn.forageTarget === tg ? "on" : ""}" data-action="turn-forage-target" data-tgt="${tg}" title="${tip}"><i class="fa-solid ${ic}"></i></button>`).join("")}</div>` : "";
             const rollRow = s.actorId ? `
                 <div class="cwf-roll-row">
                     <button class="cwf-btn cwf-roll" data-action="turn-roll" data-role="${k}" ${dis}><i class="fa-solid fa-dice-d20"></i> Roll</button>
@@ -6165,6 +6183,7 @@ const WayfarerPanel = (() => {
             return `
                 <div class="cwf-role ${s.actorId ? "claimed" : ""}">
                     <div class="cwf-role-h"><i class="fa-solid ${ROLE_ICON[k]}"></i> <b>${ROLE_LABEL[k]}</b> ${dcHint} ${advTag}${whyIcons}</div>
+                    ${forageTgt}
                     <div class="cwf-claim">
                         <select class="cwf-sel" data-action="turn-claim" data-role="${k}" ${dis} title="Who is claiming this role?">${memberOpts(s.actorId)}</select>
                         <select class="cwf-sel" data-action="turn-skill" data-role="${k}" ${dis} title="Skill for this role this turn">${skillOpts(k, s.skillId)}</select>
