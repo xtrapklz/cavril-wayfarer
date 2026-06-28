@@ -1982,6 +1982,20 @@ function cwfPlayerSummaryHTML(t) {
 // The pace + time strip on the trek card. Makes the cost of travel UNMISSABLE — how many hours each hex burns at this
 // pace, and how much of the day has already gone this leg — plus a live pace toggle so the GM can speed up or slow down
 // BEFORE the next hex. Directly answers "eight hours passed without me realising" and "no way to change my pace".
+// The roll effect a PACE would impose on THIS hex — "advantage" / "disadvantage" / "normal" — for live pace-button feedback,
+// so the GM sees BEFORE choosing that e.g. Normal in a swamp is a Brutal Push → disadvantage. Mirrors the turn's own logic:
+// respects the travelRollMods setting (off → pace never moves rolls) + the difficult-terrain Cautious Crawl (Slow's advantage
+// stripped) / Brutal Push (Normal → disadvantage). v0.55.209.
+function cwfPaceEffect(paceKey, cls) {
+    try { if (!game.settings.get(MOD, "travelRollMods")) return "normal"; } catch (e) { return "normal"; }
+    const pace = Domain.PACE[paceKey] || Domain.PACE.normal;
+    const rough = !!(cls && cls.restriction === "noFast" && !cls.infrastructure);
+    if (pace.mod === "advantage") return rough ? "normal" : "advantage";   // Cautious Crawl strips Slow's advantage on rough terrain
+    if (pace.mod === "disadvantage") return "disadvantage";
+    return rough ? "disadvantage" : "normal";                              // Brutal Push: Normal → disadvantage on rough terrain
+}
+// A coloured Adv / Disadv chip for a pace button (nothing for a straight roll) — reuses the .cwf-seg-sub second-line slot.
+const cwfPaceEffBadge = (eff) => { if (eff === "normal") return ""; const adv = eff === "advantage"; return `<span class="cwf-seg-sub" style="color:${adv ? "#8fd98f" : "#e0824d"};font-weight:700"><i class="fa-solid ${adv ? "fa-angles-up" : "fa-angles-down"}"></i> ${adv ? "Adv" : "Disadv"}</span>`; };
 function cwfTrekTimeStrip(t) {
     if (!t) return "";
     const rate = Math.round(Domain.hoursPerHex(t.pace, t.boat));   // ~8 slow · 6 normal · 4 fast (halved by boat/road, + rugged terrain)
@@ -1992,7 +2006,8 @@ function cwfTrekTimeStrip(t) {
     let here = null; try { const tk = canvas.tokens?.get(t.tokId); if (tk) here = Hex.classifyAt(Hex.offsetOf(tk.center)); } catch (e) { /* noop */ }
     const seg = Domain.PACE_ORDER.map(k => {
         const off = (k === "fast") && Domain.fastProhibited?.(here);
-        return `<button class="cwf-seg ${Domain.effPace(t.pace, here) === k ? "on" : ""}" data-cwf="trek-pace" data-pace="${k}" ${off ? "disabled" : ""} title="${cwfEsc(Domain.PACE[k].note)} · ~${Math.round(Domain.hoursPerHex(k, t.boat))}h per hex">${Domain.PACE[k].label}</button>`;
+        const eff = cwfPaceEffect(k, here);
+        return `<button class="cwf-seg ${Domain.effPace(t.pace, here) === k ? "on" : ""}" data-cwf="trek-pace" data-pace="${k}" ${off ? "disabled" : ""} title="${cwfEsc(Domain.PACE[k].note)} · ~${Math.round(Domain.hoursPerHex(k, t.boat))}h per hex${eff === "advantage" ? " · Advantage" : eff === "disadvantage" ? " · Disadvantage" : ""}">${Domain.PACE[k].label}${cwfPaceEffBadge(eff)}</button>`;
     }).join("");
     const toggle = (!t.done) ? `<div class="cwf-seg-row" title="Change pace before the next hex">${seg}</div>` : "";
     return `<div class="cwf-tstrip${heavy ? " cwf-tstrip-heavy" : ""}"><div class="cwf-tstrip-row"><span class="cwf-tstrip-rate"><i class="fa-solid fa-gauge-simple-high"></i> <b>${cwfEsc(paceLabel)}</b> · ~${rate}h / hex</span><span class="cwf-tstrip-elapsed"><i class="fa-solid fa-hourglass-half"></i> ${elapsedTxt}</span></div>${toggle}</div>`;
@@ -7020,8 +7035,9 @@ const WayfarerPanel = (() => {
                 const n = Travel.route.length;
                 const tpace = Domain.PACE_ORDER.map(k => {
                     const off = (k === "fast" && gov && Domain.fastProhibited(gov));
-                    const hph = Math.round(Domain.hoursPerHex(k, Travel.boat));   // the SIGNIFICANCE of pace = time spent per hex, surfaced on the button itself
-                    return `<button class="cwf-seg cwf-seg-pace ${Domain.effPace(Travel.pace, gov) === k ? "on" : ""}" data-action="travel-pace" data-pace="${k}" ${off ? "disabled" : ""} title="${Domain.PACE[k].note} · ~${hph}h per hex"><span class="cwf-seg-t">${Domain.PACE[k].label}</span><span class="cwf-seg-sub">~${hph}h/hex</span></button>`;
+                    const hph = Math.round(Domain.hoursPerHex(k, Travel.boat));   // hours/hex → the tooltip now (the button face shows the ROLL EFFECT instead of the numeric)
+                    const eff = cwfPaceEffect(k, gov);   // advantage / disadvantage / normal on this route's governing terrain, so the GM sees the cost of each pace before picking
+                    return `<button class="cwf-seg cwf-seg-pace ${Domain.effPace(Travel.pace, gov) === k ? "on" : ""}" data-action="travel-pace" data-pace="${k}" ${off ? "disabled" : ""} title="${Domain.PACE[k].note} · ~${hph}h per hex${eff === "advantage" ? " · Advantage" : eff === "disadvantage" ? " · Disadvantage" : ""}"><span class="cwf-seg-t">${Domain.PACE[k].label}</span>${cwfPaceEffBadge(eff)}</button>`;
                 }).join("");
                 const wps = Travel.waypointCount;
                 const reach = Travel.reach?.size ?? 0;
