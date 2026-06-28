@@ -417,8 +417,6 @@ const Domain = (() => {
  * ========================================================================= */
 const Store = (() => {
     const S = {
-        rationsPerMember: "rationsPerMember",
-        waterPerMember: "waterPerMember",
         autoWeatherOnCamp: "autoWeatherOnCamp",
         partyMode: "partyMode",
         partySizeFixed: "partySizeFixed",
@@ -430,8 +428,7 @@ const Store = (() => {
 
     function register() {
         const g = game.settings;
-        g.register(MOD, S.rationsPerMember, { name: "Rations per member / day", hint: "Rations consumed per party member each Long Rest (Make Camp).", scope: "world", config: true, type: Number, default: 1 });
-        g.register(MOD, S.waterPerMember, { name: "Waterskins per member / day", hint: "Waterskins consumed per party member each Long Rest (Make Camp).", scope: "world", config: true, type: Number, default: 1 });
+        // (removed "Rations/Waterskins per member / day" — dead holdovers from the old per-day-at-camp consumption; the LIVE system is per-day PACE-COST, via consumeDay)
         g.register(MOD, S.autoWeatherOnCamp, { name: "Roll weather at dawn", hint: "When you Make Camp, roll the next day's weather automatically (you can still override it).", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, S.partyMode, { name: "Party size source", hint: "Auto = count player-assigned characters. Fixed = use the number below.", scope: "world", config: true, type: String, choices: { auto: "Auto (assigned PCs)", fixed: "Fixed number" }, default: "auto" });
         g.register(MOD, S.partySizeFixed, { name: "Party size (fixed)", hint: "Used only when Party size source = Fixed.", scope: "world", config: true, type: Number, default: 4 });
@@ -480,7 +477,7 @@ const Store = (() => {
         // Starvation & thirst → exhaustion, resolved at camp. DETERMINISTIC (no saves): hunger past a flat reserve of
         // days, thirst the moment you go dry. Wayfarer only APPLIES exhaustion; the native dnd5e long rest recovers it.
         g.register(MOD, "starveExhaustion", { name: "Starvation & thirst exhaustion", hint: "Going without food or water at camp exhausts the members who went short, and blocks their long-rest exhaustion recovery. No dice — it just applies.", scope: "world", config: true, type: Boolean, default: true });
-        g.register(MOD, "mealsPerDay", { name: "Meals & drinks per day", hint: "How many rations AND waterskin charges each character needs per travel day (breakfast / lunch / dinner). At camp the party eats this many of each from their packs. Default 3.", scope: "world", config: true, type: Number, default: 3 });
+        g.register(MOD, "mealsPerDay", { name: "Meals & drinks per day", hint: "Legacy — superseded by the per-day PACE-COST consumption; kept only as a fallback value for the night survival summary.", scope: "world", config: false, type: Number, default: 3 });
         g.register(MOD, "shareProvisions", { name: "Prompt to share provisions", hint: "When a character can't cover their own rations or water at camp, prompt who shares from their pack — so the table role-plays the moment AND the right person actually gives. Refusal (or no one with surplus) leaves them to go without, taking the hunger/thirst toll. Default on.", scope: "world", config: true, type: Boolean, default: true });
         g.register(MOD, "foodGraceDays", { name: "Food reserve (days before hunger)", hint: "How many consecutive HUNGRY days (a character ate ≤⅓ of the day's meals) a member can stack before the next adds +1 exhaustion — a flat reserve, no CON math. Eating ≥⅔ of the day's meals keeps you fed. Default 1.", scope: "world", config: true, type: Number, default: 1 });
         g.register(MOD, "carryBase", { name: "Carry base (rations / water capacity)", hint: "Each character carries up to this many rations AND this many waterskin charges, PLUS their Strength modifier. The party's totals are just the sum of what everyone holds — no shared stockpile. At 3 meals/day this is ~days of autonomy. Default 9 (STR 14 → 11 ≈ 3½ days, STR 8 → 8).", scope: "world", config: true, type: Number, default: 9 });
@@ -656,8 +653,7 @@ const Store = (() => {
 
     return {
         register, customTerrain, partySize, pool, setPool, sceneState, setSceneState, advanceWorldTime,
-        rationsPer: () => Math.max(0, num(S.rationsPerMember, 1)),
-        waterPer: () => Math.max(0, num(S.waterPerMember, 1)),
+        // (rationsPer/waterPer getters removed — the per-member/day settings they read are retired in favour of pace-cost)
         autoWeather: () => !!game.settings.get(MOD, S.autoWeatherOnCamp),
         badgeEnabled: () => game.settings.get(MOD, S.badgeEnabled) !== false,
         desertDC: () => num(S.desertDifficulty, 10)
@@ -7398,7 +7394,7 @@ Hooks.on("renderSettingsConfig", (app, html) => {
         const SECTIONS = [
             ["⚙️ Encounter Engine", ["dangerDefault", "encounterScale", "encounterHours", "oneEncounterPerNight", "travelEvents", "fogExplore"]],
             ["🧭 Travel & Turns", ["playerTravelCard", "autoResolveTurn", "autoTravelOnResolve", "openCityOnArrival", "universalDelay", "moveAnimMs", "lockToken", "travelRollMods"]],
-            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "mealsPerDay", "shareProvisions", "foodGraceDays", "carryBase", "rationCost", "waterCost", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
+            ["⛺ Time, Camp & Survival", ["nightHours", "campHour", "extraRestRecovery", "longRestAtDawn", "resyncAtDawn", "resyncSilent", "starveExhaustion", "shareProvisions", "foodGraceDays", "carryBase", "rationCost", "waterCost", "restThresholdHours", "forcedMarch", "forcedMarchPace", "forcedMarchDC"]],
             ["🗺️ Terrain & Biome", ["terrainPenalties", "terrainPenaltyJSON", "biomeForageJSON", "biomeForageWeightsJSON", "gatherIngredients", "biomeGatherJSON", "biomeDangerJSON", "biomeClimateJSON", "syncMiniCalBiome"]],
             ["🛒 Trade & Road Encounters", ["merchantCards", "merchantPortraits", "roadNpcCards"]],
             ["🎚️ Cinematics & Music", ["dangerCinematic", "travelSfx", "travelSfxPath", "musicEnabled", "musicMapJSON", "campMapJSON"]],
