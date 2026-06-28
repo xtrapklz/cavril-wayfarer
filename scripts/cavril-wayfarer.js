@@ -2460,14 +2460,45 @@ async function cwfForageSickness(actorId) {
     try { Cinematic.broadcast({ icon: "fa-virus", title: "Tainted Forage", subtitle: `${a?.name || "the forager"} falls ill — Poisoned`, tone: "danger" }); } catch (e) { /* noop */ }
     try { ChatMessage.create({ content: cwfCardShell("fa-virus", "Tainted Forage", cwfRow(a?.name || "Forager", "ate something foul out there — <b>Poisoned</b>, lingering until cured or a long rest clears it.")) }); } catch (e) { /* noop */ }
 }
-// Resolve a botched forage: a coin-flip between lingering sickness and a roused territorial beast — always a SURPRISE fight.
+// The crit-FAIL forage's nat-1 fork (travel-loop contract): RUINED RESOURCES (1d4 rations spoil across the party) OR TOXIC
+// HARVEST (the Forager makes a CON save vs the biome DC — a fail leaves them Poisoned). Coin flip on a 1d2.
 async function cwfForageCritFail(actorId, cls) {
     if (!game.user.isGM) return;
-    let sick = true;
-    try { sick = (await new Roll("1d2").evaluate()).total === 1; } catch { /* default to sickness */ }
-    if (sick) return cwfForageSickness(actorId);
-    try { Cinematic.broadcast({ icon: "fa-paw", title: "Territorial Wildlife", subtitle: "the forage roused something — ambush!", tone: "danger" }); } catch (e) { /* noop */ }
-    try { await cwfCombatBeat(cls, cls?.biome, { surprised: true }); } catch (e) { warn("forage wildlife encounter failed", e); }
+    let toxic = true;
+    try { toxic = (await new Roll("1d2").evaluate()).total === 1; } catch { /* default to toxic */ }
+    if (toxic) {
+        const a = game.actors.get(actorId);
+        const dc = cwfRoleDc("forage", cls).dc;
+        const con = a?.system?.abilities?.con?.save ?? a?.system?.abilities?.con?.mod ?? 0;
+        let roll; try { roll = await cwfRollD20(`1d20 + ${con}`); } catch (e) { roll = 10 + con; }
+        const ok = roll >= dc;
+        if (!ok) { try { await a?.toggleStatusEffect?.("poisoned", { active: true }); } catch (e) { warn("toxic harvest apply failed", e); } }
+        try { Cinematic.broadcast({ icon: "fa-virus", title: "Toxic Harvest", subtitle: ok ? `${a?.name || "the forager"} resists the tainted flora` : `${a?.name || "the forager"} is Poisoned`, tone: ok ? "calm" : "danger" }); } catch (e) { /* noop */ }
+        try { ChatMessage.create({ content: cwfCardShell("fa-virus", "Toxic Harvest", cwfRow(a?.name || "Forager", `tainted flora — CON save ${roll} vs DC ${dc}: ${ok ? "<b>resisted</b>." : "<b>Poisoned</b>, lingering until cured or a long rest clears it."}`)) }); } catch (e) { /* noop */ }
+    } else {
+        let lost = 2; try { lost = (await new Roll("1d4").evaluate()).total; } catch { /* default 2 */ }
+        let gone = 0; for (let i = 0; i < lost; i++) { try { await Party.adjustStash("rations", -1); gone++; } catch (e) { break; } }
+        try { Cinematic.broadcast({ icon: "fa-trash-can", title: "Ruined Resources", subtitle: `${gone} ration${gone === 1 ? "" : "s"} spoiled in the satchels`, tone: "danger" }); } catch (e) { /* noop */ }
+        try { ChatMessage.create({ content: cwfCardShell("fa-trash-can", "Ruined Resources", cwfRow("The party", `a botched forage spoils the packs — <b>${gone} ration${gone === 1 ? "" : "s"} lost</b>.`)) }); } catch (e) { /* noop */ }
+    }
+}
+// The crit-FAIL scout's nat-1 fork (travel-loop contract): HORNET'S NEST (walked the party into a surprise ambush — straight
+// to a fight) OR PITFALL (the Scout takes 2d6 and the whole party loses a ration + a drink scrambling clear). Coin flip on a 1d2.
+async function cwfScoutCritFail(actorId, cls) {
+    if (!game.user.isGM) return;
+    let hornet = true;
+    try { hornet = (await new Roll("1d2").evaluate()).total === 1; } catch { /* default to ambush */ }
+    if (hornet) {
+        try { Cinematic.broadcast({ icon: "fa-bugs", title: "Hornet's Nest", subtitle: "the Scout walked the party into it — ambush!", tone: "danger" }); } catch (e) { /* noop */ }
+        try { await cwfCombatBeat(cls, cls?.biome, { surprised: true }); } catch (e) { warn("hornet's nest encounter failed", e); }
+    } else {
+        const a = game.actors.get(actorId);
+        let dmg = 7; try { dmg = (await new Roll("2d6").evaluate()).total; } catch { /* default 7 */ }
+        try { await a?.applyDamage?.(dmg); } catch (e) { warn("pitfall damage failed", e); }
+        try { await Party.consumeDay(1, 1); } catch (e) { /* supply scramble — best effort (DC 1 → no exhaustion) */ }
+        try { Cinematic.broadcast({ icon: "fa-person-falling", title: "Pitfall", subtitle: `${a?.name || "the Scout"} takes ${dmg} — the party scrambles, losing supplies`, tone: "danger" }); } catch (e) { /* noop */ }
+        try { ChatMessage.create({ content: cwfCardShell("fa-person-falling", "Pitfall", cwfRow(a?.name || "Scout", `pitched into a hidden drop — <b>${dmg} damage</b>; the party loses a ration + a drink each in the scramble.`)) }); } catch (e) { /* noop */ }
+    }
 }
 // A MEAL BEAT at a day phase (Dawn breakfast / Day midday / Dusk supper): the party eats one portion (own → shared → go
 // without), anyone short takes the immediate toll, and a per-character chip card announces it to the table. v0.55.129.
@@ -5502,7 +5533,7 @@ const Turn = (() => {
         syncRollSuppress(false);            // rolls are in → release the suppress
         let navEffect = "arrive";
         let navRefund = false, navDoubleDrain = false;   // nat-20 nav refunds the day's upkeep; a critfail "Vicious Circle" drains it double
-        let forageMishap = null;   // a botched forage's victim — resolved (sickness or a surprise fight) after the role loop
+        let forageMishap = null, scoutMishap = null;   // a botched forage / scout's victim — resolved (the nat-1 fork) after the role loop
         for (const [k, v] of claimedRoles()) {
             const tier = outcomeFor(v, k) || "fail";
             v.outcome = tier;
@@ -5517,6 +5548,7 @@ const Turn = (() => {
                 else if (tier === "critfail") { navEffect = "dead"; navDoubleDrain = true; v.result += ` <em>— a vicious circle: no ground gained, and the day's supplies drain double.</em>`; }
                 else navEffect = drawn.effect || "arrive";
             }
+            if (k === "scout" && tier === "critfail") scoutMishap = v.actorId;   // nat-1 scout → Hornet's Nest / Pitfall, resolved after the loop
             if (k === "forage") {
                 // Forage PRODUCES food into the party's packs by SUCCESS TIER (travel-loop contract): success +2 rations, major
                 // +4, crit +6 + a medicinal boon. Yields distribute to each character up to their own Strength-score max — no
@@ -5618,6 +5650,7 @@ const Turn = (() => {
         // A crit-fail forage lands its consequence AFTER the travel beat: tainted flora (lingering sickness) or a roused
         // territorial beast (a surprise fight). Always a surprise — the party blundered into it.
         if (forageMishap) { try { await cwfForageCritFail(forageMishap, cls); } catch (e) { warn("forage crit-fail resolve failed", e); } }
+        if (scoutMishap) { try { await cwfScoutCritFail(scoutMishap, cls); } catch (e) { warn("scout crit-fail resolve failed", e); } }
 
         step = "resolved";
         WayfarerPanel.render(); BiomeBadge.update();
