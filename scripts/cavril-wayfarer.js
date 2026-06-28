@@ -4925,16 +4925,20 @@ function cwfNpcDossierHTML(m, kind, d, hasAssoc = false) {
     const family = FAMILY[Math.floor(famRng() * FAMILY.length)];
 
     return `<p style="font-size:13px;opacity:.85;margin:0 0 2px"><b>${e(d.ancestry)}</b> · ${e(d.occupation)}${m.arc ? ` · <span style="color:#c084fc">${e((String(m.arc).match(/Arc [A-Z]/)?.[0]) || m.arc)}</span>` : ""}</p>`
+        // ── PLAY THEM NOW — the role-play essentials up top: how they look / what they're doing → their opening line → their want → the hook ──
+        + (m.appearance ? `<p style="margin:7px 0;font-size:13px"><i class="fa-solid fa-eye" style="color:#f472b6;opacity:.85"></i> ${e(m.appearance)}</p>` : "")
+        + (m.readAloud ? `<blockquote style="margin:9px 0;border-left:3px solid #c084fc;padding:2px 0 2px 11px;font-style:italic;opacity:.92">${e(m.readAloud)}</blockquote>` : "")
+        + (m.wants ? `<p style="margin:7px 0"><i class="fa-solid fa-bullseye" style="color:#fbbf24"></i> <b>Wants.</b> ${e(m.wants)}</p>` : "")
+        + (m.hook ? sec("fa-flag-checkered", "#ef4444", "Quest hook", `<p>${e(m.hook)}</p><p style="opacity:.7;font-size:12px">→ tracked as a linked quest on the <b>Quests</b> tab.</p>`) : "")
+        // ── THEN the supporting detail as you scroll: voice / scene / secret → suggested rolls → temperament → places, family, wares ──
+        + ((m.voice || m.situation || m.twist || m.lore) ? sec("fa-masks-theater", "#c084fc", "Roleplay", [m.voice ? `<p><i class="fa-solid fa-comment-dots" style="color:#38bdf8"></i> <b>Voice.</b> ${e(m.voice)}</p>` : "", m.situation ? `<p><i class="fa-solid fa-location-dot" style="color:#22c55e"></i> <b>When you find them.</b> ${e(m.situation)}</p>` : "", (m.twist || m.lore) ? `<p><i class="fa-solid fa-user-secret" style="color:#ef4444"></i> <b>Secret.</b> <span style="opacity:.7">(GM — see Notes.)</span></p>` : ""].join("")) : "")
+        + `<div style="display:flex;flex-wrap:wrap;gap:5px;margin:11px 0 6px"><span style="display:inline-flex;align-items:center;font-size:10px;color:#a5b4fc;font-weight:700;text-transform:uppercase;margin-right:2px">Suggested ability scores</span>${["str", "dex", "con", "int", "wis", "cha"].map(aCell).join("")}</div>`
         + strip(Object.keys(OCE).map(oPill).join(""))
-        + `<div style="display:flex;flex-wrap:wrap;gap:5px;margin:6px 0"><span style="display:inline-flex;align-items:center;font-size:10px;color:#a5b4fc;font-weight:700;text-transform:uppercase;margin-right:2px">Suggested</span>${["str", "dex", "con", "int", "wis", "cha"].map(aCell).join("")}</div>`
-        + (m.readAloud ? sec("fa-scroll", "#22c55e", "Bio", `<blockquote>${e(m.readAloud)}</blockquote>${m.situation ? `<p>${e(m.situation)}</p>` : ""}`) : "")
-        + sec("fa-masks-theater", "#c084fc", "Roleplay cues", [m.voice ? `<p><i class="fa-solid fa-comment-dots" style="color:#38bdf8"></i> <b>Voice.</b> ${e(m.voice)}</p>` : "", m.appearance ? `<p><i class="fa-solid fa-hand-sparkles" style="color:#f472b6"></i> <b>Manner.</b> ${e(m.appearance)}</p>` : "", m.wants ? `<p><i class="fa-solid fa-bullseye" style="color:#fbbf24"></i> <b>Wants.</b> ${e(m.wants)}</p>` : "", (m.twist || m.lore) ? `<p><i class="fa-solid fa-user-secret" style="color:#ef4444"></i> <b>Secret.</b> <span style="opacity:.7">(GM — see Notes.)</span></p>` : ""].join(""))
         + sec("fa-map-pin", "#38bdf8", "Places & faith", `<p><i class="fa-solid fa-house" style="color:#38bdf8"></i> <b>Has lived:</b> ${e(d.lived.join("; "))}.</p><p><i class="fa-solid fa-pray" style="color:#c084fc"></i> <b>Faith:</b> ${e(d.faith)}.</p><p><i class="fa-solid fa-dice" style="color:#22c55e"></i> <b>Hobby:</b> ${e(d.hobby)}.</p>`)
         + sec("fa-people-roof", "#f472b6", "Family & friends", `<p><i class="fa-solid fa-people-roof" style="color:#f472b6"></i> <b>Family.</b> ${e(family)}.</p>${hasAssoc ? `<p style="opacity:.7;font-size:12px"><i class="fa-solid fa-user-group" style="color:#a78bfa"></i> Associates link on the <b>Associates</b> tab; the <b>connections graph</b> visualises them.</p>` : ""}`)
         + sec("fa-shop", "#f97316", "Carries / sells", ul(d.loot) + (m.stock?.length ? `<p style="opacity:.8;font-size:12px;margin-top:4px"><b>Wares:</b></p>${ul(m.stock)}` : ""))
         + (m.buys?.length ? sec("fa-hand-holding-dollar", "#fbbf24", "Pays well for", ul(m.buys)) : "")
-        + (m.rumour ? sec("fa-comment", "#06b6d4", "Rumour", `<p>“${e(m.rumour)}”</p>`) : "")
-        + (m.hook ? sec("fa-flag-checkered", "#ef4444", "Quest hook", `<p>${e(m.hook)}</p><p style="opacity:.7;font-size:12px">→ tracked as a linked quest on the <b>Quests</b> tab.</p>`) : "");
+        + (m.rumour ? sec("fa-comment", "#06b6d4", "Rumour", `<p>“${e(m.rumour)}”</p>`) : "");
 }
 // Inject (idempotently) a Campaign Codex sheet WIDGET + its data — the verified CC v5.5.3 recipe: a `sheet-widgets` entry
 // { id, widgetName, counter, active, tab } PLUS the widget's own state at `data.widgets.<typeKey>.<id>`. Drives the merchant
@@ -5064,6 +5068,7 @@ async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find o
         const tags = Array.from(new Set([cwfShortSpecies(m.species || ""), kind === "merchant" ? "merchant" : "road NPC", ...(m.biomes || []), (String(m.arc || "").match(/Arc [A-Z]/)?.[0])].map(t => String(t || "").trim()).filter(Boolean)));
         await doc.setFlag(CC_NS, "data", { ...data, description: desc, notes, tags, associates: assoc, linkedQuests: quest ? [quest.uuid] : (data.linkedQuests || []) });
         const img = (actor?.img && actor.img !== "icons/svg/mystery-man.svg") ? actor.img : cwfRoadCastToken(m); if (img) await doc.setFlag(CC_NS, "image", img);
+        if (quest && img) { try { await quest.setFlag(CC_NS, "image", img); } catch (e) { /* quest image best-effort */ } }   // the quest journal shows its GIVER's face → recognisable at a glance (arc quests already carry their per-arc icon)
         // A Reputation Tracker on the Info tab → track the party's STANDING with this NPC at a glance (the "alliances" pillar),
         // plus a connections GRAPH widget that diagrams their associate links (the City HUD's friend-graph, in Codex form).
         await cwfCodexWidget(doc, "Reputation Tracker", "info", "reputationtracker", { useLoyalty: false, reputationValue: 0 });
