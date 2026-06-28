@@ -5195,6 +5195,26 @@ async function cwfWipeContent() {
     }
     return n;
 }
+// Nest every Cavril content folder under ONE parent "Cavril" folder per sidebar tab, so they group together. Folders are
+// TYPED (a RollTable folder can't parent an Actor folder), so we make a "Cavril" parent in EACH tab + reparent that tab's
+// folders under it. Child names KEEP their "Cavril …" prefix — that's what keeps them from colliding with the GM's own
+// folders (find-by-name ignores the parent). Idempotent; runs at the tail of install/refresh. v0.55.201.
+async function cwfNestFolders() {
+    if (!game.user?.isGM) return 0;
+    const types = [...new Set(CWF_CONTENT_FOLDERS.map(([t]) => t))];
+    const parent = {};
+    for (const t of types) { try { parent[t] = await cwfEnsureFolder(t, "Cavril"); } catch (e) { /* skip this tab */ } }
+    let moved = 0;
+    for (const [type, name] of CWF_CONTENT_FOLDERS) {
+        if (name === "Cavril") continue;
+        try {
+            const f = (game.folders?.contents || []).find(x => x.type === type && x.name === name);
+            const pid = parent[type];
+            if (f && pid && f.id !== pid && f.folder?.id !== pid) { await f.update({ folder: pid }); moved++; }
+        } catch (e) { warn(`nest ${type}/${name} failed`, e); }
+    }
+    return moved;
+}
 // REFRESH = wipe the generated docs, then reinstall fresh (force-rebuilding the flag-cached builders). The GM's OWN
 // content is untouched — only the Cavril folders above are emptied. Public: CavrilWayfarer.refreshAll().
 async function cwfRefreshAll({ confirm = false } = {}) {
@@ -5231,6 +5251,7 @@ async function cwfInstallAll({ confirm = false, force = false } = {}) {
     ui.notifications?.info(`${TITLE}: installing content — ${steps.length} step${steps.length === 1 ? "" : "s"}…`);
     let done = 0; const fails = [];
     for (const [label, fn] of steps) { try { await fn(); done++; } catch (e) { warn(`install step failed: ${label}`, e); fails.push(label); } }
+    try { await cwfNestFolders(); } catch (e) { warn("nest folders failed", e); }   // group every Cavril folder under one "Cavril" parent per sidebar tab
     const note = `${done}/${steps.length} step${steps.length === 1 ? "" : "s"}${fails.length ? ` · <b>failed:</b> ${fails.map(cwfEsc).join(", ")}` : " · all good"}${hasCC ? "" : " · (Campaign Codex not active — quests + journals skipped)"}`;
     try { ChatMessage.create({ content: cwfCardShell("fa-box-open", "Cavril — Content Installed", cwfRow("Built", note)), whisper: cwfGmIds() }); } catch (e) { /* noop */ }
     if (fails.length) ui.notifications?.warn(`${TITLE}: install finished with ${fails.length} issue(s) — see the chat card.`); else ui.notifications?.info(`${TITLE}: content install complete.`);
@@ -7321,6 +7342,7 @@ Hooks.once("ready", () => {
         installAll: (opts) => cwfInstallAll(opts),   // ONE call: seed every RollTable + deck + quest + road-cast journal the system needs (mirrors the 📦 Install all content settings button)
         refreshAll: (opts) => cwfRefreshAll(opts),   // WIPE all generated content (scoped to the Cavril folders) + reinstall fresh — no manual delete (mirrors the Refresh all content settings button)
         wipeContent: () => cwfWipeContent(),         // delete every generated doc in the Cavril folders (the destructive half of refreshAll)
+        nestFolders: () => cwfNestFolders(),         // group every Cavril folder under one "Cavril" parent per sidebar tab (also runs on install/refresh)
         meetSomeone: (opts = {}) => { const tok = Canvasry.activeToken(); return meetRoadCast(opts.cls || (tok ? Canvasry.biomeForToken(tok) : {}), opts); },   // drop a road-cast member (merchant or NPC) for the current hex on demand ({merchant:true} to force a merchant)
         travelSfxFile: (cls, boat) => cwfTravelSfxFile(cls, boat),   // which movement sound a hex+toggle plays, e.g. travelSfxFile({biome:"temperate",river:true}, false) → "foot-water-shallow"
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, TravelingMerchants, NarrativeNPCs, _installed: true
