@@ -1605,6 +1605,7 @@ const cwfForageDraws = (total, dc) => Math.max(1, Math.floor((total ?? 0) - (dc 
 // Each travel role faces its OWN DC, shaped by the governing hex's biome: navigation by how legible the ground is, scouting
 // by how much cover blocks sightlines, foraging by how scarce food / water are. Returns { dc, food?, water? } — dc is the
 // success threshold (forage: the EASIER of food / water → you find SOMETHING), food/water the per-resource thresholds.
+let cwfNavBonusNext = 0;   // a +1d4 carried from a Major navigation roll → eases the NEXT turn's nav DC, then spent (travel-loop contract)
 function cwfRoleDc(role, gov) {
     const night = cwfNightNow() ? 2 : 0;
     const base = (gov?.dc ?? 10) + night;
@@ -1624,9 +1625,12 @@ function cwfRoleDc(role, gov) {
     }
     let d = base;                                      // navigate (and any default)
     if (open || dense) d += 2;                         // no landmarks / no sightlines → easy to drift
+    const shifting = ["desert", "tundra", "frozen", "swamp", "void"].includes(biome);   // ground that itself moves/disorients — dunes, whiteout, bog, the unreal
+    if (shifting) d += 3;                              // shifting biome → DC+3 (travel-loop contract); a nav failure here SCATTERS
     if (road) d -= 1;                                  // +Road → navigation +1 (the road is legible; travel-loop contract)
     else if (nearWater) d -= 1;                        // follow the watercourse
-    return { dc: Math.max(5, d) };
+    if (cwfNavBonusNext > 0) d -= cwfNavBonusNext;     // a Major nav last turn eased this one
+    return { dc: Math.max(5, d), shifting };
 }
 // HOURS SINCE LAST LONG REST — the "running on no sleep" clock. Reset on a long rest (cwfMarkRested), seeded on the first
 // travel turn. Past `restThresholdHours` (default 24) each travel leg adds +1 exhaustion until the party beds down.
@@ -5497,13 +5501,22 @@ const Turn = (() => {
         emitTravelGroup(false);             // rolls are in → reveal the group cinematic as the RESULT (clears the persistent progress one)
         syncRollSuppress(false);            // rolls are in → release the suppress
         let navEffect = "arrive";
+        let navRefund = false, navDoubleDrain = false;   // nat-20 nav refunds the day's upkeep; a critfail "Vicious Circle" drains it double
         let forageMishap = null;   // a botched forage's victim — resolved (sickness or a surprise fight) after the role loop
         for (const [k, v] of claimedRoles()) {
             const tier = outcomeFor(v, k) || "fail";
             v.outcome = tier;
             const drawn = await Tables.draw(k, tier);
             v.result = drawn.text;
-            if (k === "navigate") navEffect = drawn.effect || (tier === "fail" || tier === "critfail" ? "dead" : "arrive");
+            if (k === "navigate") {
+                cwfNavBonusNext = 0;   // any Major bonus from last turn was just spent on THIS roll's DC
+                const navShifting = ["desert", "tundra", "frozen", "swamp", "void"].includes(governing?.biome);
+                if (tier === "crit") { navEffect = "arrive"; navRefund = true; v.result += ` <em>— a flawless line: the day's supplies are refunded.</em>`; }
+                else if (tier === "major") { navEffect = "arrive"; try { cwfNavBonusNext = (await new Roll("1d4").evaluate()).total; } catch (e) { cwfNavBonusNext = 2; } v.result += ` <em>— your next navigation roll eases by ${cwfNavBonusNext} (DC −${cwfNavBonusNext}).</em>`; }
+                else if (tier === "fail" && navShifting) { navEffect = "scatter"; v.result += ` <em>— the shifting ground throws you off: you scatter to a random adjacent hex.</em>`; }
+                else if (tier === "critfail") { navEffect = "dead"; navDoubleDrain = true; v.result += ` <em>— a vicious circle: no ground gained, and the day's supplies drain double.</em>`; }
+                else navEffect = drawn.effect || "arrive";
+            }
             if (k === "forage") {
                 // Forage PRODUCES food into the party's packs by SUCCESS TIER (travel-loop contract): success +2 rations, major
                 // +4, crit +6 + a medicinal boon. Yields distribute to each character up to their own Strength-score max — no
@@ -5560,8 +5573,9 @@ const Turn = (() => {
         // DAILY UPKEEP (travel-loop contract): each character spends pace-worth of rations + water; a shortfall they can't cover
         // is a CON save vs the biome DC → exhaustion. This is the ONLY consumption now — there are no meals. v0.55.160.
         try {
-            const paceCost = { slow: 1, normal: 2, fast: 3 }[pace] ?? 2;
-            const supRows = await Party.consumeDay(paceCost, dc);
+            const baseCost = { slow: 1, normal: 2, fast: 3 }[pace] ?? 2;
+            const paceCost = navDoubleDrain ? baseCost * 2 : baseCost;   // a Vicious Circle critfail drains double
+            const supRows = navRefund ? [] : await Party.consumeDay(paceCost, dc);   // a nat-20 nav refunds the day — nobody spends anything
             if (supRows.length) {
                 const items = supRows.map(r => {
                     const short = (r.rShort || r.wShort) ? ` <span style="color:#d6887e">short${r.rShort ? ` ${r.rShort}${cwfResIcon("rations")}` : ""}${r.wShort ? ` ${r.wShort}${cwfResIcon("water")}` : ""}</span>` : "";
@@ -5586,6 +5600,11 @@ const Turn = (() => {
             const flanks = tok ? Hex.flank(route, Hex.offsetOf(tok.center)) : [];
             const target = navEffect === "left" ? (flanks[0] || flanks[1]) : (flanks[1] || flanks[0]);
             path = target ? [target] : route.slice();
+        }
+        else if (navEffect === "scatter") {   // shifting-biome failure → blunder into a RANDOM adjacent hex (not the intended one)
+            const nbs = tok ? (Hex.neighbors(Hex.offsetOf(tok.center)) || []) : [];
+            const pick = nbs.length ? nbs[Math.floor(Math.random() * nbs.length)] : null;
+            path = pick ? [pick] : route.slice();
         }
         if (tok) {
             await cwfStartTravel(tok, path, { pace, boat, scoutGood, lostHours, header: body, title: "Travel Turn", icon: "fa-compass", sub: `DC ${dc}${governing?.label ? ` · ${governing.label}` : ""}` });
