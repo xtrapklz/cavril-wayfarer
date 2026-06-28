@@ -4794,7 +4794,7 @@ async function cwfRoadCastActor(m, kind, { force = false } = {}) {
     const items = [];
     try {
         items.push(...await cwfGatherItems(cls, kind === "merchant" ? 3 : 2));                                    // biome herbs (real gather-table items)
-        if (kind === "merchant" && Array.isArray(m.stock)) for (const s of m.stock.slice(0, 8)) items.push(cwfGenericLoot(s, true));   // their wares — the merchant's actual goods (mirrored in the journal's Carries/sells)
+        if (kind === "merchant" && Array.isArray(m.stock) && !CWF_MERCHANT_TYPE[m.key]) for (const s of m.stock.slice(0, 8)) items.push(cwfGenericLoot(s, true));   // flavour wares ONLY for an UNtyped merchant; a typed merchant gets REAL SRD items synced from its storefront instead
         // (removed the generic "X's effects" + "Traveler's sundries" filler — they were inventory noise the GM didn't ask for)
     } catch (e) { warn("road-cast loot failed", e); }
     if (items.length) { try { await actor.createEmbeddedDocuments("Item", items); } catch (e) { warn("road-cast items failed", e); } }
@@ -5021,6 +5021,9 @@ async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find o
                 const shop = await CodexShop.createShop(`${m.name} — Wares`, picks, { markup: typeCfg.markup ?? 1.1, description: `<p><em>${cwfEsc(m.title ? `${m.name}, ${m.title}` : m.name)}'s wares.</em></p>` });
                 if (shop) {
                     await game.campaignCodex.linkShopToNPC(shop, doc);
+                    // SYNC the linked actor's inventory to the shop stock — the merchant physically CARRIES what it sells (the
+                    // GM-requested actor↔stock sync). Resolve each pick's real item from its uuid + stamp the shop quantity.
+                    if (actor) { try { const objs = []; for (const p of picks) { try { const it = await fromUuid(p.e.uuid); if (it) { const o = it.toObject(); delete o._id; o.system = o.system || {}; o.system.quantity = p.quantity || 1; objs.push(o); } } catch (e2) { /* skip an unresolved pick */ } } if (objs.length) await actor.createEmbeddedDocuments("Item", objs); } catch (e) { warn("actor↔shop sync failed", e); } }
                     try { const table = await CodexShop.tableForType(typeKey); if (table) await cwfCodexWidget(shop, "Merchant Counter", "widgets", "merchantcounter", { restockTables: [{ uuid: table.uuid, multiplier: "1d4", name: table.name, img: table.img || "icons/svg/d20.svg" }] }); } catch (e) { warn("storefront restock wire failed", e); }
                 }
             }
@@ -5031,7 +5034,7 @@ async function cwfRoadCastJournal(m, kind, { force = false } = {}) {   // find o
 function cwfRoadCastCompactCard(m, cls, kind, uuid) {
     const esc = cwfEsc;
     const lead = String(m.readAloud || m.situation || m.appearance || "").split(/(?<=[.!?])\s/)[0] || "";
-    const sub = `${esc(cwfShortSpecies(m.species || ""))}${cls?.label ? " · " + esc(cls.label) : ""}${m.arc ? " · " + esc(m.arc) : ""}`;
+    const sub = `${esc(cwfShortSpecies(m.species || ""))}${cls ? " · " + esc(Domain.plainTerrain(cls)) : ""}${m.arc ? " · " + esc(m.arc) : ""}`;
     const foot = `<div class="cwf-cardbtns"><button class="cwf-cardbtn cwf-primary" data-cwf="open-journal" data-uuid="${esc(uuid)}" title="Open the full Campaign Codex journal — bio, wares, hook, connections + secrets"><i class="fa-solid fa-book-open"></i> Open journal</button>${globalThis.CavrilEncounterStage ? `<button class="cwf-cardbtn" data-cwf="stage-scene" title="Stage a best-match scene backdrop for this meeting"><i class="fa-solid fa-masks-theater"></i> Stage a scene</button>` : ""}</div>`;
     const body = `<div class="cwf-merch-read">${esc(lead)}</div><div class="cwf-muted2" style="font-size:11px;margin-top:5px"><i class="fa-solid fa-book-open" style="opacity:.6"></i> Full bio · wares · hook · who they know · secrets — in the journal.</div>`;
     return cwfCardShell(kind === "merchant" ? "fa-store" : "fa-user", `${esc(m.name)}${m.title ? ", " + esc(m.title) : ""}`, body, { sub, footerHTML: foot });
@@ -5088,7 +5091,7 @@ const TravelingMerchants = (() => {
             + (m.hook ? `<div class="cwf-merch-hook"><span class="cwf-merch-l"><i class="fa-solid fa-scroll"></i> Hook${m.arc ? ` · ${esc(m.arc)}` : ""}</span> ${esc(m.hook)}</div>` : "")
             + (m.lore ? `<div class="cwf-merch-lore"><span class="cwf-merch-l"><i class="fa-solid fa-eye-low-vision"></i> GM only</span> ${esc(m.lore)}</div>` : "");
         const foot = globalThis.CavrilEncounterStage ? `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="stage-scene" title="Stage a best-match scene backdrop for this meeting (a built place, no foes)"><i class="fa-solid fa-masks-theater"></i> Stage a scene</button></div>` : "";
-        return cwfCardShell("fa-store", `${m.name}${m.title ? ", " + m.title : ""}`, body, { sub: `${esc(shortSp)}${cls?.label ? " · " + esc(cls.label) : ""}`, footerHTML: foot });
+        return cwfCardShell("fa-store", `${m.name}${m.title ? ", " + m.title : ""}`, body, { sub: `${esc(shortSp)}${cls ? " · " + esc(Domain.plainTerrain(cls)) : ""}`, footerHTML: foot });
     }
     async function onTrade(cls) {
         try {
@@ -5158,7 +5161,7 @@ const NarrativeNPCs = (() => {
             + (n.twist ? `<div class="cwf-merch-lore"><span class="cwf-merch-l"><i class="fa-solid fa-mask"></i> Twist</span> ${esc(n.twist)}</div>` : "")
             + row("Branches", esc(outc));
         const foot = globalThis.CavrilEncounterStage ? `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="stage-scene" title="Stage a best-match scene backdrop for this meeting (a built place, no foes)"><i class="fa-solid fa-masks-theater"></i> Stage a scene</button></div>` : "";
-        return cwfCardShell("fa-user", `${n.name}${n.title ? " · " + n.title : ""}`, body, { sub: `${esc(shortSp)}${cls?.label ? " · " + esc(cls.label) : ""}`, footerHTML: foot });
+        return cwfCardShell("fa-user", `${n.name}${n.title ? " · " + n.title : ""}`, body, { sub: `${esc(shortSp)}${cls ? " · " + esc(Domain.plainTerrain(cls)) : ""}`, footerHTML: foot });
     }
     async function onBeat(cls) {
         try {
@@ -6760,7 +6763,7 @@ const WayfarerPanel = (() => {
         const dis = isGM ? "" : "disabled";
 
         const here = cls
-            ? `<span class="cwf-pill" data-tier="${Domain.tier(cls)}"><i class="fa-solid ${cls.icon}"></i> ${cls.label}${cls.detail ? ` <em>${cls.detail}</em>` : ""} ${cls.dc != null ? `· DC ${cls.dc}` : ""}</span>
+            ? `<span class="cwf-pill" data-tier="${Domain.tier(cls)}"><i class="fa-solid ${cls.icon}"></i> ${Domain.plainTerrain(cls)}${cls.detail ? ` <em>${cls.detail}</em>` : ""} ${cls.dc != null ? `· DC ${cls.dc}` : ""}</span>
                ${cls.restriction === "noFast" ? `<span class="cwf-pill cwf-warn">No Fast Pace</span>` : ""}
                ${cls.restriction === "water" ? `<span class="cwf-pill cwf-warn">Boat required</span>` : ""}
                ${cls.restriction === "block" ? `<span class="cwf-pill cwf-warn">Impassable</span>` : ""}
