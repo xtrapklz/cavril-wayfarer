@@ -529,8 +529,8 @@
 .cwf-tstrip .cwf-seg.on { background: rgba(189,169,232,.28); border-color: #bda9e8; color: #fff; }
 .cwf-tstrip .cwf-seg:disabled { opacity: .4; cursor: not-allowed; }
 /* concise party supplies strip — totals + worst exhaustion at a glance; the per-character grid expands behind it */
-.cwf-supstrip { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
-.cwf-sup { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.cwf-supstrip { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.cwf-sup { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cwf-sup-max { opacity: .45; font-weight: 600; font-size: .82em; margin-left: 1px; }
 .cwf-sup-day, .cwf-sup-day .fa-calendar-day { color: var(--cwf-accent); font-weight: 600; }
 .cwf-sup .fa-drumstick-bite { color: #d8a24d; }
@@ -572,6 +572,10 @@ button.cwf-cap:hover .cwf-cap-track, button.cwf-cap:hover .cwf-exh-track { box-s
 .cwf-cap-fill.ok { background: linear-gradient(90deg, color-mix(in srgb, var(--cwf-accent) 55%, #6fae7d), var(--cwf-accent)); }
 .cwf-cap-fill.warn { background: linear-gradient(90deg, #c79a4e, var(--cwf-gold)); }
 .cwf-cap-fill.low { background: linear-gradient(90deg, #8a3b3b, var(--cwf-severe)); min-width: 2px; }
+/* per-type bar colours — food gold, water blue (the low-warning red still overrides when critically empty) */
+.cwf-cap-fill.cwf-fill-rations { background: linear-gradient(90deg, #b3823a, #d8a24d); }
+.cwf-cap-fill.cwf-fill-water { background: linear-gradient(90deg, #3b7fc0, #4f9fe6); }
+.cwf-cap-fill.cwf-fill-rations.low, .cwf-cap-fill.cwf-fill-water.low { background: linear-gradient(90deg, #8a3b3b, var(--cwf-severe)); }
 .cwf-cap-num { font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--cwf-text); text-align: right; }
 .cwf-cap-cap { color: var(--cwf-muted); font-weight: 600; font-size: 9px; }
 .cwf-exh-track { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; height: 9px; }

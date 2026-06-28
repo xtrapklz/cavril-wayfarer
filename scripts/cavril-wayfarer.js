@@ -2614,6 +2614,7 @@ async function cwfPartyRest(type, { newDay = false, silent = false, extraExh = 0
     if (!silent) Cinematic.broadcast(type === "long"
         ? { icon: "fa-bed", title: "Long Rest", subtitle: extraExh > 0 ? `slept in — recovers ${1 + extraExh} exhaustion` : (shortIds?.size ? "the party recovers — watchers short-rest" : "the party recovers"), tone: "dawn" }
         : { icon: "fa-mug-hot", title: "Short Rest", subtitle: "a moment's respite", tone: "dusk" });
+    if (type === "short") { try { await Store.advanceWorldTime(1); } catch (e) { /* a short rest spends 1 hour */ } }   // advance the clock an hour (both the HUD + plot-course short-rest buttons route here)
     const rows = [];
     for (const a of mem) {
         const memberType = (shortIds && shortIds.has(a.id)) ? "short" : type;   // a watcher who FORGOES the long rest takes only a SHORT rest, even on a long-rest night
@@ -3267,14 +3268,22 @@ const Hex = (() => {
     // whose channel actually connects them (riverConnects). Without `fromOff` (e.g.
     // a standalone estimate) the hex's own feature is enough. Fast (3) along a
     // connected all-river+boat route → 9 hexes.
-    function stepCost(off, cls, { boat = false } = {}, fromOff = null) {
+    // Infra multiplier for a hex entry: a CONTINUOUS road/river (or boat on open water) speeds the crossing.
+    function infraMult(off, cls, { boat = false } = {}, fromOff = null) {
         const f = featuresAt(off);
         const roadConn = f.road && (fromOff ? featuresAt(fromOff).road : true);
         const riverConn = f.river && (fromOff ? riverConnects(fromOff, off) : true);
         const waterHex = cls?.terrainKey === "water";   // an ocean/lake/sea hex — boat-traversable like a river
-        const m = (roadConn || riverConn || (waterHex && boat)) ? (boat ? 3 : 2) : 1;
-        return (1 + terrainPenalty(cls)) / m;
+        return (roadConn || riverConn || (waterHex && boat)) ? (boat ? 3 : 2) : 1;
     }
+    // BUDGET cost (reachability): a UNIFORM 1 per hex (÷ infra) — so the day's reach is just the pace, slow 1 / normal 2 / fast 3
+    // hexes, REGARDLESS of biome. Rugged terrain is NOT a budget tax here: that made mountains (cost 3) unreachable without Fast,
+    // which is itself disabled on them — so they read as impassable. Their difficulty lives in stepCost's TIME, the role DCs +
+    // the no-Fast rule instead (the GM-authored "reflect the limit in the buttons, calculate the effect behind the scenes").
+    function budgetCost(off, cls, opts = {}, fromOff = null) { return 1 / infraMult(off, cls, opts, fromOff); }
+    // TIME cost to ENTER a hex: (1 base + terrain penalty) ÷ infra. A mountain hex still takes ~3× a flat's hours — the rugged
+    // ground costs real travel time, just not the move budget. Feeds pathCost (the clock) + the per-hex hours, not reachability.
+    function stepCost(off, cls, opts = {}, fromOff = null) { return (1 + terrainPenalty(cls)) / infraMult(off, cls, opts, fromOff); }
 
     // Pop the lowest-cost frontier entry (small N → linear scan is fine).
     const popMin = (pq) => { let bi = 0; for (let i = 1; i < pq.length; i++) if (pq[i].c < pq[bi].c) bi = i; return pq.splice(bi, 1)[0]; };
@@ -3309,7 +3318,7 @@ const Hex = (() => {
             for (const nb of neighbors(cur.off)) {
                 const cls = classifyAt(nb);
                 if (!passable(cls, opts)) continue;
-                const nc = cur.c + stepCost(nb, cls, opts, cur.off);
+                const nc = cur.c + budgetCost(nb, cls, opts, cur.off);   // reachability uses the UNIFORM budget cost (mountains reachable; pace = hex count)
                 if (nc > budget + EPS) continue;
                 const k = key(nb);
                 if (nc + EPS < (best.get(k) ?? Infinity)) {
@@ -3338,7 +3347,7 @@ const Hex = (() => {
             for (const nb of neighbors(cur.off)) {
                 const cls = classifyAt(nb);
                 if (!passable(cls, opts)) continue;
-                const nc = cur.c + stepCost(nb, cls, opts, cur.off);
+                const nc = cur.c + budgetCost(nb, cls, opts, cur.off);   // reachability uses the UNIFORM budget cost (mountains reachable; pace = hex count)
                 if (nc > budget + EPS) continue;
                 const k = key(nb);
                 if (nc + EPS < (best.get(k) ?? Infinity)) {
@@ -6786,7 +6795,7 @@ const WayfarerPanel = (() => {
                         const pct = (cur, cap) => cap > 0 ? Math.max(0, Math.min(100, Math.round(cur / cap * 100))) : 0;
                         const tone = (cur, cap) => cur <= 0 ? "low" : (cur < cap * 0.34 ? "warn" : "ok");
                         const bar = (icon, field, cur, cap, label) => {
-                            const inner = `<span class="cwf-cap-ic"><i class="fa-solid ${icon}"></i></span><span class="cwf-cap-track"><span class="cwf-cap-fill ${tone(cur, cap)}" style="width:${pct(cur, cap)}%"></span></span><span class="cwf-cap-num">${cur}<span class="cwf-cap-cap">/${cap}</span></span>`;
+                            const inner = `<span class="cwf-cap-ic"><i class="fa-solid ${icon}"></i></span><span class="cwf-cap-track"><span class="cwf-cap-fill cwf-fill-${field} ${tone(cur, cap)}" style="width:${pct(cur, cap)}%"></span></span><span class="cwf-cap-num">${cur}<span class="cwf-cap-cap">/${cap}</span></span>`;
                             return isGM
                                 ? `<button class="cwf-cap" data-action="edit-member" data-id="${m.id}" data-field="${field}" title="Click to set ${esc(m.name)}'s ${label} (${cur}/${cap} carried)">${inner}</button>`
                                 : `<div class="cwf-cap" title="${esc(m.name)}'s ${label}: ${cur}/${cap}">${inner}</div>`;
