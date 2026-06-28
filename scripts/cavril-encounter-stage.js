@@ -1185,10 +1185,11 @@
   }
   // Pick a token for an NPC, matching ANY keyword. Tries the SUBJECT (the actual character) first, then the full text
   // (incl the noisy pack title), then a random token so a face is always returned. Returns { url, subject, name, pack }.
-  async function tokenFor(keywords) {
+  async function tokenFor(keywords, { exclude = null } = {}) {
     try {
       const q = Array.isArray(keywords) ? keywords.join(" ") : String(keywords || "");
-      const ranked = await tokenRank(q, { n: 12 });                                  // SCORED match (subject-weighted) — much better than first-hit
+      let ranked = await tokenRank(q, { n: 24 });                                  // SCORED match (subject-weighted) — much better than first-hit
+      if (exclude?.size) { const fresh = ranked.filter(t => !exclude.has(t.url)); if (fresh.length) ranked = fresh; }   // prefer a face not already handed to another NPC; fall back to all only if every match is taken
       if (ranked.length) { const t = ranked[Math.floor(Math.random() * Math.min(ranked.length, 8))]; return { url: t.url, subject: t.subject, name: t.name, pack: t.pack }; }   // random among the TOP fits → on-theme variety
       const cat = await tokenCatalog(); if (!cat.items.length) return null;           // nothing scored → any face
       const t = cat.items[Math.floor(Math.random() * cat.items.length)];
@@ -1202,10 +1203,13 @@
   const TOK_STOP = new Set(["a", "an", "the", "of", "with", "and", "or", "in", "on", "at", "to", "for", "by", "his", "her", "their", "that", "this", "who", "very"]);
   const tokenize = (q) => String(q || "").toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 1 && !TOK_STOP.has(w));
   const _shufTok = (a) => { const c = a.slice(); for (let i = c.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = c[i]; c[i] = c[j]; c[j] = t; } return c; };
+  // Faces that read as over-dramatic — fiends, undead, royalty, paladins, monsters — penalised so ROAD FOLK lean ORDINARY, not evil or heroic.
+  const TOK_DRAMATIC = /\b(demon|devil|fiend|infernal|undead|lich|vampire|zombie|skeleton|ghost|wraith|ghoul|angel|celestial|paladin|hero|champion|knight|warlord|king|queen|emperor|prince|princess|god|goddess|deity|dragon|villain|cultist|necromancer|monster|beholder|mindflayer|aberration|hellish|demonic)\b/;
   function _scoreTok(t, words) {
     let s = 0, subjHits = 0;
     for (const w of words) { if (t.subjHay.includes(w)) { s += 3; subjHits++; } else if (t.hay.includes(w)) s += 1; }   // subject (the descriptor) weighted 3×; anywhere-else 1×
     if (words.length && subjHits === words.length) s += 4;   // every word present in the subject = a precise, specific match
+    if (TOK_DRAMATIC.test(t.subjHay)) s -= 3;   // bias AWAY from evil/heroic/monstrous faces — road NPCs should look like ordinary people, not paladins or demons
     return s;
   }
   const _pubTok = (t) => ({ id: t.id, url: t.url, subject: t.subjLabel, name: t.name, pack: t.packLabel });
@@ -1316,8 +1320,8 @@
 
   // tokenFor() + durable download in one step — for art that must PERSIST (an Actor's portrait + token texture),
   // not just a throwaway chat card. Returns { url(durable local path), src(original), subject, name, pack }.
-  async function tokenArtFor(keywords) {
-    const tk = await tokenFor(keywords);
+  async function tokenArtFor(keywords, opts = {}) {
+    const tk = await tokenFor(keywords, opts);
     if (!tk?.url) return tk;
     const local = await saveExternalImage(tk.url, "merchant");
     return { ...tk, src: tk.url, url: local || tk.url };

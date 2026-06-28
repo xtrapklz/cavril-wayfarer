@@ -526,7 +526,7 @@ const Store = (() => {
                         ui.notifications?.info(`${TITLE}: sound cues saved.`);
                     }
                 };
-                g.registerMenu(MOD, "cavrilSoundsMenu", { name: "Sound cues", label: "🎵 Pick sound cues…", hint: "Every Wayfarer cinematic, danger, and travel sound in ONE place — pick each from your Cavril: Maestro library (presets · atmospheres · SFX) or paste a ref, and preview it. (The individual sound fields are now folded into this menu.)", icon: "fa-solid fa-music", type: SoundsApp, restricted: true });
+                g.registerMenu(MOD, "cavrilSoundsMenu", { name: "Sound cues", label: "Pick sound cues…", hint: "Every Wayfarer cinematic, danger, and travel sound in ONE place — pick each from your Cavril: Maestro library (presets · atmospheres · SFX) or paste a ref, and preview it. (The individual sound fields are now folded into this menu.)", icon: "fa-solid fa-music", type: SoundsApp, restricted: true });
             }
         } catch (e) { warn("sound menu register failed", e); }
         // 📦 One-click content installer — a settings button that seeds EVERYTHING (tables, decks, quests, road-cast journals).
@@ -537,7 +537,7 @@ const Store = (() => {
                     static get defaultOptions() { return foundry.utils.mergeObject(super.defaultOptions, { id: "cavril-install-config", title: "Install Cavril Content" }); }
                     async render() { try { await cwfInstallAll({ confirm: true }); } catch (e) { warn("install all failed", e); } return this; }
                 };
-                g.registerMenu(MOD, "cavrilInstallMenu", { name: "Install content", label: "📦 Install all content…", hint: "One click: create every RollTable, encounter deck, quest, and road-cast journal (merchants + storefronts + NPCs) the system needs to run. Idempotent — re-running skips what already exists and upgrades the rest. Campaign Codex must be active for the quests + journals.", icon: "fa-solid fa-box-open", type: InstallApp, restricted: true });
+                g.registerMenu(MOD, "cavrilInstallMenu", { name: "Install content", label: "Install all content…", hint: "One click: create every RollTable, encounter deck, quest, and road-cast journal (merchants + storefronts + NPCs) the system needs to run. Idempotent — re-running skips what already exists and upgrades the rest. Campaign Codex must be active for the quests + journals.", icon: "fa-solid fa-box-open", type: InstallApp, restricted: true });
             }
         } catch (e) { warn("install menu register failed", e); }
         g.register(MOD, "sfxDangerUp", { name: "Danger-rising cue (Maestro)", hint: "Optional Cavril: Maestro cue for when danger RISES — a reference like sfx:path/to/sound.ogg, music:<id>, preset:<tag>, or a pasted @Maestro[…] link. Maestro plays it to the whole table. Blank = a built-in low rising tone.", scope: "world", config: false, type: String, default: "" });
@@ -4748,7 +4748,7 @@ async function cwfBuildQuests({ rebuild = false } = {}) {
         q.title = name; q.description = cwfQuestBody(n, data);
         q.urgency = n.kind === "terminal" ? "high" : n.kind === "entry" ? "medium" : "low";
         q.boardColumn = "active"; q.visible = true;
-        q.objectives = String(n.objective).split(/\.\s+/).map(s => s.trim()).filter(Boolean).map(t => ({ id: foundry.utils.randomID(), title: t.replace(/\.+$/, "") + ".", description: "", completed: false, visible: true, objectives: [] }));   // the objective broken into discrete, checkable steps
+        q.objectives = String(n.objective).split(/\.\s+/).map(s => s.trim()).filter(Boolean).map(t => ({ id: foundry.utils.randomID(), text: t.replace(/\.+$/, "") + ".", completed: false, visible: true, failed: false, objectives: [] }));   // the objective broken into discrete, checkable steps (CC renders the `text` field — NOT `title`)
         qd.quests[0] = q; qd.cavrilArc = n.arc; qd.cavrilNode = id;
         try { await jrnl.setFlag("campaign-codex", "data", qd); } catch (e) { warn(`quest data set failed: ${id}`, e); }
         try { const ic = CWF_ARC_ICON[n.arc]; if (ic) await jrnl.setFlag("campaign-codex", "icon-override", `fa-solid ${ic} cwf-arc-${n.arc}`); } catch (e) { /* icon optional */ }
@@ -4816,7 +4816,13 @@ async function cwfRoadCastActor(m, kind, { force = false } = {}) {
             const dossier = cwfNpcDossier(m, kind), upd = {};
             for (const [k, v] of Object.entries(dossier.attrs)) upd[`system.abilities.${k}.value`] = v;
             let img = actor.img;
-            try { const tk = await globalThis.CavrilEncounterStage?.tokenArtFor?.([cwfShortSpecies(m.species || ""), m.title || "", kind].filter(Boolean)); if (tk?.url) img = tk.url; } catch (e) { /* offline */ }
+            if (!img || img === "icons/svg/mystery-man.svg") {   // only fetch a face if the actor LACKS one — keep its existing face stable on rebuild (no churn, no dup)
+                try {
+                    const used = new Set((game.actors || []).map(a => { try { return a.id !== actor.id ? a.getFlag(MOD, "tokenSrc") : null; } catch (e) { return null; } }).filter(Boolean));
+                    const tk = await globalThis.CavrilEncounterStage?.tokenArtFor?.([cwfShortSpecies(m.species || ""), m.title || "", kind].filter(Boolean), { exclude: used });
+                    if (tk?.url) { img = tk.url; upd[`flags.${MOD}.tokenSrc`] = tk.src || ""; }
+                } catch (e) { /* offline */ }
+            }
             if (img && img !== actor.img) { upd.img = img; upd["prototypeToken.texture.src"] = img; }
             await actor.update(upd);
             const junk = actor.items.filter(it => it.type === "loot" && /(’s|'s) effects$|^Traveler's sundries$/.test(it.name)).map(it => it.id);
@@ -4824,8 +4830,12 @@ async function cwfRoadCastActor(m, kind, { force = false } = {}) {
         } catch (e) { warn("road-cast actor refresh failed", e); }
         return actor;
     }
-    let img = "icons/svg/mystery-man.svg";
-    try { const tk = await globalThis.CavrilEncounterStage?.tokenArtFor?.([cwfShortSpecies(m.species || ""), m.title || "", kind].filter(Boolean)); if (tk?.url) img = tk.url; } catch (e) { /* offline */ }
+    let img = "icons/svg/mystery-man.svg", tokSrc = "";
+    try {
+        const used = new Set((game.actors || []).map(a => { try { return a.getFlag(MOD, "tokenSrc"); } catch (e) { return null; } }).filter(Boolean));   // faces already handed to other road-cast NPCs → don't repeat one
+        const tk = await globalThis.CavrilEncounterStage?.tokenArtFor?.([cwfShortSpecies(m.species || ""), m.title || "", kind].filter(Boolean), { exclude: used });
+        if (tk?.url) { img = tk.url; tokSrc = tk.src || ""; }
+    } catch (e) { /* offline */ }
     if (img === "icons/svg/mystery-man.svg") { const bm = cwfRoadCastToken(m); if (bm) img = bm; }
     let folder = game.folders?.find(f => f.type === "Actor" && f.name === "Cavril Road Cast");
     try { if (!folder) folder = await Folder.create({ name: "Cavril Road Cast", type: "Actor" }); } catch (e) { /* folder optional */ }
@@ -4836,7 +4846,7 @@ async function cwfRoadCastActor(m, kind, { force = false } = {}) {
     if (!createData) createData = { type: "npc", system: {} };
     createData.name = m.name; createData.type = "npc"; createData.img = img; createData.folder = folder?.id;
     createData.prototypeToken = foundry.utils.mergeObject(createData.prototypeToken || {}, { name: m.name, texture: { src: img }, actorLink: false });
-    createData.flags = foundry.utils.mergeObject(createData.flags || {}, { [MOD]: { roadCast: m.name, statblock: sbName } });
+    createData.flags = foundry.utils.mergeObject(createData.flags || {}, { [MOD]: { roadCast: m.name, statblock: sbName, tokenSrc: tokSrc } });
     try { const ab = (createData.system = createData.system || {}).abilities = createData.system.abilities || {}; for (const [k, v] of Object.entries(dossier.attrs)) ab[k] = foundry.utils.mergeObject(ab[k] || {}, { value: v }); } catch (e) { /* abilities best-effort */ }
     try { actor = await Actor.create(createData); }
     catch (e) { warn("road-cast actor create failed", e); return null; }
@@ -4958,9 +4968,9 @@ async function cwfRoadCastQuest(m, npcDoc, assocUuids = [], force = false) {
         quest.urgency = m.arc ? "high" : "medium";
         quest.boardColumn = quest.boardColumn || "active";
         // Suggested OBJECTIVES (editable) so the quest isn't a bare hook line.
-        quest.objectives = (quest.objectives?.length) ? quest.objectives : [
-            { id: foundry.utils.randomID(), title: `Hear ${m.name} out`, completed: false, visible: true, objectives: [] },
-            { id: foundry.utils.randomID(), title: m.wants ? `Help with: ${m.wants}`.slice(0, 90) : "Decide: help, refuse, or exploit — each has a price", completed: false, visible: true, objectives: [] },
+        quest.objectives = (quest.objectives?.length) ? quest.objectives.map(o => o.text ? o : { ...o, text: o.text || o.title || "", failed: o.failed ?? false }) : [   // migrate old `title`-keyed objectives → CC's `text` field so existing journals repair on rebuild
+            { id: foundry.utils.randomID(), text: `Hear ${m.name} out`, completed: false, visible: true, failed: false, objectives: [] },
+            { id: foundry.utils.randomID(), text: m.wants ? `Help with: ${m.wants}`.slice(0, 90) : "Decide: help, refuse, or exploit — each has a price", completed: false, visible: true, failed: false, objectives: [] },
         ];
         // LINKS to real documents: the NPC giver (+ any allies they're linked to), so the quest threads into the web.
         const rel = [npcDoc?.uuid, ...(Array.isArray(assocUuids) ? assocUuids : [])].filter(Boolean);
