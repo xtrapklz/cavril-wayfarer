@@ -609,13 +609,13 @@
     }
 
     if (candidates.length) {
-      let chosen = candidates[0]; // deterministic best
-      if ((CFG.randomizeMap ?? true) && candidates.length > 1) {
-        // weighted-random by score: better matches are likelier, but you get variety run-to-run
-        const total = candidates.reduce((s, c) => s + c.score, 0);
-        let r = Math.random() * total;
-        chosen = candidates.find(c => (r -= c.score) < 0) || candidates[candidates.length - 1];
-      }
+      // BEST-fit among the GM-approved candidates, with a random tiebreak ONLY among maps that fit EQUALLY well (an exact tie
+      // on score) — so the strongest map for the biome always wins, and identically-scoring maps rotate instead of one always
+      // being chosen. (The recency cycle above already rotates recently-staged maps out of the pool first, for run-to-run
+      // variety; here we never settle for a lower-scoring map the way the old weighted-random sometimes did.) v0.55.208.
+      const top = Math.max(...candidates.map(c => c.score));
+      const best = candidates.filter(c => c.score === top);
+      const chosen = ((CFG.randomizeMap ?? true) && best.length > 1) ? best[Math.floor(Math.random() * best.length)] : best[0];
       remember(chosen.item.id);
       return chosen;
     }
