@@ -529,6 +529,17 @@ const Store = (() => {
                 g.registerMenu(MOD, "cavrilSoundsMenu", { name: "Sound cues", label: "🎵 Pick sound cues…", hint: "Every Wayfarer cinematic, danger, and travel sound in ONE place — pick each from your Cavril: Maestro library (presets · atmospheres · SFX) or paste a ref, and preview it. (The individual sound fields are now folded into this menu.)", icon: "fa-solid fa-music", type: SoundsApp, restricted: true });
             }
         } catch (e) { warn("sound menu register failed", e); }
+        // 📦 One-click content installer — a settings button that seeds EVERYTHING (tables, decks, quests, road-cast journals).
+        try {
+            const FA2 = foundry.appv1?.api?.FormApplication ?? globalThis.FormApplication;
+            if (FA2 && g.registerMenu) {
+                const InstallApp = class extends FA2 {
+                    static get defaultOptions() { return foundry.utils.mergeObject(super.defaultOptions, { id: "cavril-install-config", title: "Install Cavril Content" }); }
+                    async render() { try { await cwfInstallAll({ confirm: true }); } catch (e) { warn("install all failed", e); } return this; }
+                };
+                g.registerMenu(MOD, "cavrilInstallMenu", { name: "Install content", label: "📦 Install all content…", hint: "One click: create every RollTable, encounter deck, quest, and road-cast journal (merchants + storefronts + NPCs) the system needs to run. Idempotent — re-running skips what already exists and upgrades the rest. Campaign Codex must be active for the quests + journals.", icon: "fa-solid fa-box-open", type: InstallApp, restricted: true });
+            }
+        } catch (e) { warn("install menu register failed", e); }
         g.register(MOD, "sfxDangerUp", { name: "Danger-rising cue (Maestro)", hint: "Optional Cavril: Maestro cue for when danger RISES — a reference like sfx:path/to/sound.ogg, music:<id>, preset:<tag>, or a pasted @Maestro[…] link. Maestro plays it to the whole table. Blank = a built-in low rising tone.", scope: "world", config: false, type: String, default: "" });
         g.register(MOD, "sfxDangerDown", { name: "Danger-easing cue (Maestro)", hint: "Optional Cavril: Maestro cue for when danger FALLS (same reference format as above). Blank = a built-in low falling tone.", scope: "world", config: false, type: String, default: "" });
         // A sound per cinematic BEAT. A Maestro reference, or a wildcard FOLDER ending in "/"
@@ -5101,6 +5112,37 @@ async function cwfBuildRoadCastCodex() {
     ui.notifications?.info(`${TITLE}: ${n} road-cast NPC journals rebuilt + ${chained} quests chained by arc — dossiers, hooks, connections, secrets, progression.`);
     return n;
 }
+// ONE-CLICK CONTENT INSTALL — seeds everything the system needs to run: every RollTable, the d20 encounter decks, the quest web,
+// and the road-cast journals (merchants + storefronts + NPCs). Idempotent — each builder skips existing content + upgrades the
+// rest, so it's safe to re-run. Public: CavrilWayfarer.installAll(); also the "📦 Install all content…" settings button.
+async function cwfInstallAll({ confirm = false } = {}) {
+    if (!game.user?.isGM) return { done: 0, total: 0, fails: [] };
+    if (confirm) {
+        const ok = await cwfConfirm("Install all Cavril content?", "Creates every RollTable, encounter deck, quest, and road-cast journal (merchants, storefronts, NPCs) the system needs. Safe to re-run — existing content is skipped or upgraded.");
+        if (!ok) return { done: 0, total: 0, fails: [] };
+    }
+    const hasCC = !!game.campaignCodex;
+    const steps = [
+        ["Core encounter tables", () => Tables.ensureAll()],
+        ["Biome flavour / site / trade tables", () => Tables.buildEncounterTables()],
+        ["Named-location set-piece tables", () => Tables.buildLocationTables()],
+        ["Traveling-merchant table", () => TravelingMerchants.buildTable()],
+        ["Road-encounter NPC table", () => NarrativeNPCs.buildTable()],
+        ["d20 encounter decks", () => cwfBuildDecks()],
+        ["Merchant restock tables", () => CodexShop.buildMerchantTables()],
+    ];
+    if (hasCC) {   // quests + journals live in Campaign Codex — skip them gracefully if it isn't active
+        steps.push(["Quest web (Campaign Codex)", () => cwfBuildQuests()]);
+        steps.push(["Road-cast journals — merchants + storefronts + NPCs", () => cwfBuildRoadCastCodex()]);
+    }
+    ui.notifications?.info(`${TITLE}: installing content — ${steps.length} step${steps.length === 1 ? "" : "s"}…`);
+    let done = 0; const fails = [];
+    for (const [label, fn] of steps) { try { await fn(); done++; } catch (e) { warn(`install step failed: ${label}`, e); fails.push(label); } }
+    const note = `${done}/${steps.length} step${steps.length === 1 ? "" : "s"}${fails.length ? ` · <b>failed:</b> ${fails.map(cwfEsc).join(", ")}` : " · all good"}${hasCC ? "" : " · (Campaign Codex not active — quests + journals skipped)"}`;
+    try { ChatMessage.create({ content: cwfCardShell("fa-box-open", "Cavril — Content Installed", cwfRow("Built", note)), whisper: cwfGmIds() }); } catch (e) { /* noop */ }
+    if (fails.length) ui.notifications?.warn(`${TITLE}: install finished with ${fails.length} issue(s) — see the chat card.`); else ui.notifications?.info(`${TITLE}: content install complete.`);
+    return { done, total: steps.length, fails };
+}
 const TravelingMerchants = (() => {
     let _recent = [];
     const esc = (s) => foundry.utils.escapeHTML?.(String(s ?? "")) ?? String(s ?? "");
@@ -7183,6 +7225,7 @@ Hooks.once("ready", () => {
             ui.notifications?.info(`${TITLE}: built every editable RollTable — biome flavour/site/trade, named locations, traveling merchants, and road-encounter NPCs. Find them in the "${Tables.FOLDER}" folder.`);
             return r;
         },
+        installAll: (opts) => cwfInstallAll(opts),   // ONE call: seed every RollTable + deck + quest + road-cast journal the system needs (mirrors the 📦 Install all content settings button)
         meetSomeone: (opts = {}) => { const tok = Canvasry.activeToken(); return meetRoadCast(opts.cls || (tok ? Canvasry.biomeForToken(tok) : {}), opts); },   // drop a road-cast member (merchant or NPC) for the current hex on demand ({merchant:true} to force a merchant)
         travelSfxFile: (cls, boat) => cwfTravelSfxFile(cls, boat),   // which movement sound a hex+toggle plays, e.g. travelSfxFile({biome:"temperate",river:true}, false) → "foot-water-shallow"
         Domain, Store, Canvasry, Augur, HexData, Hex, Travel, CourseOverlay, Turn, Tables, Party, MiniCal, Music, Danger, Camp, Cinematic, TravelingMerchants, NarrativeNPCs, _installed: true
