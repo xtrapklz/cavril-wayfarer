@@ -2197,7 +2197,7 @@
       rows.push({ name: tok.name, save, saved, dealt, cond });
     }
     const body = rows.map(r => `<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0"><span>${esc(r.name)}</span><span style="color:${r.saved ? "#8fd98f" : "#d65a5a"}">${r.save ?? "—"} ${r.saved ? "save" : "fail"}${r.dealt ? ` · ${r.dealt}` : ""}${esc(r.cond)}</span></div>`).join("");
-    try { await ChatMessage.create({ content: `<div style="font:13px Signika;border:1px solid #ffffff1f;border-radius:8px;padding:9px 11px"><div style="font-weight:700;margin-bottom:5px"><i class="fa-solid fa-burst" style="color:#e9a13b"></i> AoE — DC ${cfg.dc} ${esc(AOE_ABILITIES[cfg.ability] || cfg.ability)}${dmgFlavor ? ` · ${esc(dmgFlavor)}` : ""} · ${toks.length} caught</div>${body}</div>` }); } catch (e) {}
+    try { await ChatMessage.create({ whisper: game.users.filter(u => u.isGM).map(u => u.id), content: `<div style="font:13px Signika;border:1px solid #ffffff1f;border-radius:8px;padding:9px 11px"><div style="font-weight:700;margin-bottom:5px"><i class="fa-solid fa-burst" style="color:#e9a13b"></i> AoE — DC ${cfg.dc} ${esc(AOE_ABILITIES[cfg.ability] || cfg.ability)}${dmgFlavor ? ` · ${esc(dmgFlavor)}` : ""} · ${toks.length} caught</div>${body}</div>` }); } catch (e) {}
   }
 
   // The one call: dialog → place → resolve → ALWAYS remove the template.

@@ -1635,7 +1635,7 @@ async function advanceToDawn() {
     } catch (e) { warn("advance to dawn failed", e); await Store.advanceWorldTime(8); }
     cwfSettleVision();   // darkness swings back to day → recompute until the map brightens (no lingering black-out)
     Cinematic.broadcast({ icon: "fa-sun", title: "Dawn", subtitle: `Day ${nextDay}`, tone: "dawn" });
-    ChatMessage.create({ content: cwfCardShell("fa-sun", `Dawn — Day ${nextDay}`, cwfRow("Morning", "The watch ends and a new day begins.")) });
+    ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-sun", `Dawn — Day ${nextDay}`, cwfRow("Morning", "The watch ends and a new day begins.")) });
     if (game.settings.get(MOD, "longRestAtDawn")) await cwfPartyRest("long", { newDay: true, silent: true });
     if (game.settings.get(MOD, "resyncAtDawn")) cwfResyncSheets({ silent: game.settings.get(MOD, "resyncSilent") });
 }
@@ -2630,7 +2630,7 @@ async function cwfForageSickness(actorId) {
     const a = game.actors.get(actorId);
     try { await a?.toggleStatusEffect?.("poisoned", { active: true }); } catch (e) { warn("forage sickness apply failed", e); }
     try { Cinematic.broadcast({ icon: "fa-virus", title: "Tainted Forage", subtitle: `${a?.name || "the forager"} falls ill — Poisoned`, tone: "danger" }); } catch (e) { /* noop */ }
-    try { ChatMessage.create({ content: cwfCardShell("fa-virus", "Tainted Forage", cwfRow(a?.name || "Forager", "ate something foul out there — <b>Poisoned</b>, lingering until cured or a long rest clears it.")) }); } catch (e) { /* noop */ }
+    try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-virus", "Tainted Forage", cwfRow(a?.name || "Forager", "ate something foul out there — <b>Poisoned</b>, lingering until cured or a long rest clears it.")) }); } catch (e) { /* noop */ }
 }
 // The crit-FAIL forage's nat-1 fork (travel-loop contract): RUINED RESOURCES (1d4 rations spoil across the party) OR TOXIC
 // HARVEST (the Forager makes a CON save vs the biome DC — a fail leaves them Poisoned). Coin flip on a 1d2.
@@ -2660,7 +2660,7 @@ async function cwfForageCritFail(actorId, cls, target = "food") {
         n = Math.max(1, Math.min(14, n));
         if (n === 1 || n === 6) { try { await a?.toggleStatusEffect?.("poisoned", { active: true }); } catch (e) { /* noop */ } }
         try { Cinematic.broadcast({ icon: "fa-poison", title: "Bad Harvest", subtitle: `${a?.name || "the forager"} — a herb-gathering mishap`, tone: "danger" }); } catch (e) { /* noop */ }
-        try { ChatMessage.create({ content: cwfCardShell("fa-poison", "Bad Harvest", cwfRow(a?.name || "Forager", `<span class="cwf-rr-sk">d14 → ${n}.</span> ${CWF_HERB_MISHAPS[n - 1]}`)) }); } catch (e) { /* noop */ }
+        try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-poison", "Bad Harvest", cwfRow(a?.name || "Forager", `<span class="cwf-rr-sk">d14 → ${n}.</span> ${CWF_HERB_MISHAPS[n - 1]}`)) }); } catch (e) { /* noop */ }
         if (n === 14) { try { await cwfCombatBeat(cls, Domain.biomeKey(cls), { surprised: true }); } catch (e) { warn("herb mishap encounter failed", e); } }
         return;
     }
@@ -2674,12 +2674,12 @@ async function cwfForageCritFail(actorId, cls, target = "food") {
         const ok = roll >= dc;
         if (!ok) { try { await a?.toggleStatusEffect?.("poisoned", { active: true }); } catch (e) { warn("toxic harvest apply failed", e); } }
         try { Cinematic.broadcast({ icon: "fa-virus", title: "Toxic Harvest", subtitle: ok ? `${a?.name || "the forager"} resists the tainted flora` : `${a?.name || "the forager"} is Poisoned`, tone: ok ? "calm" : "danger" }); } catch (e) { /* noop */ }
-        try { ChatMessage.create({ content: cwfCardShell("fa-virus", "Toxic Harvest", cwfRow(a?.name || "Forager", `tainted flora — CON save ${roll} vs DC ${dc}: ${ok ? "<b>resisted</b>." : "<b>Poisoned</b>, lingering until cured or a long rest clears it."}`)) }); } catch (e) { /* noop */ }
+        try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-virus", "Toxic Harvest", cwfRow(a?.name || "Forager", `tainted flora — CON save ${roll} vs DC ${dc}: ${ok ? "<b>resisted</b>." : "<b>Poisoned</b>, lingering until cured or a long rest clears it."}`)) }); } catch (e) { /* noop */ }
     } else {
         let lost = 2; try { lost = (await new Roll("1d4").evaluate()).total; } catch { /* default 2 */ }
         let gone = 0; for (let i = 0; i < lost; i++) { try { await Party.adjustStash("rations", -1); gone++; } catch (e) { break; } }
         try { Cinematic.broadcast({ icon: "fa-trash-can", title: "Ruined Resources", subtitle: `${gone} ration${gone === 1 ? "" : "s"} spoiled in the satchels`, tone: "danger" }); } catch (e) { /* noop */ }
-        try { ChatMessage.create({ content: cwfCardShell("fa-trash-can", "Ruined Resources", cwfRow("The party", `a botched forage spoils the packs — <b>${gone} ration${gone === 1 ? "" : "s"} lost</b>.`)) }); } catch (e) { /* noop */ }
+        try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-trash-can", "Ruined Resources", cwfRow("The party", `a botched forage spoils the packs — <b>${gone} ration${gone === 1 ? "" : "s"} lost</b>.`)) }); } catch (e) { /* noop */ }
     }
 }
 // The crit-FAIL scout's nat-1 fork (travel-loop contract): HORNET'S NEST (walked the party into a surprise ambush — straight
@@ -2697,7 +2697,7 @@ async function cwfScoutCritFail(actorId, cls) {
         try { await a?.applyDamage?.(dmg); } catch (e) { warn("pitfall damage failed", e); }
         try { await Party.consumeDay(1, 1); } catch (e) { /* supply scramble — best effort (DC 1 → no exhaustion) */ }
         try { Cinematic.broadcast({ icon: "fa-person-falling", title: "Pitfall", subtitle: `${a?.name || "the Scout"} takes ${dmg} — the party scrambles, losing supplies`, tone: "danger" }); } catch (e) { /* noop */ }
-        try { ChatMessage.create({ content: cwfCardShell("fa-person-falling", "Pitfall", cwfRow(a?.name || "Scout", `pitched into a hidden drop — <b>${dmg} damage</b>; the party loses a ration + a drink each in the scramble.`)) }); } catch (e) { /* noop */ }
+        try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-person-falling", "Pitfall", cwfRow(a?.name || "Scout", `pitched into a hidden drop — <b>${dmg} damage</b>; the party loses a ration + a drink each in the scramble.`)) }); } catch (e) { /* noop */ }
     }
 }
 // A MEAL BEAT at a day phase (Dawn breakfast / Day midday / Dusk supper): the party eats one portion (own → shared → go
@@ -2715,7 +2715,7 @@ async function cwfMealBeat(tod) {
         const tag = p.tolled ? `<span class="cwf-sv-exh up">▲ +1</span>` : `<span class="cwf-sv-exh ok">ok</span>`;
         return `<div class="cwf-sv-row ${p.tolled ? "hit" : ""}"><span class="cwf-sv-name">${cwfEsc(p.name)}</span><span class="cwf-sv-chips">${chips.join("")}</span>${tag}</div>`;
     }).join("");
-    try { ChatMessage.create({ content: cwfCardShell(tod.icon || "fa-utensils", `${tod.label} · ${tod.meal || "Meal"}`, `<div class="cwf-sv-list">${rows}</div>`, { sub: cwfClockLabel() }) }); } catch (e) { /* noop */ }
+    try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell(tod.icon || "fa-utensils", `${tod.label} · ${tod.meal || "Meal"}`, `<div class="cwf-sv-list">${rows}</div>`, { sub: cwfClockLabel() }) }); } catch (e) { /* noop */ }
 }
 // The role-play prompt when the party can't all feed themselves at camp: who shares from their own pack? Returns a decision
 // per shortfall ({ donorId }) — null = go without (the toll lands at the survival check). v0.55.127.
@@ -2852,7 +2852,7 @@ async function cwfResupply() {
     const totR = q.rows.reduce((s, r) => s + r.rNeed, 0), totW = q.rows.reduce((s, r) => s + r.wNeed, 0);
     try { await Party.addSupplies(totR, totW); } catch (e) { warn("resupply fill failed", e); }   // addSupplies caps each member → everyone reaches full
     let paid = 0; for (const r of q.rows) if (r.cost > 0) paid += await cwfDeductGold(game.actors.get(r.id), r.cost);
-    try { await ChatMessage.create({ content: cwfCardShell("fa-coins", "Resupplied", cwfRow("Packs topped to full", `${totR}${cwfResIcon("rations")} / ${totW}${cwfResIcon("water")} distributed · ${fmt(paid)} gp deducted across ${q.rows.length} character${q.rows.length === 1 ? "" : "s"}`)) }); } catch (e) { /* card is best-effort */ }
+    try { await ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-coins", "Resupplied", cwfRow("Packs topped to full", `${totR}${cwfResIcon("rations")} / ${totW}${cwfResIcon("water")} distributed · ${fmt(paid)} gp deducted across ${q.rows.length} character${q.rows.length === 1 ? "" : "s"}`)) }); } catch (e) { /* card is best-effort */ }
     WayfarerPanel.render();
 }
 
@@ -4693,7 +4693,7 @@ async function cwfSpawnEncounter(theme = null, { apl = null, hidden = true, tok 
     }
     if (data.length) { try { await scene.createEmbeddedDocuments("Token", data); } catch (e) { warn("foe spawn failed", e); } }
     const summary = roster.foes.map(f => `${f.count}× ${cwfEsc(f.name)}`).join(" · ");
-    try { ChatMessage.create({ content: cwfCardShell("fa-dragon", `${roster.themeLabel} · APL ${roster.tier}`, cwfRow(`Spawned ${data.length} foe${data.length === 1 ? "" : "s"}`, `${summary || "—"}${missing.length ? ` <span style="color:#d6887e">· not in SRD: ${missing.map(cwfEsc).join(", ")}</span>` : ""}`)) }); } catch (e) { /* card best-effort */ }
+    try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-dragon", `${roster.themeLabel} · APL ${roster.tier}`, cwfRow(`Spawned ${data.length} foe${data.length === 1 ? "" : "s"}`, `${summary || "—"}${missing.length ? ` <span style="color:#d6887e">· not in SRD: ${missing.map(cwfEsc).join(", ")}</span>` : ""}`)) }); } catch (e) { /* card best-effort */ }
     ui.notifications?.info(`${TITLE}: spawned ${data.length} foe${data.length === 1 ? "" : "s"} — ${roster.themeLabel}, APL ${roster.tier}.`);
     return { ...roster, spawned: data.length, missing };
 }
@@ -4813,7 +4813,7 @@ async function cwfRollHexFeature() {
     const label = res.deck.charAt(0).toUpperCase() + res.deck.slice(1);
     const tagLabel = res.tag ? res.tag.replace(/\b\w/g, c => c.toUpperCase()) : "Feature";
     const foot = res.kind === "combat" ? `<div class="cwf-cardbtns"><button class="cwf-cardbtn cwf-primary" data-cwf="spawn-foes" data-theme="${cwfEsc(theme)}" title="Spawn the APL-scaled ${cwfEsc(theme)} foes near the party"><i class="fa-solid fa-dragon"></i> Spawn foes · ${cwfEsc(theme)}</button></div>` : "";
-    try { await ChatMessage.create({ content: cwfCardShell(KIND_ICON[res.kind] || "fa-dice-d20", `Hex Feature · ${cwfEsc(label)}`, cwfRow(tagLabel, cwfEsc(res.text.replace(/^\([^)]+\)\s*/, ""))), { footerHTML: foot }) }); } catch (e) { warn("hex feature card failed", e); }
+    try { await ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell(KIND_ICON[res.kind] || "fa-dice-d20", `Hex Feature · ${cwfEsc(label)}`, cwfRow(tagLabel, cwfEsc(res.text.replace(/^\([^)]+\)\s*/, ""))), { footerHTML: foot }) }); } catch (e) { warn("hex feature card failed", e); }
     if (res.kind === "combat") { try { Cinematic.broadcast({ icon: "fa-dragon", title: "Trouble ahead", subtitle: res.text.replace(/^\([^)]+\)\s*/, "").split(/[:.]/)[0].slice(0, 60), tone: "encounter" }); } catch (e) { /* noop */ } }
     return res;
 }
@@ -6577,7 +6577,7 @@ const Camp = (() => {
             if (_nAuto) { try { globalThis.CavrilEncounterStage.stageEncounter({ surprised: !firstWatcher }); } catch (e) { warn("night auto-stage failed", e); } }
             else Cinematic.broadcast({ icon: "fa-dragon", title: "Ambushed!", subtitle: `${cls ? Domain.plainTerrain(cls) : "the wild"} · hour ${firstHour}`, tone: "encounter" });
             const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span>${_nAuto ? "" : cwfStageBtn(!firstWatcher)}<button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn-long" title="Slept in past the fight — full long rest, later wake"><i class="fa-solid fa-bed"></i> Slept in → Long rest</button><button class="cwf-cardbtn" data-cwf="nightdawn-short" title="Moved out — a short rest's benefit only"><i class="fa-solid fa-mug-hot"></i> Headed out → Short rest</button></div>`;
-            const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls ? Domain.plainTerrain(cls) : "", footerHTML: foot }) }).catch(() => null);
+            const msg = await ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls ? Domain.plainTerrain(cls) : "", footerHTML: foot }) }).catch(() => null);
             nightDawnPending = { nextDay, msgId: msg?.id };
             cwfCampFinalize("Night watch — resolve the encounter, then wake at dawn.");   // collapse the camp card so its Resolve can't re-fire
             WayfarerPanel.render();
@@ -6586,7 +6586,7 @@ const Camp = (() => {
         // A QUIET night now PAUSES on a beat too — the GM narrates how the night resolved, THEN clicks "Wake at dawn". No more
         // auto-advancing the clock the instant the watch resolves; the resolution gets its own narrated moment first. v0.55.185.
         const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-moon"></i> The watch held</span><button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn-long" title="Slept in — wake the party to a full long rest and dawn"><i class="fa-solid fa-bed"></i> Slept in → Long rest</button><button class="cwf-cardbtn" data-cwf="nightdawn-short" title="Headed out — only a short rest's benefit (HP from hit dice, no exhaustion recovery, no slots)"><i class="fa-solid fa-mug-hot"></i> Headed out → Short rest</button></div>`;
-        const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls ? Domain.plainTerrain(cls) : "", footerHTML: foot }) }).catch(() => null);
+        const msg = await ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls ? Domain.plainTerrain(cls) : "", footerHTML: foot }) }).catch(() => null);
         nightDawnPending = { nextDay, msgId: msg?.id };
         cwfCampFinalize("Night watch — narrate the night, then wake at dawn.");   // collapse the camp card so Resolve can't re-fire
         WayfarerPanel.render();
@@ -6618,7 +6618,7 @@ const Camp = (() => {
         if (_restDisrupted) {   // a disturbed night → the rest doesn't fully take: +1 exhaustion at the morning sync, then clear the flag (travel-loop contract)
             for (const a of Party.members()) { const lvl = Math.min(6, (a.system?.attributes?.exhaustion ?? 0) + 1); try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { /* noop */ } }
             _restDisrupted = false;
-            try { ChatMessage.create({ content: cwfCardShell("fa-bed", "Broken Rest", cwfRow("The party", "the night's disturbance cost everyone a level of <b>exhaustion</b>.")) }); } catch (e) { /* noop */ }
+            try { ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-bed", "Broken Rest", cwfRow("The party", "the night's disturbance cost everyone a level of <b>exhaustion</b>.")) }); } catch (e) { /* noop */ }
         }
         // (No wake meal beat — consumption is the per-day upkeep at the travel turn's resolve, not at dawn. Travel-loop contract v0.55.160.)
         active = false;
@@ -6819,7 +6819,7 @@ const WayfarerPanel = (() => {
         const DialogV2 = foundry.applications?.api?.DialogV2;
         const apply = async (rations, water) => {
             const got = await Party.addSupplies(rations | 0, water | 0);
-            ChatMessage.create({ content: `<b>🧺 Forager Haul</b> — +${got.rations} rations, +${got.water} waterskins distributed across the party.` });
+            ChatMessage.create({ whisper: cwfGmIds(), content: `<b>🧺 Forager Haul</b> — +${got.rations} rations, +${got.water} waterskins distributed across the party.` });
             render();
         };
         if (DialogV2) {
@@ -6849,7 +6849,7 @@ const WayfarerPanel = (() => {
         const apply = async (days) => {
             const r = Math.max(0, days | 0) * size;
             const got = await Party.addSupplies(r, r);
-            ChatMessage.create({ content: cwfCardShell("fa-box-open", "Restocked", cwfRow("Supplies", `+${got.rations}${cwfResIcon("rations")} / +${got.water}${cwfResIcon("water")} distributed across the party (asked ${days | 0} day${(days | 0) === 1 ? "" : "s"} × ${size}).`)) });
+            ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-box-open", "Restocked", cwfRow("Supplies", `+${got.rations}${cwfResIcon("rations")} / +${got.water}${cwfResIcon("water")} distributed across the party (asked ${days | 0} day${(days | 0) === 1 ? "" : "s"} × ${size}).`)) });
             render();
         };
         const DialogV2 = foundry.applications?.api?.DialogV2;
@@ -6906,7 +6906,7 @@ const WayfarerPanel = (() => {
     async function endJourney() {
         const prev = Store.sceneState().day || 1;
         await Store.setSceneState({ day: 1, shortRest: false });
-        if (prev > 1) ChatMessage.create({ content: cwfCardShell("fa-flag-checkered", "Journey's End", cwfRow("Arrived", `The party reaches a settlement after ${prev - 1} day${prev - 1 === 1 ? "" : "s"} on the road — the journey counter resets. Restock supplies as needed.`)) });
+        if (prev > 1) ChatMessage.create({ whisper: cwfGmIds(), content: cwfCardShell("fa-flag-checkered", "Journey's End", cwfRow("Arrived", `The party reaches a settlement after ${prev - 1} day${prev - 1 === 1 ? "" : "s"} on the road — the journey counter resets. Restock supplies as needed.`)) });
         else ui.notifications?.info(`${TITLE}: journey day counter reset.`);
     }
 
