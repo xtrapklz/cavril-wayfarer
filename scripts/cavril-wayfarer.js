@@ -180,9 +180,9 @@ const Domain = (() => {
         savanna:   { label: "Savanna",   icon: "fa-wheat-awn",      floor: 0 },
         boreal:    { label: "Boreal",    icon: "fa-tree",           floor: 0 },
         desert:    { label: "Desert",    icon: "fa-sun-plant-wilt", floor: "desert" },
-        wasteland: { label: "Wasteland", icon: "fa-skull",          floor: 13, floorAt: ["flat"] },
+        wasteland: { label: "Cave",      icon: "fa-skull",          floor: 13, floorAt: ["flat"] },
         jungle:    { label: "Jungle",    icon: "fa-leaf",           floor: 15, floorAt: ["flat", "swamp"], restriction: "noFast" },
-        tainted:   { label: "Tainted",   icon: "fa-radiation",      floor: 15, restriction: "noFast" },
+        tainted:   { label: "Feywild",   icon: "fa-radiation",      floor: 15, restriction: "noFast" },
         tundra:    { label: "Tundra",    icon: "fa-snowflake",      floor: 17, restriction: "noFast" },
         frozen:    { label: "Frozen",    icon: "fa-snowflake",      floor: 17, restriction: "noFast" },
         volcanic:  { label: "Volcanic",  icon: "fa-volcano",        floor: 17, restriction: "noFast", hazard: true },
@@ -293,6 +293,8 @@ const Domain = (() => {
     function plainTerrain(cls) {
         if (!cls) return "Wilderness";
         if (cls.cave) return "Cave";   // GM-tagged cave hex — a manual override (CavrilWayfarer.toggleCave())
+        if (cls.biome === "tainted") return "Feywild";   // GM's Feywild biome (hexlands "tainted") — show the obvious name everywhere, regardless of elevation/features
+        if (cls.biome === "wasteland") return "Cave";     // GM's Underdark / Cave biome (hexlands "wasteland") — same
         if (cls.restriction === "block") return "Void";
         if (cls.elevation === "water" || cls.terrainKey === "water" || cls.biome === "water") return "Water";
         if (cls.coast) return "Coast";
@@ -2479,7 +2481,7 @@ function cwfRestSummary(type, rows) {
 const CWF_BIOME_GATHER = {
     temperate: "Grasslands", boreal: "Forests", jungle: "Forests", savanna: "Savannahs",
     swamp: "Swamp", desert: "Desert", tundra: "Arctic", frozen: "Arctic", volcanic: "Volcanos",
-    wasteland: "Blightshore", tainted: "Blightshore", void: "Underground", water: "Coast"
+    wasteland: "Underground", tainted: "Blightshore", void: "Underground", water: "Coast"
 };
 function cwfGatherEnv(gov) {
     const b = gov?.biome || "temperate";
@@ -2951,8 +2953,8 @@ const Music = (() => {
         frozen:    "mountainsDay",        // Mountains — cold high peaks
         tundra:    "skybrushDay",         // High Plains — windswept
         volcanic:  "cauldronDay",         // Bubbling Pools — geothermal (no lava bed exists)
-        wasteland: "wedgelandsDay",       // Barren Badlands
-        tainted:   "oozeFarmDay",         // Festering Bog — corrupted, outdoor
+        wasteland: "fogboundCaverns",     // Cave / Underdark — Fogbound Caverns
+        tainted:   "mycelianExpanse",     // Feywild — Mycelian Expanse (otherworldly fungal dream)
         void:      "",                    // silence
         water:     "oceanDay",            // Open Ocean
         // Primus keyword terrains (cls.terrainKey when there's no hexlands biome)
