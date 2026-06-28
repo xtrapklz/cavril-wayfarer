@@ -232,6 +232,10 @@ const Domain = (() => {
             if (needBiome && inf.biome) biome = inf.biome;
             if ((!veg || veg === "manual") && inf.vegetation) veg = inf.vegetation;
         }
+        // A tile whose ART is clearly a swamp/marsh reads as swamp TERRAIN even when its metadata says a generic "flat" —
+        // the wetland is the meaningful terrain (DC 15, no-fast). The CLIMATE biome is left alone, so a "temperate swamp"
+        // stays temperate for weather while still showing as — and behaving as — Swamp.
+        if ((!elev || elev === "flat") && /(swamp|marsh|bog|wetland|mire|\bfen\b)/i.test(String(rec.name || ""))) elev = "swamp";
         biome = (biome && biome !== "manual") ? biome : "unknown";
         elev = ELEV[elev] ? elev : "flat";
         veg = (veg && veg !== "manual") ? veg : "none";
@@ -381,7 +385,7 @@ const Domain = (() => {
     function rollState(roleKey, state, cls) {
         const pace = PACE[state.pace] || PACE.normal;
         const weather = WEATHER[state.weather] || WEATHER.clear;
-        const rough = !!(cls && cls.restriction === "noFast" && !cls.infrastructure);   // difficult terrain w/o a road → Cautious Crawl / Brutal Push (contract)
+        const rough = !!(cls && cls.restriction === "noFast" && !cls.infrastructure && !cls.river);   // a ROAD or a RIVER through the hex negates difficult-terrain disadvantage on Normal (and keeps Slow's advantage)   // difficult terrain w/o a road → Cautious Crawl / Brutal Push (contract)
         let adv = pace.mod === "advantage" && !rough;                          // rough STRIPS Slow's advantage (Cautious Crawl → straight)
         let dis = pace.mod === "disadvantage" || (rough && pace.mod === null); // rough makes Normal a Brutal Push → disadvantage
         if (weather.hits.includes(roleKey)) dis = true; // weather disadvantage stacks
@@ -397,7 +401,7 @@ const Domain = (() => {
     function rollWhy(roleKey, state, cls) {
         const pace = PACE[state.pace] || PACE.normal;
         const weather = WEATHER[state.weather] || WEATHER.clear;
-        const rough = !!(cls && cls.restriction === "noFast" && !cls.infrastructure);
+        const rough = !!(cls && cls.restriction === "noFast" && !cls.infrastructure && !cls.river);   // a ROAD or a RIVER through the hex negates difficult-terrain disadvantage on Normal (and keeps Slow's advantage)
         const why = [];
         if (pace.mod === "advantage" && !rough) why.push({ kind: "adv", label: `${pace.label} pace`, icon: "fa-gauge-simple-low" });
         if (pace.mod === "disadvantage") why.push({ kind: "dis", label: `${pace.label} pace`, icon: "fa-gauge-simple-high" });
@@ -1799,7 +1803,7 @@ function cwfAvgPartyLevel() {
 // can supply the encounter by setting ctx.text + ctx.handled; otherwise falls back
 // to the editable per-biome RollTable, then a generic line.
 async function cwfEncounterText(cls, { when = "day", surprised = false } = {}) {
-    const biome = cls?.biome || "unknown", label = cls?.label || "Wilderness";
+    const biome = cls?.biome || "unknown", label = cls ? Domain.plainTerrain(cls) : "Wilderness";
     // Carry the EXACT hex's terrain features so the encounter generator can bias map + foes (road → travellers/bandits,
     // river → fords + aquatic) off the precise tile the encounter fired on, not a re-read that might land a hex away.
     const ctx = { module: MOD, when, biome, biomeLabel: label, partyLevel: cwfAvgPartyLevel(), surprised,
@@ -1845,7 +1849,7 @@ async function cwfHexEvent(cls, { scoutGood = false, pace = "normal", encUsed = 
 // 2×Heat (your past hunts you) — same inversion the night-watch uses; a scout shaves Danger; pace ±1 Danger.
 // ONE combat/heat encounter PER PERIOD — once `encUsed`, the danger + heat bands go quiet (flavour/discovery only).
 async function cwfHexEventV2(cls, { scoutGood = false, pace = "normal", encUsed = false } = {}) {
-    const biome = cls?.label || "Wilderness";
+    const biome = cls ? Domain.plainTerrain(cls) : "Wilderness";
     const night = (() => { try { return cwfTimeOfDay().key === "night"; } catch (e) { return false; } })();
     const dangerEff = Math.max(0, cwfThreat(cls) + cwfPaceMod(pace) - (scoutGood ? 1 : 0));
     const combatSlots = encUsed ? 0 : Math.max(0, Math.min(12, (night ? 1 : 2) * dangerEff));   // DAY 2×Danger · NIGHT 1×
@@ -1990,7 +1994,7 @@ function cwfPlayerSummaryHTML(t) {
 function cwfPaceEffect(paceKey, cls) {
     try { if (!game.settings.get(MOD, "travelRollMods")) return "normal"; } catch (e) { return "normal"; }
     const pace = Domain.PACE[paceKey] || Domain.PACE.normal;
-    const rough = !!(cls && cls.restriction === "noFast" && !cls.infrastructure);
+    const rough = !!(cls && cls.restriction === "noFast" && !cls.infrastructure && !cls.river);   // a ROAD or a RIVER through the hex negates difficult-terrain disadvantage on Normal (and keeps Slow's advantage)
     if (pace.mod === "advantage") return rough ? "normal" : "advantage";   // Cautious Crawl strips Slow's advantage on rough terrain
     if (pace.mod === "disadvantage") return "disadvantage";
     return rough ? "disadvantage" : "normal";                              // Brutal Push: Normal → disadvantage on rough terrain
@@ -2073,7 +2077,7 @@ async function cwfAdvanceHex(auto) {
     const tok = canvas?.tokens?.get(t.tokId) || Canvasry.activeToken();
     const off = t.route[t.idx];
     const cls = Hex.classifyAt(off);
-    const biome = cls?.label || "Wilderness";
+    const biome = cls ? Domain.plainTerrain(cls) : "Wilderness";
     const fromClock = cwfClockLabel();
     if (tok) {
         try {
@@ -2264,7 +2268,7 @@ function cwfCampCardHTML() {
         <div class="cwf-night-sec">Watch order · ${cwfEsc(watchNote)} <button class="cwf-cardbtn" data-cwf="cwatch-all" style="min-width:0;padding:0 7px;font-size:.82em" title="Put the whole party on watch">All</button><button class="cwf-cardbtn" data-cwf="cwatch-none" style="min-width:0;padding:0 7px;font-size:.82em" title="Clear the watch">Clear</button></div>
         ${cwfWatchRosterHTML({ attr: "cwf", toggle: "cwatch", up: "cwatch-up", down: "cwatch-down" })}`;
     const foot = `<div class="cwf-cardbtns"><button class="cwf-cardbtn" data-cwf="ccancel"><i class="fa-solid fa-xmark"></i> Cancel</button><button class="cwf-cardbtn cwf-primary" data-cwf="cresolve" title="Resolve the watch and wake the party at dawn"><i class="fa-solid fa-moon"></i> Resolve night</button></div>`;
-    return cwfCardShell("fa-campground", "Make Camp", body, { sub: cls?.label || "", footerHTML: foot });
+    return cwfCardShell("fa-campground", "Make Camp", body, { sub: cls ? Domain.plainTerrain(cls) : "", footerHTML: foot });
 }
 async function cwfCampPost() {
     if (!game.user.isGM) return;
@@ -6398,7 +6402,7 @@ const Camp = (() => {
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
         Music.combat(false);   // a day-halting encounter may have left tension up — camp is calm
         Music.camp(cls);
-        Cinematic.broadcast({ icon: "fa-campground", title: "Make Camp", subtitle: `${cls?.label || "Wilderness"} · dusk`, tone: "dusk" });
+        Cinematic.broadcast({ icon: "fa-campground", title: "Make Camp", subtitle: `${cls ? Domain.plainTerrain(cls) : "Wilderness"} · dusk`, tone: "dusk" });
         WayfarerPanel.render();
         cwfCampPost();   // interactive camp card in chat (watch + danger + resolve)
     }
@@ -6460,7 +6464,7 @@ const Camp = (() => {
         if (!game.user.isGM || nightDawnPending) return;   // already halted on a night encounter — wait for "wake at dawn"
         const tok = Canvasry.activeToken();
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
-        Cinematic.broadcast({ icon: "fa-moon", title: "The Night Watch", subtitle: cls?.label || "", tone: "night" });
+        Cinematic.broadcast({ icon: "fa-moon", title: "The Night Watch", subtitle: cls ? Domain.plainTerrain(cls) : "", tone: "night" });
         const watchN = watchers.length;
         const campH = Number(game.settings.get(MOD, "campHour")) || 21;
         // THE NIGHT (travel-loop contract): ONE 1d20 on the biome deck. ≤16 all-clear · 17 hazard weather · 18 scavenger after
@@ -6479,7 +6483,7 @@ const Camp = (() => {
         let body;
         if (!deck) {
             _restDisrupted = false;
-            body = `<div class="cwf-night-verdict quiet"><i class="fa-solid fa-moon"></i><span class="cwf-nv-txt"><span class="cwf-nv-main">A quiet night</span><span class="cwf-nv-sub">${esc(cls?.label || "camp")} · the watch held</span></span></div>`;
+            body = `<div class="cwf-night-verdict quiet"><i class="fa-solid fa-moon"></i><span class="cwf-nv-txt"><span class="cwf-nv-main">A quiet night</span><span class="cwf-nv-sub">${esc(cls ? Domain.plainTerrain(cls) : "camp")} · the watch held</span></span></div>`;
             body += `<div class="cwf-night-stats"><span class="cwf-nstat" title="The night's biome-deck roll"><i class="fa-solid fa-dice-d20"></i> Deck ${dRoll} / 20</span><span class="cwf-nstat" title="Wilderness danger"><i class="fa-solid fa-skull"></i> Danger ${dangerScore()}</span><span class="cwf-nstat"><i class="fa-solid fa-eye"></i> ${watchN ? `${watchN} on watch` : "no watch set"}</span></div>`;
         } else {
             const slot = Math.ceil(Math.random() * 4);   // 1d4 → which watch slot is on duty when it happens
@@ -6502,7 +6506,7 @@ const Camp = (() => {
             if (deck.key === "scavenger" && outcome === "surprised") { let lost = 2; try { lost = (await new Roll("1d4").evaluate()).total; } catch (e) { /* default 2 */ } let gone = 0; for (let i = 0; i < lost; i++) { try { await Party.adjustStash("rations", -1); gone++; } catch (e) { break; } } effectNote = `The scavenger makes off with <b>${gone} ration${gone === 1 ? "" : "s"}</b>.`; }
             else if (deck.key === "weather" && _restDisrupted) effectNote = "The party rides out the hazard — a rough, broken rest.";
             else if (deck.key === "social") effectNote = outcome === "surprised" ? "The lure draws someone out before the watch reacts — play it out." : "The watch holds the stranger at the treeline — play it out.";
-            body = `<div class="cwf-night-verdict ${(OUT.cls === "fail" || OUT.cls === "success") ? "alert" : "quiet"}"><i class="fa-solid ${deck.icon}"></i><span class="cwf-nv-txt"><span class="cwf-nv-main">${deck.label} · ${OUT.label}</span><span class="cwf-nv-sub">${esc(cls?.label || "camp")} · ${deck.flavor}</span></span></div>`;
+            body = `<div class="cwf-night-verdict ${(OUT.cls === "fail" || OUT.cls === "success") ? "alert" : "quiet"}"><i class="fa-solid ${deck.icon}"></i><span class="cwf-nv-txt"><span class="cwf-nv-main">${deck.label} · ${OUT.label}</span><span class="cwf-nv-sub">${esc(cls ? Domain.plainTerrain(cls) : "camp")} · ${deck.flavor}</span></span></div>`;
             body += `<div class="cwf-night-stats"><span class="cwf-nstat" title="The night's biome-deck roll"><i class="fa-solid fa-dice-d20"></i> Deck ${dRoll} / 20</span><span class="cwf-nstat"><i class="fa-solid fa-eye"></i> ${watcher ? esc(watcher.name) + "'s watch" : "no watch"}</span>${watcher ? `<span class="cwf-nstat" title="Watcher's Perception vs the night DC"><i class="fa-solid fa-binoculars"></i> ${pr} vs DC ${ndc}</span>` : ""}</div>`;
             body += `<div class="cwf-night-sec">The watch</div><div class="cwf-rr cwf-rr-${OUT.cls}"><div class="cwf-rr-b">${watcher ? esc(watcher.name) : "No one on watch"} — ${OUT.txt}.${effectNote ? ` ${effectNote}` : ""}${_restDisrupted ? ` <span class="cwf-sv-exh up">rest disrupted → +1 exhaustion at dawn</span>` : ""}</div></div>`;
         }
@@ -6528,9 +6532,9 @@ const Camp = (() => {
             // Same as day travel: auto-stage in the background + suppress the lead-in so you narrate while it loads.
             const _nAuto = cwfAutoStage() && !!globalThis.CavrilEncounterStage;
             if (_nAuto) { try { globalThis.CavrilEncounterStage.stageEncounter({ surprised: !firstWatcher }); } catch (e) { warn("night auto-stage failed", e); } }
-            else Cinematic.broadcast({ icon: "fa-dragon", title: "Ambushed!", subtitle: `${cls?.label || "the wild"} · hour ${firstHour}`, tone: "encounter" });
+            else Cinematic.broadcast({ icon: "fa-dragon", title: "Ambushed!", subtitle: `${cls ? Domain.plainTerrain(cls) : "the wild"} · hour ${firstHour}`, tone: "encounter" });
             const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-dragon"></i> Encounter — hour ${firstHour}</span>${_nAuto ? "" : cwfStageBtn(!firstWatcher)}<button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn-long" title="Slept in past the fight — full long rest, later wake"><i class="fa-solid fa-bed"></i> Long rest</button><button class="cwf-cardbtn" data-cwf="nightdawn-short" title="Moved out — a short rest's benefit only"><i class="fa-solid fa-mug-hot"></i> Short rest</button></div>`;
-            const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "", footerHTML: foot }) }).catch(() => null);
+            const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls ? Domain.plainTerrain(cls) : "", footerHTML: foot }) }).catch(() => null);
             nightDawnPending = { nextDay, msgId: msg?.id };
             cwfCampFinalize("Night watch — resolve the encounter, then wake at dawn.");   // collapse the camp card so its Resolve can't re-fire
             WayfarerPanel.render();
@@ -6539,7 +6543,7 @@ const Camp = (() => {
         // A QUIET night now PAUSES on a beat too — the GM narrates how the night resolved, THEN clicks "Wake at dawn". No more
         // auto-advancing the clock the instant the watch resolves; the resolution gets its own narrated moment first. v0.55.185.
         const foot = `<div class="cwf-cardbtns"><span class="cwf-card-clock"><i class="fa-solid fa-moon"></i> The watch held</span><button class="cwf-cardbtn cwf-primary" data-cwf="nightdawn-long" title="Narrated the night — wake the party to a long rest and dawn"><i class="fa-solid fa-sun"></i> Wake at dawn</button></div>`;
-        const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls?.label || "", footerHTML: foot }) }).catch(() => null);
+        const msg = await ChatMessage.create({ content: cwfCardShell("fa-moon", "Night Watch", body, { sub: cls ? Domain.plainTerrain(cls) : "", footerHTML: foot }) }).catch(() => null);
         nightDawnPending = { nextDay, msgId: msg?.id };
         cwfCampFinalize("Night watch — narrate the night, then wake at dawn.");   // collapse the camp card so Resolve can't re-fire
         WayfarerPanel.render();
@@ -6986,7 +6990,7 @@ const WayfarerPanel = (() => {
         // A night encounter has halted the flow before dawn — run it, then wake.
         if (Camp.nightEncounterPending) return `
             <div class="cwf-section cwf-turn">
-                <div class="cwf-label">Camp · Night <span class="cwf-muted2">${esc(cls?.label || "")}</span></div>
+                <div class="cwf-label">Camp · Night <span class="cwf-muted2">${esc(cls ? Domain.plainTerrain(cls) : "")}</span></div>
                 <div class="cwf-card-row"><span class="cwf-card-l"><i class="fa-solid fa-dragon" style="color:#e0554d"></i> Encounter</span><span class="cwf-card-v">the rest was interrupted — resolve the fight, then choose how the night ends</span></div>
                 <div class="cwf-actions cwf-actions-stack">
                     <button class="cwf-btn cwf-primary" data-action="camp-dawn-long" ${dis} title="Sleep in past the fight — extend the night to re-bank a full rest. They wake later."><i class="fa-solid fa-bed"></i> Slept in → Long rest</button>
@@ -6995,7 +6999,7 @@ const WayfarerPanel = (() => {
             </div>`;
         return `
             <div class="cwf-section cwf-turn">
-                <div class="cwf-label">Camp · Night <span class="cwf-muted2">${esc(cls?.label || "")} · base <b>${base}</b>/${Danger.scale()} per hr</span></div>
+                <div class="cwf-label">Camp · Night <span class="cwf-muted2">${esc(cls ? Domain.plainTerrain(cls) : "")} · base <b>${base}</b>/${Danger.scale()} per hr</span></div>
                 <div class="cwf-card-row"><span class="cwf-card-l">Danger</span><span class="cwf-card-v">score ${danger} + biome ${biomeM} + hostiles ${hostileM}</span></div>
                 <div class="cwf-seg-row">${dial}</div>
                 <div class="cwf-label cwf-watch-label" style="margin-top:6px">Watch order <span class="cwf-muted2">${watchNote}</span>
