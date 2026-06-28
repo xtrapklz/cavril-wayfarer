@@ -5751,7 +5751,7 @@ const Turn = (() => {
  * the night's hourly encounter checks → wake at dawn.
  * ========================================================================= */
 const Camp = (() => {
-    let active = false, supplyNote = "", watchers = [];   // watchers = ordered actorIds
+    let active = false, supplyNote = "", watchers = [], _restDisrupted = false;   // watchers = ordered actorIds; _restDisrupted = a disturbed night → +1 exhaustion at dawn
     let mealResult = null;           // carried from Make Camp → resolved at dawn
     let nightDawnPending = null;                           // {nextDay,msgId} while a night encounter halts the flow before dawn
     let sleepIn = 0;                                       // extra rest hours past the minimum — later wake, more exhaustion recovered
@@ -5858,40 +5858,54 @@ const Camp = (() => {
         const tok = Canvasry.activeToken();
         const cls = tok ? Canvasry.biomeForToken(tok) : null;
         Cinematic.broadcast({ icon: "fa-moon", title: "The Night Watch", subtitle: cls?.label || "", tone: "night" });
-        const N = nightHours(), oneOnly = !!game.settings.get(MOD, "oneEncounterPerNight");
+        const watchN = watchers.length;
+        const campH = Number(game.settings.get(MOD, "campHour")) || 21;
+        // THE NIGHT (travel-loop contract): ONE 1d20 on the biome deck. ≤16 all-clear · 17 hazard weather · 18 scavenger after
+        // the packs · 19 social lure · 20 ambush predator. Danger ≥2 nudges the roll toward the threat end. On a threat a 1d4
+        // picks the watch slot on duty, and THAT watcher's Perception vs the night DC decides how it lands.
+        const NIGHT_DECK = {
+            17: { key: "weather",   icon: "fa-cloud-bolt",    label: "Hazard weather",  flavor: "the sky turns on the camp",          combat: false },
+            18: { key: "scavenger", icon: "fa-crow",          label: "Scavenger",       flavor: "something creeps in after the packs", combat: false },
+            19: { key: "social",    icon: "fa-masks-theater", label: "Social lure",     flavor: "a voice out in the dark",             combat: false },
+            20: { key: "ambush",    icon: "fa-dragon",        label: "Ambush predator", flavor: "a predator rushes the firelight",     combat: true  }
+        };
+        const dRoll = Math.min(20, Math.ceil(Math.random() * 20) + Math.max(0, dangerScore() - 1));   // Danger ≥2 pushes toward the threats
+        const deck = NIGHT_DECK[dRoll] || null;   // null = all-clear (≤16)
         let encounters = 0, firstHour = 0, firstWatcher = null, nightHeat = false;
-        // d20 per 2-HOUR block. NIGHT DOUBLES Heat (your past hunts you at camp); Danger ×1, and the watcher shaves it
-        // (capped −2). A watcher can't watch away Heat, but having ANY watcher prevents surprise. ONE encounter per night.
-        const blocks = Math.max(1, Math.ceil(N / 2));
-        const campH = Number(game.settings.get(MOD, "campHour")) || 21, fmtH = h => String(((h % 24) + 24) % 24).padStart(2, "0");
-        const tl = [];   // the watch timeline — one chip per 2h shift, in order, so the night reads as a glanceable strip
-        for (let b = 0; b < blocks; b++) {
-            const hr = b * 2, wid = watcherForHour(hr), watcher = wid ? game.actors.get(wid) : null;
-            const wmod = watcher ? Math.min(2, Danger.highestMod(watcher)) : 0;
-            const combatSlots = Math.max(0, Math.min(10, cwfThreat(cls) - wmod));   // NIGHT = 1×Danger
-            const heatSlots = Math.max(0, Math.min(10, 2 * cwfHeat(cls)));            // NIGHT = 2×Heat
-            let state = "quiet", roll = 0;
-            if (!encounters || !oneOnly) {
-                roll = Math.ceil(Math.random() * 20);
-                const isCombat = roll <= combatSlots, isHeat = !isCombat && roll <= combatSlots + heatSlots;
-                if (isCombat || isHeat) { if (!encounters) { firstHour = hr + 1; firstWatcher = watcher; nightHeat = isHeat; } encounters++; state = isHeat ? "heat" : "alert"; }
-            }
-            tl.push({ time: `${fmtH(campH + hr)}–${fmtH(campH + hr + 2)}`, name: watcher?.name || null, state, roll, cs: combatSlots, hs: heatSlots });
-            if (encounters && oneOnly) break;   // the night ends at the first encounter — the party deals with it
+        const watchOrderHTML = watchN ? `<div class="cwf-night-sec">Watch order</div><div class="cwf-watch-order">${watchers.map(id => { const a = game.actors.get(id); const md = Danger.highestMod(a); return `<span class="cwf-worder-chip"><i class="fa-solid fa-eye"></i> ${esc(a?.name || "?")}<span class="cwf-worder-mod" title="Perception bonus">${md >= 0 ? "+" : ""}${md}</span></span>`; }).join("")}</div>` : "";
+        let body;
+        if (!deck) {
+            _restDisrupted = false;
+            body = `<div class="cwf-night-verdict quiet"><i class="fa-solid fa-moon"></i><span class="cwf-nv-txt"><span class="cwf-nv-main">A quiet night</span><span class="cwf-nv-sub">${esc(cls?.label || "camp")} · the watch held</span></span></div>`;
+            body += `<div class="cwf-night-stats"><span class="cwf-nstat" title="The night's biome-deck roll"><i class="fa-solid fa-dice-d20"></i> Deck ${dRoll} / 20</span><span class="cwf-nstat" title="Wilderness danger"><i class="fa-solid fa-skull"></i> Danger ${dangerScore()}</span><span class="cwf-nstat"><i class="fa-solid fa-eye"></i> ${watchN ? `${watchN} on watch` : "no watch set"}</span></div>`;
+        } else {
+            const slot = Math.ceil(Math.random() * 4);   // 1d4 → which watch slot is on duty when it happens
+            const watcher = watchN ? game.actors.get(watchers[(slot - 1) % watchN]) : null;
+            firstWatcher = watcher; firstHour = (((campH + (slot - 1) * 2) % 24) + 24) % 24;
+            const ndc = cwfRoleDc("scout", cls).dc;   // the night DC (the watcher scouts the dark; already night-adjusted)
+            const perc = watcher ? (Number(watcher.system?.skills?.prc?.total) || 0) : 0;
+            let pr = 0; if (watcher) { try { pr = await cwfRollD20(`1d20 + ${perc}`); } catch (e) { pr = 10 + perc; } }
+            // the watch bracket (margin shape): < DC Surprised · DC..+4 Alarmed · +5..+9 Early Warning · +10 Solo Takedown
+            const outcome = !watcher ? "surprised" : pr >= ndc + 10 ? "takedown" : pr >= ndc + 5 ? "warning" : pr >= ndc ? "alarmed" : "surprised";
+            const OUT = {
+                surprised: { label: "Surprised",     cls: "fail",    txt: "caught flat-footed — the threat is on the camp before anyone calls it" },
+                alarmed:   { label: "Alarmed",       cls: "success", txt: "the cry goes up just in time — the camp scrambles awake" },
+                warning:   { label: "Early Warning", cls: "major",   txt: "spotted early — the party can slip away or set its own ambush" },
+                takedown:  { label: "Solo Takedown", cls: "crit",    txt: "dealt with quietly, alone — the rest of the camp sleeps on" }
+            }[outcome];
+            _restDisrupted = (outcome === "surprised" || outcome === "alarmed");
+            if (deck.combat && outcome !== "takedown") encounters = 1;   // ambush → a fight, unless the watcher dropped it solo
+            let effectNote = "";
+            if (deck.key === "scavenger" && outcome === "surprised") { let lost = 2; try { lost = (await new Roll("1d4").evaluate()).total; } catch (e) { /* default 2 */ } let gone = 0; for (let i = 0; i < lost; i++) { try { await Party.adjustStash("rations", -1); gone++; } catch (e) { break; } } effectNote = `The scavenger makes off with <b>${gone} ration${gone === 1 ? "" : "s"}</b>.`; }
+            else if (deck.key === "weather" && _restDisrupted) effectNote = "The party rides out the hazard — a rough, broken rest.";
+            else if (deck.key === "social") effectNote = outcome === "surprised" ? "The lure draws someone out before the watch reacts — play it out." : "The watch holds the stranger at the treeline — play it out.";
+            body = `<div class="cwf-night-verdict ${(OUT.cls === "fail" || OUT.cls === "success") ? "alert" : "quiet"}"><i class="fa-solid ${deck.icon}"></i><span class="cwf-nv-txt"><span class="cwf-nv-main">${deck.label} · ${OUT.label}</span><span class="cwf-nv-sub">${esc(cls?.label || "camp")} · ${deck.flavor}</span></span></div>`;
+            body += `<div class="cwf-night-stats"><span class="cwf-nstat" title="The night's biome-deck roll"><i class="fa-solid fa-dice-d20"></i> Deck ${dRoll} / 20</span><span class="cwf-nstat"><i class="fa-solid fa-eye"></i> ${watcher ? esc(watcher.name) + "'s watch" : "no watch"}</span>${watcher ? `<span class="cwf-nstat" title="Watcher's Perception vs the night DC"><i class="fa-solid fa-binoculars"></i> ${pr} vs DC ${ndc}</span>` : ""}</div>`;
+            body += `<div class="cwf-night-sec">The watch</div><div class="cwf-rr cwf-rr-${OUT.cls}"><div class="cwf-rr-b">${watcher ? esc(watcher.name) : "No one on watch"} — ${OUT.txt}.${effectNote ? ` ${effectNote}` : ""}${_restDisrupted ? ` <span class="cwf-sv-exh up">rest disrupted → +1 exhaustion at dawn</span>` : ""}</div></div>`;
         }
-        const tlHTML = tl.map(k => {
-            const ic = k.state === "alert" ? "fa-burst" : k.state === "heat" ? "fa-user-secret" : "fa-check";
-            const tip = `${k.name || "unwatched"} · rolled ${k.roll || "—"} vs ${k.cs} threat / ${k.hs} heat of 20`;
-            return `<div class="cwf-wblock ${k.state}${k.name ? "" : " unwatched"}" title="${esc(tip)}"><span class="cwf-wb-time">${k.time}</span><span class="cwf-wb-watcher">${k.name ? esc(String(k.name).split(/\s+/)[0]) : "—"}</span><span class="cwf-wb-state"><i class="fa-solid ${ic}"></i></span></div>`;
-        }).join("");
-        const quiet = !encounters, watchN = watchers.length;
-        // Lead with a verdict banner (the headline) — then a stat strip, the watch order, and the timeline beneath it.
-        let body = `<div class="cwf-night-verdict ${quiet ? "quiet" : "alert"}"><i class="fa-solid ${quiet ? "fa-moon" : "fa-dragon"}"></i><span class="cwf-nv-txt"><span class="cwf-nv-main">${quiet ? "A quiet night" : encounters > 1 ? `${encounters} disturbances in the dark` : `Ambushed at hour ${firstHour}`}</span><span class="cwf-nv-sub">${quiet ? `${esc(cls?.label || "camp")} · the watch held` : firstWatcher ? `${esc(firstWatcher.name)}'s watch · ${nightHeat ? "a face from the past" : "hostiles at the fire"}` : "no one watching — caught unaware"}</span></span></div>`;
-        body += `<div class="cwf-night-stats"><span class="cwf-nstat" title="Wilderness danger of this hex"><i class="fa-solid fa-skull"></i> Danger ${cwfThreat(cls)}</span><span class="cwf-nstat" title="Your renown / pursuit — doubled while you sleep"><i class="fa-solid fa-fire"></i> Heat ${cwfHeat(cls)}${cwfHeat(cls) ? " ×2" : ""}</span><span class="cwf-nstat" title="How many stand watch tonight"><i class="fa-solid fa-eye"></i> ${watchN ? `${watchN} on watch` : "no watch set"}</span>${watchN ? `<span class="cwf-nstat" title="Length of each watch shift"><i class="fa-solid fa-hourglass-half"></i> ~${shiftHours()}h each</span>` : ""}</div>`;
         if (supplyNote) body += cwfRow("Supplies", supplyNote);
-        if (watchN) body += `<div class="cwf-night-sec">Watch order</div><div class="cwf-watch-order">${watchers.map(id => { const a = game.actors.get(id); const md = Danger.highestMod(a); return `<span class="cwf-worder-chip"><i class="fa-solid fa-eye"></i> ${esc(a?.name || "?")}<span class="cwf-worder-mod" title="Perception bonus — shaves the night's Danger roll, capped −2">${md >= 0 ? "+" : ""}${md}</span></span>`; }).join("")}</div>`;
-        body += `<div class="cwf-night-sec">Through the night · one roll / 2h</div><div class="cwf-watch-tl">${tlHTML}</div>`;
-        if (encounters > 0) { try { const etxt = await cwfEncounterText(cls, { when: "night", surprised: !firstWatcher }); const mem = nightHeat ? (cwfRandomMember()?.name || null) : null; body += cwfRow("Encounter", mem ? `<span class="cwf-tier-badge" title="A Heat / renown encounter">Personal · ${esc(mem)}</span> Someone from ${esc(mem)}'s past has found the fire. ${etxt}` : etxt); } catch (e) { warn("night encounter text failed", e); } }
+        body += watchOrderHTML;
+        if (encounters > 0) { try { const etxt = await cwfEncounterText(cls, { when: "night", surprised: !firstWatcher }); body += cwfRow("Encounter", etxt); } catch (e) { warn("night encounter text failed", e); } }
         // Resolve hunger / thirst / watch toll now the watch is known, and FOLD it into
         // this same Night Watch card rather than posting a second one.
         const survival = await cwfCampSurvival(mealResult, { watchers });
@@ -5946,6 +5960,11 @@ const Camp = (() => {
         // Reset the "hours since last long rest" clock to the WAKE time — not the bed-down time cwfPartyRest's mark may have
         // read before MiniCal's clock update propagated (the bug that made the HUD start at ~10h). Only on a real long rest.
         if (rest !== "short" && !noLongRest()) { const nowWT = game.time?.worldTime ?? 0; try { await game.settings.set(MOD, "lastRestTime", nowWT > bedDownWT ? nowWT : bedDownWT + Math.round(nightHours()) * 3600); } catch (e) { /* noop */ } }
+        if (_restDisrupted) {   // a disturbed night → the rest doesn't fully take: +1 exhaustion at the morning sync, then clear the flag (travel-loop contract)
+            for (const a of Party.members()) { const lvl = Math.min(6, (a.system?.attributes?.exhaustion ?? 0) + 1); try { await a.update({ "system.attributes.exhaustion": lvl }); } catch (e) { /* noop */ } }
+            _restDisrupted = false;
+            try { ChatMessage.create({ content: cwfCardShell("fa-bed", "Broken Rest", cwfRow("The party", "the night's disturbance cost everyone a level of <b>exhaustion</b>.")) }); } catch (e) { /* noop */ }
+        }
         // (No wake meal beat — consumption is the per-day upkeep at the travel turn's resolve, not at dawn. Travel-loop contract v0.55.160.)
         active = false;
         if (pendingMsg) { const m = game.messages.get(pendingMsg); if (m) { try { await m.update({ content: cwfCardShell("fa-moon", "Night Watch", `<div class="cwf-muted2">Resolved — dawn breaks on Day ${nextDay}.</div>`) }); } catch { /* noop */ } } }
