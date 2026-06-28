@@ -358,9 +358,14 @@ const Domain = (() => {
     const PACE_ORDER = ["slow", "normal", "fast"];
 
     // Spaces actually moved given pace + biome + boat + short rest.
-    // On difficult (no-Fast) terrain the Fast pace is unavailable, so a persisted Fast falls back to SLOW — the GM-authored
-    // "default to the slow button"; Normal stays a deliberate toggle. Returns the pace KEY actually in effect for this hex.
-    function effPace(paceKey, cls) { return (fastProhibited(cls) && paceKey === "fast") ? "slow" : paceKey; }
+    // On difficult (no-Fast) terrain Fast is unavailable, so a persisted Fast falls back — to NORMAL when a RIVER runs through
+    // the hex (you follow the watercourse at a normal clip), else to SLOW (the GM-authored "default to the slow button"). A
+    // ROAD lifts no-Fast entirely (fastProhibited=false → Fast stays Fast). Normal stays a deliberate toggle. Returns the
+    // pace KEY actually in effect for this hex.
+    function effPace(paceKey, cls) {
+        if (paceKey === "fast" && fastProhibited(cls)) return cls?.river ? "normal" : "slow";
+        return paceKey;
+    }
     function spaces(state, cls) {
         const pace = PACE[effPace(state.pace, cls)] || PACE.normal;
         let n = pace.spaces;
