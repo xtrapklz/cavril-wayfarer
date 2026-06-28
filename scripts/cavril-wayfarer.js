@@ -286,6 +286,28 @@ const Domain = (() => {
         return "severe";
     }
 
+    // PLAIN terrain name — one specific GM-facing word for what a hex IS (Mountain / Swamp / Coast / Forest / …), derived from
+    // elevation + features + biome + vegetation. Used EVERYWHERE (HUD label, encounter text, and available to the CZEPEKU
+    // lookup) so the vocabulary is consistent — no more "Temperate Highland" for a mountain. Most-specific signal wins:
+    // water/coast → relief → biome → vegetation. (Cave/Urban aren't derivable from hex data — they'd need a settlement/cave flag.)
+    function plainTerrain(cls) {
+        if (!cls) return "Wilderness";
+        if (cls.restriction === "block") return "Void";
+        if (cls.elevation === "water" || cls.terrainKey === "water" || cls.biome === "water") return "Water";
+        if (cls.coast) return "Coast";
+        if (cls.biome === "swamp" || cls.elevation === "swamp") return "Swamp";
+        if (cls.elevation === "high") return cls.biome === "volcanic" ? "Volcanic" : "Mountain";
+        if (cls.elevation === "medium") return "Hills";
+        if (cls.biome === "jungle") return "Jungle";
+        if (cls.biome === "desert") return "Desert";
+        if (cls.biome === "tundra" || cls.biome === "frozen") return "Tundra";
+        if (cls.biome === "volcanic") return "Volcanic";
+        if (cls.biome === "wasteland" || cls.biome === "void") return "Wasteland";
+        if (cls.biome === "savanna") return "Plains";
+        if (cls.vegetation === "high") return "Forest";
+        return "Plains";
+    }
+
     // ---- Weather -----------------------------------------------------------
     const WEATHER = {
         clear:   { label: "Clear",                 icon: "fa-sun",                   color: "#ffd76b", note: "Normal travel conditions.",                                    hits: [] },
@@ -383,7 +405,7 @@ const Domain = (() => {
     }
 
     return {
-        DEFAULT_TERRAIN, DEFAULT_FEATURES, BIOME, ELEV, WEATHER, WEATHER_ORDER, PACE, PACE_ORDER, ROLES,
+        DEFAULT_TERRAIN, DEFAULT_FEATURES, BIOME, ELEV, WEATHER, WEATHER_ORDER, PACE, PACE_ORDER, ROLES, plainTerrain,
         terrainTable, isBiomeTile, keywordsFromSrc, classify, classifyHexlands, tier,
         rollWeatherKey, spaces, fastProhibited, effPace, hoursPerHex, rollState, rollWhy
     };
@@ -3111,7 +3133,7 @@ const BiomeBadge = (() => {
         return `
             <div class="cwf-badge-row cwf-main">
                 <i class="fa-solid ${cls.icon}"></i>
-                <span class="cwf-biome">${cls.label}</span>
+                <span class="cwf-biome">${Domain.plainTerrain(cls)}</span>
                 <span class="cwf-dc">${dc}</span>
                 ${infra}${river}
             </div>
@@ -5830,7 +5852,7 @@ const Turn = (() => {
             // the DC everyone is trying to beat — so the group cinematic shows WHERE you are and WHAT you need to roll.
             const dc = cwfRouteDc(governing);
             let cls = null; try { const tk = turnTok || Canvasry.activeToken(); if (tk) cls = Canvasry.biomeForToken(tk); } catch (e) { /* noop */ }
-            const biomeTxt = cls ? `${cls.label || cls.biome || ""}${cls.detail ? ` · ${cls.detail}` : ""}`.trim() : "";
+            const biomeTxt = cls ? `${Domain.plainTerrain(cls)} · ${cls.label || cls.biome || ""}`.trim() : "";   // plain terrain name leads (Mountain / Swamp / …), biome as context
             const govTxt = `${governing?.label ? governing.label + " · " : ""}DC ${dc}`;
             const sub = [biomeTxt, govTxt].filter(Boolean).join("  ·  ") || `${route.length} hex${route.length === 1 ? "" : "es"}`;
             window.DDBRollCards?.playGroupCinematic?.({ title: "Travel Turn", sub, participants: parts, progress: !!progress });
