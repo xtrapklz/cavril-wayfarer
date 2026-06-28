@@ -1088,11 +1088,23 @@ const Party = (() => {
     // What ONE character can carry: a base (setting) + their Strength modifier, for
     // rations and for waterskin charges alike. No shared stockpile — the party total is
     // just the sum of these. Floor of 1 so a feeble character still carries something.
+    // Each waterskin holds WATER_PER_SKIN charges (one "unit"). The party's MAX water = (waterskins owned) × that —
+    // bounded by the vessels you carry, not muscle — using each skin's own uses.max where set, else 4. (× quantity.)
+    const WATER_PER_SKIN = 4;
+    function waterCap(a) {
+        let cap = 0;
+        for (const it of (a?.items ?? [])) {
+            if (!WATER_RE.test(it.name || "")) continue;
+            const u = it.system?.uses, qty = Math.max(1, Number(it.system?.quantity) || 1);
+            cap += ((u && Number.isFinite(u.max) && u.max > 0) ? u.max : WATER_PER_SKIN) * qty;
+        }
+        return cap;
+    }
     function capacity(a) {
-        // Capacity = the character's Strength SCORE (travel-loop contract): str 16 → 16 rations + 16 water. No shared
-        // stockpile — the party's totals are just the sum. Floor of 1 so a feeble character still carries something.
+        // RATIONS = Strength SCORE (food is weight you haul). WATER = (waterskins owned × 4 charges) — so the max tracks how
+        // many skins the party actually has, and a found source refills to exactly that. Floor of 1 ration for a feeble PC.
         const c = Math.max(1, Number(a?.system?.abilities?.str?.value) || 10);
-        return { rations: c, water: c };
+        return { rations: c, water: waterCap(a) };
     }
     // Per-member breakdown (own exhaustion / rations / water / carry capacity), for the
     // HUD's per-character bars. Capacity is Strength-scaled; current is what's on the sheet.
@@ -1265,14 +1277,18 @@ const Party = (() => {
     // PER-DAY consumption (travel-loop contract): each character spends `cost` rations + `cost` water from their OWN pack (cost =
     // pace: 1 slow / 2 normal / 3 fast). A shortfall they can't cover → a CON save vs the biome DC; a fail adds +1 exhaustion.
     // This REPLACES the retired 3-meals model — it is the only consumption now. Returns a per-character breakdown for the card. v0.55.160.
-    async function consumeDay(cost, biomeDC) {
+    async function consumeDay(cost, biomeDC, atSource = false) {
         if (!game.user.isGM) return [];
         cost = Math.max(0, Math.round(Number(cost) || 0));
         const dc = Math.max(1, Math.round(Number(biomeDC) || 10));
         const rows = [];
         for (const a of members()) {
-            const rTake = await take(a, RATION_RE, cost), wTake = await take(a, WATER_RE, cost);   // spend up to cost from this character's own pack
-            const rShort = cost - rTake, wShort = cost - wTake, saves = []; let exh = 0;
+            const rTake = await take(a, RATION_RE, cost);   // spend up to cost rations from this character's own pack
+            // At a lake / river / coast the party drinks from the SOURCE: skins aren't spent and refill to FULL — water is never short here.
+            let wTake = 0, wShort = 0;
+            if (atSource) { const need = Math.max(0, capacity(a).water - countItems(a, WATER_RE)); if (need > 0) await addItem(a, WATER_RE, "Waterskin", need); }
+            else { wTake = await take(a, WATER_RE, cost); wShort = cost - wTake; }
+            const rShort = cost - rTake, saves = []; let exh = 0;
             for (const [short, kind] of [[wShort, "thirst"], [rShort, "hunger"]]) {
                 if (short <= 0) continue;
                 const con = a.system?.abilities?.con?.save ?? a.system?.abilities?.con?.mod ?? 0;
@@ -6271,7 +6287,8 @@ const Turn = (() => {
         try {
             const baseCost = { slow: 1, normal: 2, fast: 3 }[pace] ?? 2;
             const paceCost = navDoubleDrain ? baseCost * 2 : baseCost;   // a Vicious Circle critfail drains double
-            const supRows = navRefund ? [] : await Party.consumeDay(paceCost, dc);   // a nat-20 nav refunds the day — nobody spends anything
+            const _atWater = !!(governing?.river || governing?.coast || governing?.terrainKey === "water" || governing?.biome === "water");   // a lake / river / coast → drink from the source, skins refill to full
+            const supRows = navRefund ? [] : await Party.consumeDay(paceCost, dc, _atWater);   // a nat-20 nav refunds the day — nobody spends anything
             if (supRows.length) {
                 const items = supRows.map(r => {
                     const short = (r.rShort || r.wShort) ? `<span style="color:#d6887e">short${r.rShort ? ` ${r.rShort}${cwfResIcon("rations")}` : ""}${r.wShort ? ` ${r.wShort}${cwfResIcon("water")}` : ""}</span>` : "";
@@ -7179,7 +7196,7 @@ const WayfarerPanel = (() => {
                         return `<div class="cwf-supstrip">
                             <span class="cwf-sup cwf-sup-day" title="Days travelling this journey — End Expedition (under Rest &amp; sync) starts a fresh count"><i class="fa-solid fa-calendar-day"></i> Day ${st.day}</span>
                             <span class="cwf-sup ${rLow ? "low" : ""}" title="Rations the party carries — ${sup.rations} of ${sumCapR} total capacity. The party eats ${size}/day. Expand for per-character bars."><i class="fa-solid fa-drumstick-bite"></i> ${sup.rations}<span class="cwf-sup-max">/${sumCapR}</span></span>
-                            <span class="cwf-sup ${wLow ? "low" : ""}" title="Waterskin charges the party carries — ${sup.water} of ${sumCapW} total capacity. Drinks ${size}/day; a found water source refills everyone. Expand for per-character bars."><i class="fa-solid fa-bottle-water"></i> ${sup.water}<span class="cwf-sup-max">/${sumCapW}</span></span>
+                            <span class="cwf-sup ${wLow ? "low" : ""}" title="Waterskin charges the party carries — ${sup.water} of ${sumCapW} total capacity. Drinks ${size}/day; any lake / river / coast refills everyone to full (no forage needed). Expand for per-character bars."><i class="fa-solid fa-bottle-water"></i> ${sup.water}<span class="cwf-sup-max">/${sumCapW}</span></span>
                             <span class="cwf-sup ${exhCls}" title="Total party exhaustion — the sum of all ${bd.members.length} members' levels, of ${maxExh} possible. Expand to see who carries it."><i class="fa-solid fa-face-dizzy"></i> ${sumExh}<span class="cwf-sup-max">/${maxExh}</span></span>
                             <span class="cwf-sup ${tired ? "low" : ""}" title="Hours awake since the party's last long rest — they can push to ${thr}h before fatigue. Past ${thr}h, each travel leg adds +1 exhaustion until they camp."><i class="fa-solid fa-moon"></i> ${awake}<span class="cwf-sup-max">/${thr}h</span></span>
                             <button class="cwf-sup-toggle ${_partyOpen ? "on" : ""}" data-action="toggle-party" title="Per-character rations / water / exhaustion"><i class="fa-solid fa-users"></i> ${size} <i class="fa-solid fa-chevron-${_partyOpen ? "up" : "down"}"></i></button>
